@@ -1,0 +1,92 @@
+FoamFile
+{
+    format ascii;
+    class dictionary;
+    object fvSolution;
+}
+
+solvers
+{
+    p { solver GAMG; tolerance 1e-10; relTol 0; smoother GaussSeidel; }
+    pFinal { $p; relTol 0; }
+    U { solver smoothSolver; smoother symGaussSeidel; tolerance 1e-12; relTol 0; }
+    UFinal { $U; relTol 0; }
+    c { solver smoothSolver; smoother symGaussSeidel; tolerance 1e-12; relTol 0; }
+    cFinal { $c; relTol 0; }
+    muC { solver smoothSolver; smoother symGaussSeidel; tolerance 1e-12; relTol 0; }
+    w { solver smoothSolver; smoother symGaussSeidel; tolerance 1e-12; relTol 0; }
+    wFinal { $w; relTol 0; }
+    // PLATELET CONTENT, plateletContentFormulation only. Same solver as w --
+    // it is the same class of scalar transport. Present unconditionally so a
+    // case that switches the formulation on cannot die at its first solve, the
+    // way `shell` did in run 20260814-221530 and `be` in run 20260817-210800.
+    Wp { $w; }
+    WpFinal { $w; relTol 0; }
+    Dg { solver PCG; preconditioner DIC; tolerance 1e-12; relTol 0; }
+    DgFinal { $Dg; relTol 0; }
+    Us { solver PCG; preconditioner DIC; tolerance 1e-12; relTol 0; }
+    UsFinal { $Us; relTol 0; }
+    // The core/shell material label, advected on the same mixture material
+    // velocity as c. BOTH names are needed: fvMatrix::solve() appends "Final"
+    // on the last PIMPLE outer iteration, so an entry named only `shell` is
+    // still a fatal lookup failure on the step it matters.
+    // Its absence is what killed run 20260814-221530 after one timestep.
+    shell { $c; }
+    shellFinal { $c; relTol 0; }
+    // The two solid CONTENTS of the Stage 1 content model, transported
+    // conservatively on the shared solid flux when `contentModel` is on.
+    // Declared unconditionally: an unread dictionary entry costs nothing,
+    // whereas a missing one is a FatalIOError at the first solve -- which is
+    // how `shell` cost run 20260814-221530 and `be` cost 20260817-210800.
+    // Both names again, because fvMatrix::solve() appends "Final".
+    thetaC { $c; }
+    thetaCFinal { $c; relTol 0; }
+    thetaH { $c; }
+    thetaHFinal { $c; relTol 0; }
+    // S10: the DEPOSITED reference content the network pressure is measured
+    // against (networkPressureReference deposited). Transported on thetaC's
+    // carrier with thetaC's face weights, so it takes thetaC's solver.
+    // Declared unconditionally, for the reason given above.
+    thetaNetRef { $c; }
+    thetaNetRefFinal { $c; relTol 0; }
+    // The Eulerian left Cauchy-Green tensor, solved by solveElasticStrain()
+    // when `eulerianSolid` is on. Unused by every other child, and harmless
+    // there -- an unread dictionary entry costs nothing.
+    //
+    // ITS ABSENCE KILLED stage3_xu_eul ON RUN 20260817-210800 after one
+    // timestep: "keyword be is undefined in dictionary .../fvSolution/solvers".
+    // Exactly the failure `shell` caused on run 20260814-221530, one field
+    // later, and exactly what verify_linear_solvers_exist() was written to
+    // prevent -- the new field was added to the solver and not to that
+    // function's required list. The list now derives `be` from the child's own
+    // eulerian_solid flag rather than being remembered.
+    //
+    // Settings copied from the working Eulerian configuration in
+    // cases/AM2020_eulerian_slab_gate/scripts/create_eulerian_children.py
+    // (REQUIRED_SOLVERS), not invented here: tolerance 1e-14 because be sits
+    // near I and the interesting departures are O(1e-6).
+    be { solver smoothSolver; smoother symGaussSeidel; tolerance 1e-14; relTol 0; }
+    beFinal { $be; relTol 0; }
+}
+
+PIMPLE
+{
+    nOuterCorrectors 60;
+    nCorrectors 2;
+    nNonOrthogonalCorrectors 0;
+    momentumPredictor yes;
+    pRefCell 0;
+    pRefValue 0;
+}
+
+relaxationFactors
+{
+    fields
+    {
+        p 0.3;
+    }
+    equations
+    {
+        U 0.7;
+    }
+}

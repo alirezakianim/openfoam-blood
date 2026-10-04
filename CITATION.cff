@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below, and cite the underlying model papers listed under references."
+title: "openfoam-blood: a two-velocity phase-field clot solver for OpenFOAM 13"
+type: software
+version: 0.1.0
+date-released: 2026-10-04
+license: GPL-3.0-only
+repository-code: "https://github.com/alirezakianim/openfoam-blood"
+authors:
+  - family-names: Kianimoqadam
+    given-names: Alireza
+abstract: >-
+  Research code (not a validated blood-flow model): a runtime-selectable
+  OpenFOAM-13 solver module for platelet-driven clot growth, poroelastic
+  deformation and detachment on a planar mural geometry, with a generator
+  for the pre-registered case series and the offline checks that guard it.
+references:
+  - type: article
+    authors:
+      - family-names: Čapek
+        given-names: Martin
+    title: "A phase-field method applied to interface tracking for blood clot formation"
+    journal: "Applications of Mathematics"
+    volume: 65
+    issue: 4
+    start: 447
+    end: 481
+    year: 2020
+    doi: "10.21136/AM.2020.0056-19"

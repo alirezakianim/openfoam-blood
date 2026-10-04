@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+# Main case: growth, deformation and detachment of a wall-attached clot.
+#
+# THE CHILD LIST IS DERIVED FROM runs/matrix.json, never written here, and
+# create_cases.py refuses to generate if this script names a child literally.
+# A hard-coded list silently skipped two children of the finite-strain gate in
+# run 20260810-075435.
+#
+# Children are ordered growth, then required_strength, then demonstration, and
+# each writes its artifacts as it finishes, so an interrupted Colab session
+# still returns every completed series rather than nothing.
+set -u
+gate=$(cd "$(dirname "$0")" && pwd)
+cd "$gate" || exit 1
+
+# Any arguments are passed through as a SERIES FILTER, so
+#   ./Allrun demonstration
+# builds and runs only the three demonstration children (~20 min) instead of
+# all nineteen (~3.5 h). Validation still runs against the whole controls file,
+# so a filtered run cannot slip an invalid child past a refusal, and
+# matrix.json records exactly what was built.
+python3 scripts/create_cases.py "$@" || exit 1
+
+children=()
+while IFS= read -r line; do
+    children+=("$line")
+done < <(
+    python3 -c "
+import json
+for entry in json.load(open('$gate/runs/matrix.json')):
+    print(entry['child_id'])
+"
+)
+
+if [ "${#children[@]}" -eq 0 ]; then
+    echo "no children in runs/matrix.json"
+    exit 1
+fi
+echo "running ${#children[@]} children: ${children[*]}"
+
+initialiser="$gate/../AM2020_mural_geometry_gate/scripts/initialise_cases.py"
+
+# CONCURRENCY. OPT-IN, and serial by default.
+#
+# Every returned run so far has been serial (`nProcs : 1`). The children are
+# independent -- each one is a separate case directory and every artefact it
+# produces is written inside its own subshell -- so running N at once is
+# throughput, not parallelism: no decomposePar, no processor boundaries, and
+# the solver stays in the serial mode all of its diagnostics assume.
+#
+# THAT DISTINCTION MATTERS. `yWorstBlood` is picked on a LOCAL maximum and its
+# own comment says it "is only meaningful in serial"; `operatorLocalisationAudit`
+# refuses to run under Pstream::parRun(). MPI decomposition would need both
+# fixed and verified. Running whole children side by side needs neither, and
+# each child's log is byte-for-byte what it would have been alone.
+#
+# Default 1 so nothing changes unless it is asked for. Set AM2020_CONCURRENCY=2
+# (or $(nproc)) in the environment.
+jobs_max="${AM2020_CONCURRENCY:-1}"
+case "$jobs_max" in ''|*[!0-9]*) echo "AM2020_CONCURRENCY must be an integer"; exit 1;; esac
+[ "$jobs_max" -lt 1 ] && jobs_max=1
+if [ "$jobs_max" -gt 1 ]; then
+    echo "concurrency: $jobs_max children at a time (cores available: $(nproc))"
+fi
+
+run_child() {
+    local child_id="$1"
+    local case setup_code
+    case="$gate/runs/$child_id"
+
+    setup_code=0
+    ( cd "$case" && blockMesh > log.blockMesh 2>&1 ) || setup_code=$?
+    # THE THROAT IS APPLIED HERE, BETWEEN blockMesh AND EVERYTHING ELSE.
+    # apply_throat.py scales every point in y by H(x)/H, so it must run
+    # before checkMesh (which then validates the BENT mesh and is the only
+    # non-orthogonality measurement this project gets -- there is no
+    # OpenFOAM on the build machine), and before writeCellCentres and
+    # writeCellVolumes, because the initialiser places the clot from the
+    # centres and maxDeltaT() reads the volumes. Bending after either would
+    # leave both describing a mesh that no longer exists.
+    # Only throat children carry constant/throatProfile.json; for every
+    # other child this is a no-op.
+    if [ "$setup_code" -eq 0 ] && [ -f "$case/constant/throatProfile.json" ]; then
+        ( cd "$case" && python3 "$gate/scripts/apply_throat.py" . constant/throatProfile.json > log.applyThroat 2>&1 ) || setup_code=$?
+    fi
+    [ "$setup_code" -eq 0 ] && ( cd "$case" && checkMesh > log.checkMesh 2>&1 ) || setup_code=$?
+    [ "$setup_code" -eq 0 ] && ( cd "$case" && postProcess -func writeCellCentres -time 0 > log.writeCellCentres 2>&1 ) || setup_code=$?
+    [ "$setup_code" -eq 0 ] && ( cd "$case" && postProcess -func writeCellVolumes -time 0 > log.writeCellVolumes 2>&1 ) || setup_code=$?
+    [ "$setup_code" -eq 0 ] && ( cd "$case" && python3 "$initialiser" . > log.initialise 2>&1 ) || setup_code=$?
+    # STAGE 2 CONTENT TRIPLE, AFTER the initialiser and never before it.
+    # thetaC and thetaH are functions of c and shell, which the initialiser
+    # writes; create_cases.py runs earlier and can only write 0/nP. The
+    # solver's restart check is all-or-none, so nP alone is fatal -- run
+    # 20260915-062201 died exactly there, before solving anything. A no-op
+    # unless the child declares plateletContentModel.
+    [ "$setup_code" -eq 0 ] && ( cd "$case" && python3 "$gate/scripts/seed_stage2_content.py" . > log.seedStage2Content 2>&1 ) || setup_code=$?
+    if [ "$setup_code" -ne 0 ]; then
+        echo "$setup_code" > "$case/run-exit-code.txt"
+        echo "[$child_id] setup failed with exit $setup_code; continuing"
+        # RETURN, not continue. This block used to be a loop body, where
+        # `continue` skipped to the next child; it is a FUNCTION now, and in
+        # the concurrent path it runs in a background subshell with no
+        # enclosing loop. `continue` outside a loop is UNDEFINED by POSIX.
+        #
+        # I first wrote here that it would fall through to foamRun and solve a
+        # child whose setup had failed. THAT WAS NOT TESTED AND IT IS WRONG:
+        # on bash 3.2, at concurrency 1 and 3, `continue` stopped the function
+        # correctly and the failed child did not solve. Bash 5 -- what Colab
+        # runs -- could not be tested here.
+        #
+        # So this is not a demonstrated bug fix. It removes an untested
+        # dependency on undefined behaviour in the one path that decides
+        # whether a failed setup still gets solved. `return` is unambiguous on
+        # every shell; `continue` is a bet nothing needs to make.
+        return
+    fi
+
+    # THE STEP-1 WATCHER (design 2026-10-02-case-free-shell-throat, rev. 3,
+    # S7.3b). Launched BESIDE foamRun, never instead of it: it only touches
+    # the stopAtFile watch file this child's controlDict declares (named
+    # `stopWatcher` below), named for a function object this child's own
+    # controlDict carries. Every other child has no such block, so
+    # `grep -q` finds nothing and no watcher is launched -- this is a no-op
+    # for every existing child.
+    watcher_pid=""
+    if grep -q "stopWatcher" "$case/system/controlDict" 2>/dev/null; then
+        python3 "$gate/scripts/clot_free_watcher.py" "$case" \
+            > "$case/log.watcher" 2>&1 &
+        watcher_pid=$!
+    fi
+
+    echo "[$child_id] starting"
+    ( cd "$case" || exit 1
+      set +e
+      start_seconds=$SECONDS
+      # THE LOG FILE IS UNAFFECTED BY CONCURRENCY. `tee` writes
+      # log.phaseClotAxisymmetricFluid inside THIS child's own directory --
+      # every redirect in this script is relative and inside `cd "$case"`, and
+      # nothing is ever appended to a shared file. Only the grep stream below
+      # goes to the shared stdout, which is why that is what interleaves.
+      #
+      # The assessors read the FILES, never stdout. Interleaved console output
+      # cannot reach a result.
+      #
+      # Prefixed with the child id when more than one is running, so the
+      # console is readable too. Serial output is left byte-identical: no
+      # extra pipeline stage at all, rather than a pass-through `cat` that
+      # would add block buffering to a stream that currently flushes.
+      # ${PIPESTATUS[0]} is read inside each branch, immediately after its own
+      # pipeline, so it is always foamRun's status and never awk's.
+      if [ "$jobs_max" -gt 1 ]; then
+        foamRun 2>&1 | tee log.phaseClotAxisymmetricFluid | grep --line-buffered -E \
+          '^Time =|^deltaT =|PHASE_CLOT_FSI |PHASE_CLOT_COST|PHASE_CLOT_DEBOND|PHASE_CLOT_RELEASED|PHASE_CLOT_BODY_VELOCITY|PHASE_CLOT_SKELETON_DIVERGED|PHASE_CLOT_SKELETON_TERMINAL|PHASE_CLOT_MATERIAL_VELOCITY|PHASE_CLOT_DETACHMENT|^ExecutionTime =|^End$' \
+          | awk -v id="$child_id" '{ print "[" id "] " $0; fflush() }'
+        code=${PIPESTATUS[0]}
+      else
+        foamRun 2>&1 | tee log.phaseClotAxisymmetricFluid | grep --line-buffered -E \
+          '^Time =|^deltaT =|PHASE_CLOT_FSI |PHASE_CLOT_COST|PHASE_CLOT_DEBOND|PHASE_CLOT_RELEASED|PHASE_CLOT_BODY_VELOCITY|PHASE_CLOT_SKELETON_DIVERGED|PHASE_CLOT_SKELETON_TERMINAL|PHASE_CLOT_MATERIAL_VELOCITY|PHASE_CLOT_DETACHMENT|^ExecutionTime =|^End$'
+        code=${PIPESTATUS[0]}
+      fi
+      elapsed_seconds=$((SECONDS - start_seconds))
+      # CONCURRENCY is recorded with it because assess_case.py reports
+      # WALL_SECONDS as `realised_cost_seconds`, and under contention that is
+      # wall time with N children sharing the cores -- NOT the cost of this
+      # child. Comparing a contended number against a serial one reads as the
+      # solver having got slower. ExecutionTime in the solver log is the
+      # contention-robust metric; use that for cost models.
+      printf 'WALL_SECONDS=%s\nCONCURRENCY=%s\n' "$elapsed_seconds" "$jobs_max" > log.wallTime
+      echo "$code" > run-exit-code.txt
+      echo "[$child_id] exit=$code wall=${elapsed_seconds}s"
+      exit 0
+    )
+    # The watcher exits on its own once it has seen all three record types
+    # (or stopped the child); this only cleans up a watcher that is still
+    # polling because the log never got that far (e.g. a setup failure
+    # downstream of its launch).
+    [ -n "$watcher_pid" ] && kill "$watcher_pid" 2>/dev/null
+
+    # ONE CONTINUOUS RUN. The two-stage restart that used to live here is
+    # gone. It existed because the peel wanted dt = 0.02 and advection
+    # wanted dt = 4e-4, and it paid for that with a pile of things that are
+    # not physics: advection disabled while the clot was already free,
+    # growth switched off mid-flight, and an unconditional release that
+    # asserted detachment rather than resolving it.
+    #
+    # The timestep is now ADAPTIVE (adjustTimeStep with maxCo 0.5 in
+    # controlDict), so the same run peels and transports. Run
+    # 20260811-195034 showed the clot fully debonded at t = 0.08 s -- all
+    # 60 faces -- and it should leave from that moment, in the same
+    # simulation, with nothing switched by hand.
+}
+
+for child_id in "${children[@]}"; do
+    if [ "$jobs_max" -le 1 ]; then
+        run_child "$child_id"
+    else
+        # `wait -n` needs bash >= 4.3. Colab is bash 5, but on an older bash
+        # it FAILS rather than blocks, the running-job count never changes,
+        # and this becomes an infinite busy loop -- caught locally on bash
+        # 3.2, where it spun printing "wait: -n: invalid option" forever.
+        # The `|| sleep` makes the degraded path a poll instead of a spin.
+        while [ "$(jobs -rp | wc -l)" -ge "$jobs_max" ]; do
+            wait -n 2>/dev/null || sleep 0.5
+        done
+        run_child "$child_id" &
+    fi
+done
+wait
+
+python3 scripts/assess_case.py "$gate"
+exit $?

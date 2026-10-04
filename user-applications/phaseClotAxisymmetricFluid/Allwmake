@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ -z "${WM_PROJECT_DIR:-}" ]; then
+    printf '%s\n' 'OpenFOAM environment is not loaded. Source <OpenFOAM-13>/etc/bashrc first.' >&2
+    exit 2
+fi
+
+wmake libso

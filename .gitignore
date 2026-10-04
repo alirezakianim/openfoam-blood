@@ -1,0 +1,28 @@
+# Generated case children and solver output
+runs/
+postProcessing/
+log.*
+processor*/
+# OpenFOAM time directories (numeric names) inside any case
+cases/*/[0-9]*/
+cases/*/*/[0-9]*/
+!cases/*/template/0/
+# Colab packages and archives built from this tree
+packages/
+*.zip
+# Python / editor / OS noise
+__pycache__/
+*.pyc
+*.bak
+*.v2bak
+.DS_Store
+.vscode/
+.idea/
+# Build products and credentials, never commit
+lnInclude/
+*.o
+*.so
+*.bin
+.env
+*.pem
+*.key

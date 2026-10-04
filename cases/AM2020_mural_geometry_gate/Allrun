@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# Planar one-sided mural clot. Gate B of two. Code and mechanism test.
+set -u
+gate=$(cd "$(dirname "$0")" && pwd)
+cd "$gate" || exit 1
+
+python3 scripts/create_cases.py || exit 1
+
+# DERIVED FROM runs/matrix.json, never written here. Gate A shipped a
+# hard-coded list that fell out of step with its controls in run
+# 20260810-075435 and silently skipped two children. This list happens to be
+# correct today; it is replaced anyway, because "correct today" is exactly what
+# the other one was.
+children=()
+while IFS= read -r line; do
+    children+=("$line")
+done < <(
+    python3 -c "
+import json
+for entry in json.load(open('$gate/runs/matrix.json')):
+    print(entry['child_id'])
+"
+)
+
+if [ "${#children[@]}" -eq 0 ]; then
+    echo "no children in runs/matrix.json"
+    exit 1
+fi
+echo "running ${#children[@]} children: ${children[*]}"
+
+for child_id in "${children[@]}"; do
+    case="$gate/runs/$child_id"
+    setup_code=0
+    ( cd "$case" && blockMesh > log.blockMesh 2>&1 ) || setup_code=$?
+    [ "$setup_code" -eq 0 ] && ( cd "$case" && checkMesh > log.checkMesh 2>&1 ) || setup_code=$?
+    [ "$setup_code" -eq 0 ] && ( cd "$case" && postProcess -func writeCellCentres -time 0 > log.writeCellCentres 2>&1 ) || setup_code=$?
+    [ "$setup_code" -eq 0 ] && ( cd "$case" && postProcess -func writeCellVolumes -time 0 > log.writeCellVolumes 2>&1 ) || setup_code=$?
+    [ "$setup_code" -eq 0 ] && ( cd "$case" && python3 "$gate/scripts/initialise_cases.py" . > log.initialise 2>&1 ) || setup_code=$?
+    if [ "$setup_code" -ne 0 ]; then
+        echo "$setup_code" > "$case/run-exit-code.txt"
+        echo "[$child_id] setup failed with exit $setup_code; continuing"
+        sed -n '1,20p' "$case/log.initialise" 2>/dev/null
+        continue
+    fi
+
+    echo "[$child_id] starting"
+    ( cd "$case" || exit 1
+      set +e
+      start_seconds=$SECONDS
+      foamRun 2>&1 | tee log.phaseClotAxisymmetricFluid | awk '
+        /^Time =/ {n++; if (n == 1 || n % 10 == 0) {print; fflush()}; next}
+        /PHASE_CLOT_DEBOND/ && / newFaces=0 / {next}
+        /PHASE_CLOT_DEBOND|PHASE_CLOT_DETACHMENT/ {print; fflush(); next}
+        /^ExecutionTime =/ || /^End$/ {print; fflush()}'
+      code=${PIPESTATUS[0]}
+      elapsed_seconds=$((SECONDS - start_seconds))
+      printf 'WALL_SECONDS=%s\n' "$elapsed_seconds" > log.wallTime
+      echo "$code" > run-exit-code.txt
+      echo "[$child_id] exit=$code wall=${elapsed_seconds}s"
+      exit 0
+    )
+done
+
+python3 scripts/assess_gate.py "$gate"
+exit $?

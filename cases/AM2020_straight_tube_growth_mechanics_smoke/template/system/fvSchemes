@@ -1,0 +1,89 @@
+FoamFile
+{
+    format ascii;
+    class dictionary;
+    object fvSchemes;
+}
+
+ddtSchemes
+{
+    default Euler;
+}
+
+gradSchemes
+{
+    default cellLimited Gauss linear 1;
+    grad(Us) Gauss linear;
+}
+
+divSchemes
+{
+    default none;
+    div(phi,U) bounded Gauss upwind;
+
+    // THE TWO-VELOCITY MOMENTUM FLUXES. Present only when
+    // twoVelocitySkeleton is on, and inert otherwise -- but they must be
+    // NAMED here, because divSchemes has `default none` and OpenFOAM raises a
+    // FatalIOError at the first assembly for a missing key. That is the same
+    // failure that cost a full Colab session twice, for `shell` and for `be`.
+    //
+    // This template is COPIED by AM2020_planar_mural_detachment
+    // (create_cases.py: TEMPLATE = .../AM2020_straight_tube_growth_mechanics_smoke/template),
+    // which is the case that actually runs the two-velocity child. The main
+    // case has no template/ directory of its own, so check_scheme_coverage.py
+    // -- which globs cases/*/template/system/fvSchemes -- never sees it
+    // directly and can only reach it through this file.
+    //
+    // Same treatment as div(phi,U): the fluid momentum flux is the same
+    // quantity weighted by phi_f, and the skeleton flux transports a velocity
+    // across a sharp interface where an unbounded central scheme oscillates.
+    div(phiFluidFlux,U)  bounded Gauss upwind;
+    div(phiSkelFlux,Vs)  bounded Gauss upwind;
+    // PLATELET CONTENT has NO div entry, deliberately. The Wp equation reuses
+    // the face weights captured from div(phiReleased,c) below, because a
+    // matching scheme NAME is not sufficient: vanLeer weights depend on the
+    // field being transported, so c and Wp assembled different matrices from
+    // identical strings on one shared flux (run 20260822-103655, |Wp - q|
+    // 2.27e-04 vanLeer vs 5.85e-12 with field-independent weights). The solver
+    // REFUSES a div(phiReleased,Wp) entry -- it would be inert, and inert
+    // config that looks live gets tuned by someone expecting an effect.
+    div(qPhi,w) bounded Gauss upwind;
+    div(sigmaD) Gauss linear;
+    // Advection of RELEASED clot material only. Bounded upwind: the phase
+    // field must stay within [-1, 1] while an embolus crosses the domain, and
+    // an unbounded central flux on a sharp interface will not keep it there.
+    // vanLeer, not upwind. First-order upwind lost 4% of the clot and 3 um
+    // of body length over 50 transport steps in an offline replay of the
+    // measured profile; vanLeer holds the length and stays bounded
+    // (c_min -0.976, c_max 1.000).  is retained and matters: it
+    // subtracts c*div(phiReleased), which the masked flux needs because it
+    // is not divergence-free.
+    div(phiReleased,c) bounded Gauss vanLeer;
+    div(phi,be)     Gauss limitedLinear 1;
+    // Passive displacement diagnostic, Eulerian path only. Limited here: this
+    // case carries real flow and the field is reported, not measured against
+    // a reference, so boundedness is worth more than the order.
+    div(phi,Us)     Gauss limitedLinearV 1;
+    div(sigmaElastic) Gauss linear;
+}
+
+laplacianSchemes
+{
+    default Gauss linear corrected;
+    laplacian(DUs,Us) Gauss linear corrected;
+}
+
+interpolationSchemes
+{
+    default linear;
+}
+
+snGradSchemes
+{
+    default corrected;
+}
+
+wallDist
+{
+    method meshWave;
+}

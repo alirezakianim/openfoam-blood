@@ -1,0 +1,26 @@
+FoamFile
+{
+    format ascii;
+    class dictionary;
+    object controlDict;
+}
+
+application foamRun;
+solver phaseClotAxisymmetricFluid;
+libs ("libphaseClotAxisymmetricFluid.so");
+
+startFrom startTime;
+startTime 0;
+stopAt endTime;
+endTime 0.002;
+deltaT 0.0001;
+writeControl timeStep;
+writeInterval 1;
+purgeWrite 0;
+writeFormat ascii;
+writePrecision 12;
+writeCompression off;
+timeFormat general;
+timePrecision 10;
+runTimeModifiable false;
+adjustTimeStep no;
