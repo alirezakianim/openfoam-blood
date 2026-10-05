@@ -44,12 +44,15 @@ from pathlib import Path
 RETURN_UNPACKED_TIME_DIRS = False
 
 
-DRIVE_ROOT = Path("/content/drive/MyDrive/OpenFOAM_Blood")
+CONTENT = Path("/content")
+DRIVE_ROOT = CONTENT / "drive" / "MyDrive" / "OpenFOAM_Blood"
+# The default is today's Drive upload; `--package <path>` replaces it (L1: the
+# notebook passes the zip it built from the verified GitHub clone).
 PACKAGE_DRIVE = (
     DRIVE_ROOT / "packages" / "AM2020_main_case_colab_package.zip"
 )
-PROJECT_LOCAL = Path("/content/AM2020_main_case_package")
-RUNS_LOCAL = Path("/content/am2020_main_case_runs")
+PROJECT_LOCAL = CONTENT / "AM2020_main_case_package"
+RUNS_LOCAL = CONTENT / "am2020_main_case_runs"
 SMOKE_NAME = "AM2020_straight_tube_growth_mechanics_smoke"
 ARTIFACT_NAME = "main_case_v1"
 
@@ -94,7 +97,7 @@ def load_module(name: str, path: Path):
 def load_bootstrap():
     if not PACKAGE_DRIVE.is_file():
         raise FileNotFoundError(f"Upload the package to {PACKAGE_DRIVE}")
-    local = Path("/content/am2020_mural_smoke_phase_bootstrap.py")
+    local = CONTENT / "am2020_mural_smoke_phase_bootstrap.py"
     with zipfile.ZipFile(PACKAGE_DRIVE) as package:
         local.write_bytes(package.read(BOOTSTRAP_MEMBER))
     module = load_module("am2020_mural_smoke_phase_bootstrap", local)
@@ -146,7 +149,44 @@ def verify_drive_copy(local: Path, drive: Path) -> dict:
     return {"verified": True, "file_count": len(local_files), "required_files": list(required)}
 
 
+def verify_repo_stamp(project: Path, expected: str, result: dict) -> None:
+    """L1 (design 2026-10-05, change 5): RECOMPUTE the repo digest over the
+    unpacked tree with the function and manifest carried in REPO_STAMP.json,
+    and refuse unless it equals --repo-digest. Recomputed here, never passed
+    through, so L-G2 can fail: a file changed after the notebook's verify is
+    refused. A zip-path package carries no stamp and is given no digest."""
+    stamp_path = project / "REPO_STAMP.json"
+    if not stamp_path.is_file():
+        result["source"] = "zip"
+        if expected:
+            raise RuntimeError(
+                "--repo-digest was given but the package carries no "
+                "REPO_STAMP.json: it was not built from the GitHub clone")
+        return
+    stamp = json.loads(stamp_path.read_text())
+    result["source"] = "github"
+    result["tag"] = stamp.get("tag")
+    result["repo_digest"] = expected or None
+    result["repo_digest_stamp"] = stamp.get("repo_digest")
+    if not expected:
+        raise RuntimeError(
+            "the package carries REPO_STAMP.json but no --repo-digest was "
+            "given: there is nothing to verify it against")
+    namespace: dict = {}
+    exec(compile(stamp["function"], "REPO_STAMP.json:function", "exec"), namespace)
+    recomputed = namespace["repo_digest"](project, stamp["manifest"])
+    result["repo_digest_recomputed"] = recomputed
+    print(f"[main-case] repo digest recomputed over the unpacked package: "
+          f"{recomputed}", flush=True)
+    if recomputed != expected or stamp.get("repo_digest") != expected:
+        raise RuntimeError(
+            "REPO DIGEST MISMATCH -- refusing: the unpacked package is not the "
+            f"verified clone. recomputed {recomputed}, --repo-digest {expected}, "
+            f"stamp {stamp.get('repo_digest')}")
+
+
 def main() -> int:
+    global PACKAGE_DRIVE
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--run-id",
@@ -162,7 +202,20 @@ def main() -> int:
             "file, so a filter cannot slip an invalid child past a refusal."
         ),
     )
+    parser.add_argument(
+        "--package", default=str(PACKAGE_DRIVE),
+        help="the package zip (default: today's Drive upload)",
+    )
+    parser.add_argument(
+        "--repo-digest", default="",
+        help=(
+            "the notebook's verified EXPECTED_REPO_DIGEST. The runner "
+            "recomputes the digest over the unpacked package from "
+            "REPO_STAMP.json and refuses on a mismatch."
+        ),
+    )
     args = parser.parse_args()
+    PACKAGE_DRIVE = Path(args.package)
     series_filter = args.only.strip()
     if series_filter:
         print(f"SERIES FILTER: {series_filter!r} -- this is a PARTIAL run; "
@@ -203,14 +256,21 @@ def main() -> int:
         # /content, not the mount, so the verification cannot itself be the
         # flaky read it exists to detect -- and neither can the sha256 below,
         # which used to re-read all 3.3 MB back over FUSE for no reason.
-        local_package = Path("/content") / PACKAGE_DRIVE.name
+        local_package = CONTENT / PACKAGE_DRIVE.name
         staged = False
+        # THE SAME FILE IS NOT COPIED (L1, change 1). shutil.copy2(p, p) raises
+        # SameFileError, an OSError, so a package passed from /content/ itself
+        # would be "retried" three times and refused AFTER the OpenFOAM
+        # install. Only the copy is skipped; the CRC check below still runs.
+        same_file = (local_package.exists()
+                     and PACKAGE_DRIVE.resolve() == local_package.resolve())
         for attempt in range(1, 4):
             # The COPY is inside the try as well: a failing FUSE read can
             # surface as an OSError out of copy2 rather than as a damaged
             # file, and that is the same fault with the same remedy.
             try:
-                shutil.copy2(PACKAGE_DRIVE, local_package)
+                if not same_file:
+                    shutil.copy2(PACKAGE_DRIVE, local_package)
                 with zipfile.ZipFile(local_package) as archive:
                     bad = archive.testzip()
                 if bad is None:
@@ -235,6 +295,13 @@ def main() -> int:
             f"unzip -q {bootstrap.quoted(local_package)} -d {bootstrap.quoted(PROJECT_LOCAL)}"
         )
         result["package_sha256"] = sha256(local_package)
+        # Recorded beside package_sha256 (L1, change 9): a github package is
+        # built in the notebook, so its sha is no release id; the tag and the
+        # recomputed repo digest are.
+        verify_repo_stamp(PROJECT_LOCAL, args.repo_digest.strip(), result)
+        repo_stamp = PROJECT_LOCAL / "REPO_STAMP.json"
+        if repo_stamp.is_file():
+            shutil.copy2(repo_stamp, artifact / repo_stamp.name)
         stamp = PROJECT_LOCAL / "PACKAGE_STAMP.json"
         if stamp.is_file():
             shutil.copy2(stamp, artifact / stamp.name)

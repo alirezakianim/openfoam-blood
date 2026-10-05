@@ -2607,6 +2607,20 @@ def s19_report(text: str, spec: dict | None = None, case: Path | None = None) ->
     out["config"] = dict(re.findall(r"(\w+)=(\S+)", cfg.group(1))) if cfg else None
     out["config_matches_child"] = (None if not want else bool(out["config"]) and all(
         out["config"].get(k) == want.get(k) for k in ("momentumPressureCoupling", "networkViscosity")))
+    # BATCH 68 (CE ruling on report 03, 2026-10-05): under R3 the echoed
+    # networkViscosityTau must equal the child's tau_v_s (relative 1e-9), or a
+    # wrong tau would pass V0. The solver echoes it on the config line (batch
+    # 67 fsb_ctl_r3: "networkViscosityTau=0.00025"); missing or unparsable fails.
+    out["config_tau_matches"] = None
+    if want and want.get("networkViscosity") == "kelvinVoigt":
+        try:
+            got_tau = float((out["config"] or {})["networkViscosityTau"])
+            ref_tau = float(want["networkViscosityTau"])
+            out["config_tau_matches"] = abs(got_tau - ref_tau) <= 1e-9*abs(ref_tau)
+        except (KeyError, TypeError, ValueError):
+            out["config_tau_matches"] = False
+        out["config_matches_child"] = bool(out["config_matches_child"]
+                                           and out["config_tau_matches"])
     block = want.get("momentumPressureCoupling") == "blockCoupled"
     r3 = want.get("networkViscosity") == "kelvinVoigt"
     lines = re.findall(r"^PHASE_CLOT_S19 (.*)$", text, re.M)

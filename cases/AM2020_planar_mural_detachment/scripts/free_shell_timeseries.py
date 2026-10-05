@@ -25,6 +25,15 @@ Reads
     constant/throatProfile.json for the top wall, through apply_throat's own
     channel_height (imported, not transcribed).
 
+BATCH 68 (design 2026-10-05-case-free-shell-centred-s19b, rev. 3, sections 4-5;
+red team 01 changes 4-7): F0 on the 0/ fields with the q < 0.5 indicator (q
+from thetaC + thetaH, as assess_case.phase_c does at 0/), both wall gaps per
+frame, the trigger (either-wall contact or LE >= 175 um), the 2 ms
+least-squares front speed, the five exclusive outcomes, and the DERIVED
+dp_clot = dp (1 - Q/Q0). `--self-test [batch63_dense.csv]` runs the synthetic
+outcome tests (and, given the CSV, batch 63's dense series, which must read
+"entered").
+
 Writes postProcessing/freeShellTimeseries.csv (one row per field write),
 postProcessing/freeShellFlux.csv (one row per function-object step),
 postProcessing/freeShellSummary.json and a PNG.
@@ -65,12 +74,19 @@ R_SEG_SHARE = {"pair1": 0.274, "pair2": 0.239 + 0.707 * 0.50}
 P_UP = (120e-6, 25e-6)
 P_DOWN = {"pair1": (225e-6, 10e-6), "pair2": (270e-6, 10e-6)}
 PROBE_SWITCH_X_M = 220e-6   # switch the pair once the leading edge passes 220 um (S7.7)
-ARREST_SPEED_M_S = 2.34e-4  # 0.1 x 2.34e-3 m/s (S7.7)
-ARREST_X_MIN_M = 175e-6     # "after it has passed 175 um" (S7.7)
-CONTACT_CELLS = 1.0         # contact: min gap <= 1 local cell (S7.7)
+# BATCH 68 design rev. 3 section 5 (red team 01 changes 4, 6, 7):
+ARREST_SPEED_M_S = 1.0e-4   # fitted front speed for "arrests" (resolution ~1e-5 m/s)
+TRIGGER_LE_M = 175e-6       # the trigger: LE >= 175 um (H = 30 um at 180.8 um) ...
+CONTACT_CELLS = 1.0         # ... or contact with EITHER wall: gap <= 1 local cell
+THROAT_END_X_M = 220e-6     # "passes": TE >= 220 um; "entered": LE >= 220, TE < 220
+CLOG_RATIO = 0.80           # "clogs": Q/q_start <= 0.80 ...
+HOLD_S = 2.0e-3             # ... held >= 2 ms after the trigger; arrest window too
+FIT_WINDOW_S = 2.0e-3       # least-squares LE fit over a sliding 2 ms window
+RECEDE_SE = 2.0             # "receding": slope < -2 standard errors of the fit
+FIT_MIN_POINTS = 6          # >= 6 frames in a window (11 at 0.2 ms frames)
+F0_WIDTHS = 3.0             # F0: both initial gaps >= 3 epsilonC (9.0 um at 3 um)
 V3_T0_S, V3_T1_S = 0.4e-3, 2.0e-3   # S8 V3
 V3_ADVANCE_MIN_M = 1.87e-6          # 0.5 x 2.34e-3 m/s x 1.6 ms (S8 V3)
-V5_AFTER_EVENT_S = 2.0e-3           # S8 V5
 IDENTITY_TOL = 0.05                 # Q/Q0 = 1 - dp_clot/dp within 5% (S7.7)
 WALL_SAMPLES = 3201                 # as ce-placement-250's top_gap
 TIME_MATCH_REL = 1e-6
@@ -206,6 +222,7 @@ class Mesh:
         self.wall = np.column_stack([xs, [self.H(x) for x in xs]])
         # the local cell height at the top wall, MEASURED per column
         self.dy_top = self.Y[-1, :] - self.Y[-2, :]
+        self.dy_bot = self.Y[1, :] - self.Y[0, :]
 
 
 def contour(mesh: Mesh, q: np.ndarray):
@@ -229,7 +246,8 @@ def write_state(mesh: Mesh, q: np.ndarray) -> dict:
     rows, cols = contour(mesh, q)
     clot = q.reshape(mesh.ny, mesh.nx) < 0.5
     out = {"leading_edge_x_m": None, "trailing_edge_x_m": None, "top_gap_m": None,
-           "top_gap_cells": None, "centroid_x_m": None, "centroid_y_m": None,
+           "top_gap_cells": None, "bottom_gap_m": None, "bottom_gap_cells": None,
+           "centroid_x_m": None, "centroid_y_m": None,
            "aspect_ratio": None, "clot_cells": int(clot.sum())}
     if rows.size:
         out["leading_edge_x_m"] = float(rows[:, 0].max())
@@ -243,6 +261,16 @@ def write_state(mesh: Mesh, q: np.ndarray) -> dict:
         col = int(np.argmin(np.abs(mesh.X[-1, :] - mesh.wall[k[1], 0])))
         out["top_gap_m"] = gap
         out["top_gap_cells"] = gap / float(mesh.dy_top[col])
+        # THE BOTTOM WALL is y = 0 (apply_throat bends only the top). A clot
+        # cell in the first row touches it: gap 0. Else the lowest contour
+        # point, in units of the bottom cell height of its column.
+        if clot[0, :].any():
+            out["bottom_gap_m"], out["bottom_gap_cells"] = 0.0, 0.0
+        else:
+            kb = int(np.argmin(pts[:, 1]))
+            colb = int(np.argmin(np.abs(mesh.X[0, :] - pts[kb, 0])))
+            out["bottom_gap_m"] = float(pts[kb, 1])
+            out["bottom_gap_cells"] = float(pts[kb, 1]) / float(mesh.dy_bot[colb])
         y_lo = 0.0 if clot[0, :].any() else float(pts[:, 1].min())
         y_hi = float(pts[:, 1].max())
         if rows.size and y_hi > y_lo:
@@ -255,30 +283,124 @@ def write_state(mesh: Mesh, q: np.ndarray) -> dict:
     return out
 
 
-# --- the event and V3 ------------------------------------------------------
-def event(states: list[dict]) -> dict:
-    """Earlier of contact (min gap <= 1 local cell) and arrest (leading-edge
-    speed < 2.34e-4 m/s between two consecutive writes, both past 175 um).
-    The arrest is dated at the second write of the pair (the first write at
-    which it is observable). A tie records both kinds."""
+# --- BATCH 68: the trigger, the fitted front speed, the outcome ------------
+def trigger(states: list[dict]) -> dict:
+    """The first frame at which the disc touches EITHER wall (a gap <= 1 local
+    cell) or its leading edge reaches 175 um (design rev. 3 section 5)."""
     contact = next((s["time_s"] for s in states
-                    if s["top_gap_cells"] is not None and s["top_gap_cells"] <= CONTACT_CELLS), None)
-    arrest, arrest_speed = None, None
-    for a, b in zip(states, states[1:]):
-        xa, xb = a["leading_edge_x_m"], b["leading_edge_x_m"]
-        if xa is None or xb is None or min(xa, xb) < ARREST_X_MIN_M or b["time_s"] <= a["time_s"]:
+                    if min(g for g in (s.get("top_gap_cells"), s.get("bottom_gap_cells"), math.inf)
+                           if g is not None) <= CONTACT_CELLS), None)
+    le = next((s["time_s"] for s in states
+               if s["leading_edge_x_m"] is not None and s["leading_edge_x_m"] >= TRIGGER_LE_M), None)
+    cands = [(t, k) for t, k in ((contact, "contact"), (le, "LE>=175um")) if t is not None]
+    t0 = min((t for t, _ in cands), default=None)
+    return {"trigger_time_s": t0,
+            "trigger_kind": "+".join(k for t, k in cands if t == t0) if t0 is not None else None,
+            "contact_time_s": contact, "le175_time_s": le}
+
+
+def front_fit(states: list[dict], t_end: float) -> dict | None:
+    """Least-squares slope of LE(t) over the frames in [t_end - 2 ms, t_end],
+    with its standard error; None if the window is not covered."""
+    tol = 1e-9
+    pts = [(s["time_s"], s["leading_edge_x_m"]) for s in states
+           if t_end - FIT_WINDOW_S - tol <= s["time_s"] <= t_end + tol
+           and s["leading_edge_x_m"] is not None]
+    if len(pts) < FIT_MIN_POINTS or pts[0][0] > t_end - FIT_WINDOW_S + tol:
+        return None
+    t = np.array([a for a, _ in pts]); x = np.array([b for _, b in pts])
+    tm = t.mean(); sxx = float(((t - tm) ** 2).sum())
+    slope = float(((t - tm) * (x - x.mean())).sum() / sxx)
+    resid = x - (x.mean() + slope * (t - tm))
+    se = float(math.sqrt(float((resid ** 2).sum()) / (len(t) - 2) / sxx))
+    return {"t_end_s": t_end, "slope_m_s": slope, "slope_se_m_s": se, "n": len(t)}
+
+
+def classify(states: list[dict], ratio: list[tuple[float, float]],
+             end_time_s: float | None) -> dict:
+    """The five exclusive outcomes, in the design's order (section 5).
+    ratio: (t, Q/q_start) at every logged step. 'entered' is judged at the
+    last frame (the end of the window the run reached)."""
+    out = {"outcome": "undecided", "outcome_time_s": None, **trigger(states),
+           "clog_from_s": None, "arrest_fit": None, "receding_fits": 0}
+    last = states[-1] if states else None
+    tp = next((s["time_s"] for s in states if s["trailing_edge_x_m"] is not None
+               and s["trailing_edge_x_m"] >= THROAT_END_X_M), None)
+    if tp is not None:
+        out.update(outcome="passes", outcome_time_s=tp)
+        return out
+    if last is not None and last["leading_edge_x_m"] is not None \
+            and last["leading_edge_x_m"] >= THROAT_END_X_M \
+            and last["trailing_edge_x_m"] is not None \
+            and last["trailing_edge_x_m"] < THROAT_END_X_M:
+        out.update(outcome="entered", outcome_time_s=last["time_s"])
+        return out
+    t_tr = out["trigger_time_s"]
+    if t_tr is None:
+        return out
+    run_start = None
+    for t, r in ratio:
+        if t < t_tr - 1e-12:
             continue
-        v = (xb - xa) / (b["time_s"] - a["time_s"])
-        if v < ARREST_SPEED_M_S:
-            arrest, arrest_speed = b["time_s"], v
-            break
-    cands = [(t, k) for t, k in ((contact, "contact"), (arrest, "arrest")) if t is not None]
-    if not cands:
-        return {"event_time_s": None, "event_kind": None, "contact_time_s": None,
-                "arrest_time_s": None, "arrest_speed_m_s": None}
-    t0 = min(t for t, _ in cands)
-    return {"event_time_s": t0, "event_kind": "+".join(k for t, k in cands if t == t0),
-            "contact_time_s": contact, "arrest_time_s": arrest, "arrest_speed_m_s": arrest_speed}
+        if r <= CLOG_RATIO:
+            run_start = t if run_start is None else run_start
+            if t - run_start >= HOLD_S - 1e-12:
+                out.update(outcome="clogs", outcome_time_s=t, clog_from_s=run_start)
+                return out
+        else:
+            run_start = None
+    # "the fitted front speed is <= 1e-4 m/s and not negative beyond its fit
+    # error (not receding) for >= 2 ms": the fit (each over the 2 ms ending
+    # at a frame, starting at or after the trigger) must satisfy both at
+    # EVERY frame over a span >= 2 ms. A receding fit (slope below -2
+    # standard errors: significantly negative; at 1 SE a stationary noisy
+    # front reads receding in ~16% of windows and a 2 ms hold rarely
+    # survives) or a moving one (> 1e-4 m/s) restarts the span.
+    held_from = None
+    for s in states:
+        if s["time_s"] - FIT_WINDOW_S < t_tr - 1e-9:
+            continue
+        f = front_fit(states, s["time_s"])
+        if f is None:
+            continue
+        receding = f["slope_m_s"] < -RECEDE_SE * f["slope_se_m_s"]
+        out["receding_fits"] += receding
+        if not receding and f["slope_m_s"] <= ARREST_SPEED_M_S:
+            held_from = s["time_s"] if held_from is None else held_from
+            if s["time_s"] - held_from >= HOLD_S - 1e-9:
+                out.update(outcome="arrests", outcome_time_s=s["time_s"], arrest_fit=f,
+                           arrest_from_s=held_from)
+                return out
+        else:
+            held_from = None
+    return out
+
+
+def f0(mesh: "Mesh", q0: np.ndarray, epsilon_m: float | None) -> dict:
+    """F0: on the 0/ fields, both wall gaps of the q < 0.5 region >= 3 eps."""
+    st = write_state(mesh, q0)
+    floor = None if epsilon_m is None else F0_WIDTHS * epsilon_m
+    ok = None
+    if floor is not None and st["top_gap_m"] is not None and st["bottom_gap_m"] is not None:
+        ok = st["top_gap_m"] >= floor and st["bottom_gap_m"] >= floor
+    return {"f0": None if ok is None else ("PASS" if ok else "FAIL"),
+            "f0_top_gap_m": st["top_gap_m"], "f0_bottom_gap_m": st["bottom_gap_m"],
+            "f0_floor_m": floor, "f0_clot_cells": st["clot_cells"]}
+
+
+def q_at_zero(case: Path, n: int) -> np.ndarray | None:
+    """q at 0/: 0/q if written, else 1 - (thetaC + thetaH)/skeletonVolumeFraction
+    (assess_case.phase_c's 0/ branch, c = 2q - 1)."""
+    if (case / "0" / "q").is_file():
+        return read_internal_scalar(case / "0" / "q", n)
+    tc, th = case / "0" / "thetaC", case / "0" / "thetaH"
+    props = case / "constant" / "phaseClotProperties"
+    if not (tc.is_file() and th.is_file() and props.is_file()):
+        return None
+    m = re.search(r"^\s*skeletonVolumeFraction\s+([-\d.eE+]+)\s*;", props.read_text(errors="replace"), re.M)
+    if not m or not float(m.group(1)) > 0:
+        return None
+    return 1.0 - (read_internal_scalar(tc, n) + read_internal_scalar(th, n)) / float(m.group(1))
 
 
 def v3(states: list[dict]) -> dict:
@@ -320,8 +442,10 @@ def field_states(case: Path, mesh: Mesh) -> list[dict]:
 
 
 def main() -> int:
+    if len(sys.argv) >= 2 and sys.argv[1] == "--self-test":
+        return self_test(sys.argv[2] if len(sys.argv) > 2 else None)
     if len(sys.argv) != 2:
-        raise SystemExit("usage: free_shell_timeseries.py <case_dir>")
+        raise SystemExit("usage: free_shell_timeseries.py <case_dir> | --self-test [batch63_dense.csv]")
     case = Path(sys.argv[1]).resolve()
     child = json.loads((case / "child.json").read_text())
     # The drive the solver RAN: 0/p inlet fixedValue (child.json does not carry it;
@@ -339,7 +463,12 @@ def main() -> int:
 
     mesh = load_mesh(case)
     states = field_states(case, mesh)
-    ev = event(states)
+    ratio = [(t, qv / q0 / q_start) for t, qv in flux] if q_start else []
+    ev = classify(states, ratio, child.get("end_time_s"))
+    q0f = q_at_zero(case, mesh.nx * mesh.ny)
+    eps = (child.get("geometry") or {}).get("interface_width_m")
+    f0r = (f0(mesh, q0f, eps) if q0f is not None else
+           {"f0": None, "f0_reason": "no 0/q and no 0/thetaC+thetaH with skeletonVolumeFraction"})
     rows = []
     for s in states:
         t = s["time_s"]
@@ -353,12 +482,17 @@ def main() -> int:
             ident = abs(qq0 - (1.0 - dp_clot / dp)) <= IDENTITY_TOL
         rows.append({**s, "q_out_m3_s": q_out, "q_over_q0": qq0,
                      "q_over_qstart": (qq0 / q_start) if (qq0 is not None and q_start) else None,
-                     "probe_pair": pair, "dp_clot_m2_s2": dp_clot, "identity_within_5pct": ident})
+                     "probe_pair": pair, "dp_clot_m2_s2": dp_clot, "identity_within_5pct": ident,
+                     # DERIVED from the flux by the series model, not measured
+                     # (design rev. 3 section 5; the probe identity failed at
+                     # 48 of 61 batch-63 writes).
+                     "dp_clot_derived_m2_s2": None if qq0 is None else dp * (1.0 - qq0)})
     out = case / "postProcessing"
     out.mkdir(exist_ok=True)
     cols = ["time_s", "q_out_m3_s", "q_over_q0", "q_over_qstart", "probe_pair", "dp_clot_m2_s2",
             "identity_within_5pct", "leading_edge_x_m", "trailing_edge_x_m", "top_gap_m",
-            "top_gap_cells", "centroid_x_m", "centroid_y_m", "aspect_ratio", "clot_cells"]
+            "top_gap_cells", "centroid_x_m", "centroid_y_m", "aspect_ratio", "clot_cells",
+            "bottom_gap_m", "bottom_gap_cells", "dp_clot_derived_m2_s2"]
     with (out / "freeShellTimeseries.csv").open("w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
         w.writeheader()
@@ -372,9 +506,15 @@ def main() -> int:
     summary = {
         "child_id": child.get("child_id"), "q0_m3_s": q0, "q_start": q_start,
         "q_start_lubrication_bound": LUBRICATION_QSTART_BOUND, "n_writes": len(rows),
-        "n_flux_steps": len(flux), **ev, **v3(states), "last_write_s": last_t,
-        "v5_reached": (None if ev["event_time_s"] is None or last_t is None
-                       else last_t >= ev["event_time_s"] + V5_AFTER_EVENT_S - 1e-12),
+        "n_flux_steps": len(flux), **ev, **f0r, **v3(states), "last_write_s": last_t,
+        # V5 (design rev. 3 section 4): endTime reached, or the clock budget
+        # with an outcome already decided; else INCONCLUSIVE.
+        "v5": (None if last_t is None else
+               "PASS" if (child.get("end_time_s") is not None
+                          and last_t >= float(child["end_time_s"]) - 1e-4 * float(child["end_time_s"]))
+               or ev["outcome"] in ("passes", "clogs", "arrests") else "INCONCLUSIVE"),
+        "min_top_gap_m": min((r["top_gap_m"] for r in rows if r["top_gap_m"] is not None), default=None),
+        "min_bottom_gap_m": min((r["bottom_gap_m"] for r in rows if r["bottom_gap_m"] is not None), default=None),
         "identity_failures": sum(1 for r in rows if r["identity_within_5pct"] is False),
         "max_leading_edge_x_m": max((r["leading_edge_x_m"] for r in rows
                                      if r["leading_edge_x_m"] is not None), default=None),
@@ -389,21 +529,91 @@ def main() -> int:
         ts = [r["time_s"] * 1e3 for r in rows]
         ax[0].plot([t * 1e3 for t, _ in flux], [v / q0 for _, v in flux], lw=0.8)
         ax[0].set_ylabel("Q/Q0")
-        ax[1].plot(ts, [r["dp_clot_m2_s2"] for r in rows])
-        ax[1].set_ylabel("dp_clot [m2/s2]")
+        ax[1].plot(ts, [r["dp_clot_derived_m2_s2"] for r in rows])
+        ax[1].set_ylabel("dp_clot DERIVED [m2/s2]")
         ax[2].plot(ts, [r["leading_edge_x_m"] for r in rows], label="leading")
         ax[2].plot(ts, [r["trailing_edge_x_m"] for r in rows], label="trailing")
         ax[2].set_ylabel("x [m]")
         ax[2].legend()
-        if ev["event_time_s"] is not None:
+        if ev["trigger_time_s"] is not None:
             for a in ax:
-                a.axvline(ev["event_time_s"] * 1e3, color="r", lw=0.6)
+                a.axvline(ev["trigger_time_s"] * 1e3, color="r", lw=0.6)
         ax[2].set_xlabel("t [ms]")
         fig.suptitle(str(child.get("child_id")))
         fig.savefig(out / "freeShellTimeseries.png", dpi=120)
     except ImportError:
         print("matplotlib not available; CSV/JSON written, no PNG", file=sys.stderr)
     return 0
+
+
+# --- self-tests (design rev. 3 section 6 item 4) -------------------------
+def _synthetic(le, te, ratio_fn, t_end=25e-3, top_cells=30.0, bot_cells=30.0, noise=0.0):
+    """Frames every 0.2 ms with LE(t), TE(t) [m]; steps every 0.02 ms with
+    Q/q_start = ratio_fn(t). Gaps in cells (both walls)."""
+    rng = np.random.default_rng(7)
+    n = int(round(t_end / 2e-4))
+    states = []
+    for k in range(1, n + 1):
+        t = k * 2e-4
+        states.append({"time_s": t, "leading_edge_x_m": le(t) + noise * rng.standard_normal(),
+                       "trailing_edge_x_m": te(t),
+                       "top_gap_cells": top_cells(t) if callable(top_cells) else top_cells,
+                       "bottom_gap_cells": bot_cells(t) if callable(bot_cells) else bot_cells})
+    ratio = [(k * 2e-5, ratio_fn(k * 2e-5)) for k in range(1, int(round(t_end / 2e-5)) + 1)]
+    return states, ratio
+
+
+def self_test(csv_path: str | None) -> int:
+    um = 1e-6
+    lin = lambda x0, v: (lambda t: x0 + v * t)
+    stop_at = lambda x0, v, t1: (lambda t: x0 + v * min(t, t1))
+    cases = [
+        ("passes: TE reaches 220 um", "passes",
+         _synthetic(lin(145 * um, 7e-3), lin(115 * um, 7e-3), lambda t: 0.95)),
+        ("entered: LE 224 um, TE 160 um at the end", "entered",
+         _synthetic(lin(145 * um, 3.16e-3), lin(115 * um, 1.8e-3), lambda t: 0.95)),
+        ("clogs: held drop, no touch (trigger by LE >= 175 um)", "clogs",
+         _synthetic(lin(145 * um, 2.0e-3), lin(115 * um, 2.0e-3),
+                    lambda t: 0.95 if t < 18e-3 else 0.70)),
+        ("clogs: trigger by bottom-wall contact only", "clogs",
+         _synthetic(lin(145 * um, 0.5e-3), lin(115 * um, 0.5e-3),
+                    lambda t: 0.95 if t < 10e-3 else 0.75,
+                    bot_cells=lambda t: 30.0 if t < 8e-3 else 0.6)),
+        ("arrests: front stops at 185 um (noise 53 nm), no 20% drop", "arrests",
+         _synthetic(stop_at(145 * um, 2.5e-3, 16e-3), stop_at(115 * um, 2.5e-3, 16e-3),
+                    lambda t: 0.90, noise=53e-9)),
+        ("receding: front moves back at 5e-4 m/s after 175 um", "undecided",
+         _synthetic(lambda t: 145 * um + 2.5e-3 * min(t, 14e-3) - 5e-4 * max(0.0, t - 14e-3),
+                    lin(115 * um, 1e-3), lambda t: 0.90, noise=53e-9)),
+        ("undecided: never reaches the trigger", "undecided",
+         _synthetic(lin(145 * um, 1e-3), lin(115 * um, 1e-3), lambda t: 0.95)),
+        ("drop BEFORE the trigger does not clog", "undecided",
+         _synthetic(lin(145 * um, 1e-3), lin(115 * um, 1e-3), lambda t: 0.70)),
+    ]
+    bad = 0
+    for name, want, (states, ratio) in cases:
+        got = classify(states, ratio, 25e-3)
+        ok = got["outcome"] == want
+        bad += not ok
+        print(f"{'OK ' if ok else 'BAD'} {name}: {got['outcome']} (want {want}); trigger "
+              f"{got['trigger_kind']} at {got['trigger_time_s']}; fit {got['arrest_fit']}")
+    if csv_path:
+        rows = list(csv.DictReader(open(csv_path)))
+        f = lambda r, k: None if r.get(k) in (None, "", "None") else float(r[k])
+        states = [{"time_s": f(r, "time_s"), "leading_edge_x_m": f(r, "leading_edge_x_m"),
+                   "trailing_edge_x_m": f(r, "trailing_edge_x_m"),
+                   "top_gap_cells": f(r, "top_gap_cells"), "bottom_gap_cells": None} for r in rows]
+        ratio = [(s["time_s"], f(r, "q_over_qstart")) for s, r in zip(states, rows)
+                 if f(r, "q_over_qstart") is not None]
+        got = classify(states, ratio, None)
+        ok = got["outcome"] == "entered"
+        bad += not ok
+        last = states[-1]
+        print(f"{'OK ' if ok else 'BAD'} batch 63 dense CSV ({len(states)} writes, last {last['time_s']:.5g} s, "
+              f"LE {last['leading_edge_x_m']*1e6:.1f} um, TE {last['trailing_edge_x_m']*1e6:.1f} um): "
+              f"{got['outcome']} (want entered, not passes)")
+    print(f"self-test: {len(cases) + bool(csv_path) - bad} of {len(cases) + bool(csv_path)} as expected")
+    return 1 if bad else 0
 
 
 if __name__ == "__main__":

@@ -1477,6 +1477,152 @@ def xu_series_refusal(child: dict, series: dict, cohesive_bound: float) -> None:
             f"nu_m2_s): 4 cP, not the main case's 3.5 (red team 05 #1).")
 
 
+# BATCH 68 (design 2026-10-05-case-free-shell-centred-s19b, rev. 3, APPROVED
+# by Alireza 2026-10-05; docket research/investigations/20261005-0010-
+# run042536-b67-s19b-validation/). Each child is its batch-63 parent plus
+# EXACTLY these keys (switches, then run controls), checked on the CONTROLS
+# entries for every build, filtered or not. "_"-prefixed keys are commentary.
+#   fsf_*: S19b blockCoupled (default eliminate) + R3 kelvinVoigt at a
+#     case-specific tau_v (section 2.4) + the centred placement (section
+#     2.1) + 25 ms, the 22/16 h budget and the frame output (section 3);
+#   the OI-48 control pair (section 2.3): the dense parent exactly (resting),
+#     to 2 ms, block and segregated; wall_budget_h 3.0 each so slot 2
+#     (loose <= 16 h, then the pair) stays <= 22 h inside the dense child's;
+#     frames every 0.2 ms and a full write at 2 ms (O1 fixed at the root).
+FSF_RUN_KEYS = {"end_time_s", "wall_budget_h", "write_interval_s",
+                "frame_interval_s", "frame_fields"}
+FSF_PARENT_PAIRS = (
+    ("fsf_G40_klo_v250", "fs_G40_klo_v250",
+     {"momentum_pressure_coupling", "network_viscosity", "tau_v_s",
+      "clot_override"}, FSF_RUN_KEYS),
+    ("fsf_G4_kxu_v250", "fs_G4_kxu_v250",
+     {"momentum_pressure_coupling", "network_viscosity", "tau_v_s",
+      "clot_override"}, FSF_RUN_KEYS),
+    # The pair takes the main children's output plan too (CE ruling on
+    # report 03): frames every 0.2 ms, one full write at endTime 2 ms.
+    ("fsb_G40_klo_rest", "fs_G40_klo_v250", {"momentum_pressure_coupling"},
+     FSF_RUN_KEYS),
+    ("fs_G40_klo_rest_seg", "fs_G40_klo_v250", set(), FSF_RUN_KEYS),
+)
+
+
+def fsf_parent_check(children: dict) -> None:
+    """BATCH 68 design section 6 item 1 on the CONTROLS entries: each child
+    differs from its batch-63 parent only in its named keys, and in each."""
+    for ctl, ref, switches, run in FSF_PARENT_PAIRS:
+        if ctl not in children:
+            continue
+        if ref not in children:
+            raise ValueError(
+                f"FSF parent check: {ctl}'s parent {ref} is missing from "
+                f"the controls.")
+        got = {k for k in _flat_diff(children[ctl], children[ref])
+               if not k.startswith("_")}
+        extra = sorted(got - (switches | run | {"child_id", "expectation"}))
+        if extra:
+            raise ValueError(
+                f"FSF parent check: {ctl} differs from {ref} in "
+                f"{', '.join(extra)} -- beyond its named keys "
+                f"{', '.join(sorted(switches | run))} (BATCH 68 design "
+                f"section 6).")
+        missing = sorted((switches | run) - got)
+        if missing:
+            raise ValueError(
+                f"FSF parent check: {ctl} does not differ from {ref} in its "
+                f"named key {', '.join(missing)}.")
+
+
+# THE FRAME FIELDS (BATCH 68 design section 3; red team 01 changes 3 and 8):
+# a writeObjects function object writes ONLY these between the full writes.
+# Derived from what each reader opens at EVERY written time, not from a list:
+#   q        free_shell_timeseries.py field_states (L433, L438: the clot is
+#            q < 0.5); clog_animation.py L57, L82; assess_case.py
+#            transport_measurement's per-write loop (L4382 clot_geometry ->
+#            phase_c L3868-3874: q, since this solver writes no c after 0/);
+#            render_sweep_animation.py L454 (--g-shade mask) and the q views
+#   p        clog_animation.py L81 (the pressure panel)
+#   U        render_returned_run.sh L166-167 (flowLines, flowVectors)
+#   Vs       render_returned_run.sh L60, L168-169 (Vs, clotLines, clotVectors)
+#   clotDrag render_returned_run.sh L60 (clotDrag view)
+#   poroPerm render_returned_run.sh L60 (poroPerm view)
+#   Gfield   render_returned_run.sh L161, L211 (--g-shade on every view
+#            but clotDrag) -> render_sweep_animation.py L453-454
+#   Us       archive_openfoam_evidence.py L78 (a written time counts only if
+#            it has Us) and L95-97 (the per-write max |Us| tail series)
+# Not per-write: the archive's requested_fields are taken per field where
+# present (archive L138-140); assess_child's final-state reads (L4813-4830)
+# take dirs[-1], which is a FULL write on every stop (endTime is a multiple
+# of write_interval_s, refused below; stopAtClockTime and stopAtFile act
+# writeNow); xu2017_report, occlusion_measurement and tear_measurement are
+# gated to other series (assess_case.py L4796, L4785-4790, L3995).
+FRAME_FIELDS_REQUIRED = {
+    "q": "free_shell_timeseries.py L433/L438; clog_animation.py L57/L82; "
+         "assess_case.py L4382->L3868; render_sweep_animation.py L454",
+    "p": "clog_animation.py L81",
+    "U": "render_returned_run.sh L166-167",
+    "Vs": "render_returned_run.sh L60, L168-169",
+    "clotDrag": "render_returned_run.sh L60",
+    "poroPerm": "render_returned_run.sh L60",
+    "Gfield": "render_returned_run.sh L161, L211",
+    "Us": "archive_openfoam_evidence.py L78, L95-97",
+}
+FRAME_KEYS = ("frame_interval_s", "frame_fields")
+
+
+def _is_multiple(a: float, b: float) -> bool:
+    n = a / b
+    return round(n) >= 1 and abs(n - round(n)) <= 1e-9 * max(1.0, n)
+
+
+def frame_output_refusal(child: dict, series: dict) -> None:
+    """Every way the BATCH 68 frame output could silently lose what a reader
+    needs, or lose the full final write (design section 3, section 6 item 2).
+    Applied to EVERY child: the keys are refused where they would be inert."""
+    cid = child["child_id"]
+    named = [k for k in FRAME_KEYS if k in child]
+    if not named:
+        return
+    if len(named) != len(FRAME_KEYS):
+        raise ValueError(
+            f"{cid}: frame_interval_s and frame_fields go together; "
+            f"{named[0]} alone would be silently inert.")
+    if "wall_budget_h" not in child or not series.get("step1_watcher"):
+        raise ValueError(
+            f"{cid}: the frame function object is written into the "
+            f"wall-budget functions block of a step1_watcher series; here "
+            f"frame_interval_s would be silently inert.")
+    fields = child["frame_fields"]
+    if not isinstance(fields, list) or not all(isinstance(f, str) for f in fields) \
+            or len(set(fields)) != len(fields):
+        raise ValueError(f"{cid}: frame_fields must be a list of distinct field names.")
+    missing = [f for f in FRAME_FIELDS_REQUIRED if f not in fields]
+    if missing:
+        raise ValueError(
+            f"{cid}: frame_fields lacks {', '.join(missing)}, which "
+            + "; ".join(f"{f} is read at every write by {FRAME_FIELDS_REQUIRED[f]}"
+                        for f in missing)
+            + " (BATCH 68 design section 3).")
+    fi = child["frame_interval_s"]
+    wi = child.get("write_interval_s", series["write_interval_s"])
+    end = child.get("end_time_s", series["end_time_s"])
+    if isinstance(fi, bool) or not isinstance(fi, (int, float)) or not fi > 0:
+        raise ValueError(f"{cid}: frame_interval_s must be a positive number of seconds.")
+    if not _is_multiple(wi, fi):
+        raise ValueError(
+            f"{cid}: write_interval_s {wi} is not a whole number of frames "
+            f"({fi}); every full write must also be a frame time.")
+    # THE FULL FINAL WRITE AT endTime. OF-13 writes at a step only when
+    # writeTime_ is set (Time.C L1199-1210, adjustableRunTime: the write
+    # index advances) or on a writeNow stop (L1252-1255); reaching endTime
+    # sets neither (L1245-1260), so an endTime that is not a whole number of
+    # write intervals ends on a FRAME-ONLY directory and every final-state
+    # read comes back empty.
+    if not _is_multiple(end, wi):
+        raise ValueError(
+            f"{cid}: end_time_s {end} is not a whole number of write "
+            f"intervals ({wi}); the run would end without a full write.")
+
+
 FREE_SHELL_SERIES = ("throat_free_shell",)
 
 
@@ -1511,16 +1657,27 @@ def free_shell_series_refusal(child: dict, series: dict) -> None:
             f"{cid}: core_shell must be false; a free shell fragment has no "
             f"core (design S3: 'core_shell false')."
         )
-    clot = series.get("clot_override", {})
+    # The clot the case is BUILT with: the series' override, then the
+    # child's (the same merge, in the same order, as the geometry stage).
+    clot = {k: v for k, v in series.get("clot_override", {}).items()
+            if not k.startswith("_")}
+    clot.update({k: v for k, v in child.get("clot_override", {}).items()
+                 if not k.startswith("_")})
     if clot.get("shape") != "disc":
         raise ValueError(f"{cid}: the free-shell clot is the disc shape.")
     if clot.get("core_radius_m") is not None:
         raise ValueError(f"{cid}: a disc must not declare core_radius_m.")
-    if not clot.get("rests_on_wall"):
+    # THE TWO-WALL GAP RULE (design 2026-10-05-case-free-shell-centred-s19b
+    # rev. 3, section 2.1; red team 01 change 9) replaces the refusal of
+    # rests_on_wall false. The placement must be DECLARED either way: true
+    # is P1 (a zero bottom gap, and only that); false is a free disc held to
+    # the 3-epsilonC floor at BOTH walls -- the true distance to the curved
+    # top wall and the bottom gap -- by the disc branch of the geometry
+    # stage, which refuses either gap below 3.0 interface widths.
+    if not isinstance(clot.get("rests_on_wall"), bool):
         raise ValueError(
-            f"{cid}: this series' only built placement (P1) rests on the "
-            f"bottom wall; rests_on_wall must be declared true."
-        )
+            f"{cid}: rests_on_wall must be declared true (P1, resting on the "
+            f"bottom wall) or false (free, >= 3 epsilonC from both walls).")
     if series.get("growth") is not False:
         raise ValueError(
             f"{cid}: growth must be false; a detached embolus fragment does "
@@ -2232,6 +2389,7 @@ def main() -> int:
             xu_series_refusal(child, spec, cohesive_bound)
         if child["series"] in FREE_SHELL_SERIES:
             free_shell_series_refusal(child, spec)
+        frame_output_refusal(child, spec)
         # S16 values first: a misspelt S16 value must not surface as some
         # other stage's missing prerequisite.
         s16_value_refusal(child)
@@ -4721,6 +4879,33 @@ def main() -> int:
                     f"{probe_lines}\n        );\n"
                     "    }\n"
                 )
+            # THE FRAMES (BATCH 68 design section 3): between the full
+            # writes, OF-13's writeObjects (src/functionObjects/utilities/
+            # writeObjects, in libutilityFunctionObjects: Make/files L15,
+            # L19) writes ONLY the reader-derived fields (FRAME_FIELDS_
+            # REQUIRED, refused offline if any is missing). writeOption
+            # autoWrite: an object is written only if the solver itself
+            # writes it (writeObjects.C L69-76), and at a full write time it
+            # is left to the full write (L93-98), so no field is written
+            # twice. A non-write time gets its uniform/time from
+            # writeObjectsBase::write. adjustableRunTime: the frame times
+            # enter Time::adjustDeltaT through functionObjects_.
+            # timeToNextAction() (Time.C L72-80), as batch 63's 0.2 ms
+            # writeInterval did, so the dt sequence is that of a 0.2 ms
+            # writer. Only for a child that declares the keys, so every
+            # earlier controlDict is byte-identical.
+            if "frame_interval_s" in child:
+                functions_body += (
+                    "    frames\n    {\n"
+                    "        type            writeObjects;\n"
+                    "        libs            (\"libutilityFunctionObjects.so\");\n"
+                    "        objects         ("
+                    + " ".join(child["frame_fields"]) + ");\n"
+                    "        writeOption     autoWrite;\n"
+                    "        writeControl    adjustableRunTime;\n"
+                    f"        writeInterval   {float(child['frame_interval_s']):.16g};\n"
+                    "    }\n"
+                )
             control.write_text(
                 ctl_text.rstrip("\n")
                 + "\n\nfunctions\n{\n" + functions_body + "}\n")
@@ -5597,7 +5782,14 @@ def main() -> int:
               # S18p, batch 62 (design section 4): em78 with em79, then em80
               # with em81, at CONCURRENCY 2.
               "em78_G4_s18p_ctl": 21, "em79_G4_s18p_Cnp": 22,
-              "em80_G4_s18p_Afz": 23, "em81_G4_s18p_Esh": 24}
+              "em80_G4_s18p_Afz": 23, "em81_G4_s18p_Esh": 24,
+              # BATCH 68 (design 2026-10-05 rev. 3, section 2.1): dense
+              # first, then loose, then the OI-48 control pair, so at
+              # CONCURRENCY 2 slot 2 runs loose then the pair. After every
+              # earlier throat_free_shell child (all 0), whose order is
+              # unchanged.
+              "fsf_G40_klo_v250": 1, "fsf_G4_kxu_v250": 2,
+              "fsb_G40_klo_rest": 3, "fs_G40_klo_rest_seg": 4}
     # S17 (design section 6): the mechanical control check, before anything
     # is ordered for launch. The controls-entry half runs for every pair; the
     # child.json half for the pairs whose control is built in this run
@@ -5615,6 +5807,7 @@ def main() -> int:
     s18p_parent_check({c["child_id"]: c for c in controls["children"]})
     fsp_parent_check({c["child_id"]: c for c in controls["children"]})
     s19_parent_check({c["child_id"]: c for c in controls["children"]})
+    fsf_parent_check({c["child_id"]: c for c in controls["children"]})
     # Xu (design section 1): each child is em76 but for the design's keys.
     xu_parent_check({c["child_id"]: c for c in controls["children"]})
     matrix.sort(key=lambda s: (order[s["series"]],

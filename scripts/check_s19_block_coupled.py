@@ -351,6 +351,32 @@ def assessor_gates() -> int:
                   + ", ".join(f"{g} {v}" for g, v in got.items()) + f" (must flip only {gate})")
             if not ok:
                 status = 1
+        # BATCH 68 (CE ruling on docket 20261005-0010 report 03): under R3 the
+        # config echo's networkViscosityTau must match the child's tau_v_s
+        # (relative 1e-9). A tau off by 1e-6 relative flips ONLY the config
+        # check; every gate (and G8r, D1) stays True.
+        tau = 5.0e-4
+        spec_r3 = {"s19": {"momentumPressureCoupling": "blockCoupled",
+                           "networkViscosity": "kelvinVoigt", "networkViscosityTau": tau}}
+        def r3_log(echo_tau: float) -> str:
+            text = s19_log().replace(
+                "networkViscosity=none ",
+                f"networkViscosity=kelvinVoigt networkViscosityTau={echo_tau!r} ")
+            return re.sub(r"^(PHASE_CLOT_S19 .*)$", r"\1 r3Power=-3.2e-16 r3Max=1.1e-3",
+                          text, flags=re.M)
+        gates_r3 = S19_GATES + ("d1", "g8r")
+        for name, echo, want_cfg in (("R3 healthy, tau echoed exactly", tau, True),
+                                     ("R3 tau off by 1e-6 relative", tau * (1 + 1e-6), False)):
+            m = a.s19_report(r3_log(echo), spec_r3, case)
+            got = {g: m[g] for g in gates_r3}
+            ok = (m["config_matches_child"] is want_cfg and m["config_tau_matches"] is want_cfg
+                  and all(v is True for v in got.values()))
+            print(f"{'OK  ' if ok else 'FAIL'} assessor '{name}' -> config_matches_child "
+                  f"{m['config_matches_child']}, config_tau_matches {m['config_tau_matches']}, "
+                  + ", ".join(f"{g} {v}" for g, v in got.items())
+                  + f" (config must be {want_cfg}; gates True)")
+            if not ok:
+                status = 1
     return status
 
 

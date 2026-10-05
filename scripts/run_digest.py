@@ -106,7 +106,8 @@ def digest_run(run):
     rr = glob.glob(os.path.join(run, "artifacts", "*", "runner_result.json"))
     if rr:
         r = json.loads(read(rr[0]))
-        out["runner"] = {k: r.get(k) for k in ("package_sha256", "verdict", "series_filter",
+        out["runner"] = {k: r.get(k) for k in ("package_sha256", "source", "tag", "repo_digest",
+                                               "repo_digest_recomputed", "verdict", "series_filter",
                                                "compile_exit_code", "runner_exit_code")}
     for case in sorted(glob.glob(os.path.join(run, "case-after-run-*"))):
         if not os.path.isdir(case):
@@ -128,10 +129,21 @@ def digest_run(run):
     return out
 
 
+def source_line(r):
+    """L1: where the code came from. A github package's sha is built in the
+    notebook and is no release id; the tag and the recomputed digest are."""
+    if r.get("source") != "github":
+        return f"{r.get('source') or 'zip (no source recorded)'}  package {r.get('package_sha256')}"
+    d, rc = r.get("repo_digest"), r.get("repo_digest_recomputed")
+    return (f"github  tag {r.get('tag')}  repo_digest {d}  recomputed {rc}  "
+            + ("MATCH" if d and d == rc else "MISMATCH"))
+
+
 def show(dg):
     r = dg.get("runner", {})
     print(f"RUN {dg['run']}  package {str(r.get('package_sha256'))[:12]}  verdict {r.get('verdict')}  "
           f"compile {r.get('compile_exit_code')}  filter: {r.get('series_filter')}")
+    print(f"SOURCE {source_line(r)}")
     for c in dg["cases"]:
         print(f"CASE {c['case']}  assessor admissible {c['admissible']}")
         for f in c["children"]:
