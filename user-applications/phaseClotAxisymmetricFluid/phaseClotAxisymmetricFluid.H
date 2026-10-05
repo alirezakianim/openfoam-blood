@@ -1272,6 +1272,12 @@ class phaseClotAxisymmetricFluid
         word momentumPressureCoupling_;
         word networkViscosity_;
         scalar networkViscosityTau_;
+        //  S19b (research/designs/2026-10-04-S19b-lumen-elimination.md rev.
+        //  2, APPROVED 2026-10-04, section 2.6): blockCoupledLumen
+        //  "eliminate" (the default: a lumen cell's Vs is not an unknown,
+        //  Vs = U there) or "identityRows" (S19a's system exactly: the
+        //  lumen identity rows Vs - U = 0). Read only under blockCoupled.
+        word blockCoupledLumen_;
 
     //- phi_s and phi_f, held as REGISTERED fields rather than recomputed as
     //  temporaries at each use. This is not tidiness: fvm::ddt(rho, vf) reads

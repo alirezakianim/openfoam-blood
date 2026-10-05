@@ -2544,6 +2544,27 @@ S19_LINRES_MAX = 1e-10     # G6: linRes and linResScaled, every step
 # APPROVED 2026-10-04), section 4: G6 extended to linResScaled, and G9.
 S19_NUMERIC_PEAK_GB_MAX = 1.0   # G9: numericPeakGB (UMFPACK peak, GB), every step
 S19_TNUMERIC_MAX = 5.0          # G9: tNumeric (numeric factorisation, s), every step
+# S19b (research/designs/2026-10-04-S19b-lumen-elimination.md rev. 2, APPROVED
+# 2026-10-04), section 4: C1 and D1 compare n with 5 x nCells, nCells read
+# from the case's own mesh (the constant/polyMesh/owner header note), never
+# from the record they judge.
+
+
+def s19b_mesh_cells(case: Path | None) -> int | None:
+    """nCells from constant/polyMesh/owner's header note ("... nCells: N
+    ..."), plain or gzipped; None if the case or the note is absent."""
+    if case is None:
+        return None
+    import gzip
+    base = case / "constant" / "polyMesh"
+    for name, opener in (("owner", open), ("owner.gz", gzip.open)):
+        f = base / name
+        if f.is_file():
+            with opener(f, "rb") as fh:
+                head = fh.read(4096).decode("latin-1")
+            m = re.search(r"nCells:\s*(\d+)", head)
+            return int(m.group(1)) if m else None
+    return None
 
 
 def s19_report(text: str, spec: dict | None = None, case: Path | None = None) -> dict:
@@ -2560,7 +2581,16 @@ def s19_report(text: str, spec: dict | None = None, case: Path | None = None) ->
     - G7: kMatch = 0 and kresMatch = 0 exactly, every step;
     - G8r (networkViscosity kelvinVoigt only): r3Power <= 0 every step;
     - G9 (S19a section 4, the factor's memory and cost): numericPeakGB <= 1.0
-      AND tNumeric <= 5.0 s every step; a missing field fails (read as inf).
+      AND tNumeric <= 5.0 s every step; a missing field fails (read as inf);
+    - S19b section 4, C1 (blockCoupledLumen identityRows children; the control
+      is the control): the config echoes blockCoupledLumen=identityRows and
+      every record has lumenIdentityRows > 0 and n = 5 x nCells;
+    - S19b section 4, D1 (blockCoupled children without the key: the default
+      is engaged): the config echoes blockCoupledLumen=eliminate and every
+      record has lumenEliminated > 0, lumenIdentityRows = 0 and n < 5 x
+      nCells. C1 and D1 read nCells from the case mesh (None without it; a
+      missing field fails). E1 (fsb_k13 against fsb_k13_id) is scored
+      offline by scripts/s19b_e1_score.py from uMax/vsMax/pMax.
     Watches (not gated): bodySlipRms, symbolicCount, tSolve, rcond, r3Max,
     etaN; S19a: noffdiag (max; expected 0), rowSumMin (min), rowSumMax (max),
     n and nnz of the last record (each over the records that carry the field;
@@ -2630,6 +2660,25 @@ def s19_report(text: str, spec: dict | None = None, case: Path | None = None) ->
     out["first_flux_mismatch"] = bad_flux[:1]
     out["g4"] = (None if not rows or not q0 or not logged else
                  bool(len(cr) == len(rows) and max(cr) <= S19_CONTRES_MAX and not bad_flux))
+    # S19b section 4: C1 on the identityRows control, D1 on the default.
+    lumen = str(want.get("blockCoupledLumen", "eliminate")) if block else None
+    out["lumen_expected"] = lumen
+    try:
+        n_cells = s19b_mesh_cells(case)
+    except Exception as exc:  # the report says why rather than guessing
+        n_cells = None
+        out["n_cells_source_error"] = repr(exc)
+    out["n_cells"] = n_cells
+    cfg_lumen = (out["config"] or {}).get("blockCoupledLumen")
+    out["config_lumen"] = cfg_lumen
+    out["c1"] = (None if lumen != "identityRows" or not rows or n_cells is None else
+                 bool(cfg_lumen == "identityRows" and all(
+                     r.get("lumenIdentityRows", 0.0) > 0 and r.get("n") == 5*n_cells
+                     for r in rows)))
+    out["d1"] = (None if lumen != "eliminate" or not rows or n_cells is None else
+                 bool(cfg_lumen == "eliminate" and all(
+                     r.get("lumenEliminated", 0.0) > 0 and r.get("lumenIdentityRows") == 0.0
+                     and r.get("n", math.inf) < 5*n_cells for r in rows)))
     out["r3_power_max"] = max((r.get("r3Power", math.inf) for r in rows), default=None) if r3 else None
     out["g8r"] = (None if not r3 or not rows else
                   all(r.get("r3Power", math.inf) <= 0.0 for r in rows))
@@ -2639,6 +2688,7 @@ def s19_report(text: str, spec: dict | None = None, case: Path | None = None) ->
         "t_solve_max": max((r.get("tSolve", 0.0) for r in rows), default=None),
         "rcond_min": min((r.get("rcond", math.inf) for r in rows), default=None),
         "lumen_identity_rows_last": rows[-1].get("lumenIdentityRows") if rows else None,
+        "lumen_eliminated_last": rows[-1].get("lumenEliminated") if rows else None,
         "r3_max_max": max((r.get("r3Max", 0.0) for r in rows), default=None) if r3 else None,
         "eta_n": rows[-1].get("etaN") if (rows and r3) else None,
         "noffdiag_max": max((r["noffdiag"] for r in rows if "noffdiag" in r), default=None),

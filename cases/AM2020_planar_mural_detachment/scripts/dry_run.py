@@ -904,6 +904,22 @@ S19_REFUSALS = (
     ("fsb_k13 drifting from fsp_k13",
      lambda c: _s16(c, "fsb_k13", k0p_m2=2e-13),
      "S19 parent check: fsb_k13 differs from fsp_k13 in k0p_m2"),
+    # S19b (2026-10-04; design 2026-10-04-S19b-lumen-elimination rev. 2,
+    # APPROVED): one negative per new refusal, each run once, directly
+    # (docket 20261004-1803 report 03).
+    ("a misspelt block_coupled_lumen",
+     lambda c: _s16(c, "fsb_k13_id", block_coupled_lumen="elim"),
+     "block_coupled_lumen 'elim' is not one of eliminate, identityRows."),
+    ("block_coupled_lumen under segregated (silently inert)",
+     lambda c: _s16(c, "fsb_off", block_coupled_lumen="identityRows"),
+     "block_coupled_lumen is read only under momentum_pressure_coupling blockCoupled"),
+    ("fsb_k13_id drifting from fsb_k13",
+     lambda c: _s16(c, "fsb_k13_id", k0p_m2=2e-13),
+     "S19 parent check: fsb_k13_id differs from fsb_k13 in k0p_m2"),
+    ("fsb_k13_id without its named key",
+     lambda c: _s16(c, "fsb_k13_id", block_coupled_lumen=None),
+     "S19 parent check: fsb_k13_id does not differ from fsb_k13 in its named key "
+     "block_coupled_lumen"),
 )
 
 

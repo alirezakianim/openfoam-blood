@@ -133,16 +133,29 @@ def filtered_archive(source: Path, root: Path) -> str:
     return json.dumps(registry, indent=1) + "\n"
 
 
-def copy_from_workspace(workspace: Path, files: list[str], prune: bool) -> None:
+def write_repo_form(workspace: Path, files: list[str], root: Path) -> None:
+    """Write every manifest file under root in the form the repo holds it:
+    byte copies, except ARCHIVE, which is filtered against root and so is
+    written LAST, after every file it may name is in place.
+
+    This is the repo-form transform, and the only one: the sync writes the
+    repo with it, and the main-case build exports it (--export-repo-form)
+    to compute the notebook's EXPECTED_REPO_DIGEST (design 2026-10-05-L1,
+    change 2), so the pinned digest is the digest of what a clone holds."""
     for rel in files:
-        src, dst = workspace / rel, REPO / rel
-        if not src.is_file():
+        if not (workspace / rel).is_file():
             raise SystemExit(f"manifest names a file the workspace lacks: {rel}")
+    for rel in [f for f in files if f != ARCHIVE] + [f for f in files if f == ARCHIVE]:
+        src, dst = workspace / rel, root / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
         if rel == ARCHIVE:
-            dst.write_text(filtered_archive(src, REPO))
+            dst.write_text(filtered_archive(src, root))
         else:
             shutil.copy2(src, dst)
+
+
+def copy_from_workspace(workspace: Path, files: list[str], prune: bool) -> None:
+    write_repo_form(workspace, files, REPO)
     managed = ("cases", "user-applications", "scripts", "notebooks")
     keep = set(files)
     orphans = []
@@ -246,8 +259,19 @@ def main() -> int:
     ap.add_argument("--prune", action="store_true", help="delete repo files not in the manifest")
     ap.add_argument("--slow", action="store_true", help="also run the slow mutation checks")
     ap.add_argument("--dry-run", action="store_true", help="also run the main case's dry_run.py (hours)")
+    ap.add_argument("--export-repo-form", type=Path, metavar="DIR",
+                    help="write the manifest files in repo form into the EMPTY directory DIR "
+                         "and exit: no copy into the repo, no clean room")
     a = ap.parse_args()
     files = read_manifest()
+    if a.export_repo_form:
+        if not a.workspace:
+            raise SystemExit("--export-repo-form needs --workspace (or OFB_WORKSPACE)")
+        if a.export_repo_form.exists() and any(a.export_repo_form.iterdir()):
+            raise SystemExit(f"--export-repo-form: {a.export_repo_form} is not empty")
+        write_repo_form(Path(a.workspace), files, a.export_repo_form)
+        print(f"exported {len(files)} files in repo form to {a.export_repo_form}")
+        return 0
     if not a.check_only:
         if not a.workspace:
             raise SystemExit("--workspace (or OFB_WORKSPACE) is required unless --check-only")

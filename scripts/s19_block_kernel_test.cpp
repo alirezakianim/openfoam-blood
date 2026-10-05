@@ -44,10 +44,29 @@
 //       within x3 of the peak RSS, factor + solve <= 10 s, both residuals
 //       <= 1e-12; G6 fails (> 1e-10, both norms) on a 1e-6 error in any one
 //       class and passes on the exact solve. Run only when all else passed.
+//
+// S19b (research/designs/2026-10-04-S19b-lumen-elimination.md rev. 2,
+// APPROVED by Alireza 2026-10-04, section 3). K1-K13 run identityRows (the
+// Coeffs default, eliminateLumen false); K12 and K13 are PINNED to it (F6)
+// and say so. G6's perturbation test is kept for identityRows and rewritten
+// for eliminate, which has no lumen-Vs class (K13-G6e).
+//   K14 under identityRows the Layout is the identity map, and the CSR
+//       arrays, right-hand side and solution are BYTE-IDENTICAL to S19a's
+//       own kernel (s19a_block_kernel_reference.H) on K12's and K13's
+//       systems (K13's R3 variant included)
+//   K15 a full-size K13-type system (and its R3 variant) in which every
+//       remapped class is asserted NONZERO first (lumen drag, upVs/loVs
+//       across skeleton-lumen faces, R3 interface terms, p-row lumen-Vs
+//       references, an open boundary face on a lumen cell); eliminate then
+//       equals identityRows to max|d|/max|x| <= 1e-12 for U, p, skeleton Vs
+//       and lumen Vs (= U), and the eliminated matrix factors in BOTH
+//       orientations with NOFF_DIAG 0. Run only when all else passed.
 #include "blockCoupledKernel.H"
+#include "s19a_block_kernel_reference.H"
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <random>
 
 #include <sys/resource.h>
@@ -525,8 +544,8 @@ int main()
     Coeffs c = makeCoeffs(g, rng, 0.3);
     Ref R = reference(m, c);
     std::vector<GradRow> G = gaussGradRows(m, c); std::vector<LsqRow> L;
-    Csr A; Vec b0;
-    assemble(m, c, G, L, A, b0);
+    Csr A; Vec b0; Layout lay;
+    assemble(m, c, G, L, A, b0, lay);
     {
         Vec xs(5*N); for (auto& v : xs) v = Upm(rng);
         Vec bs = mv(R.A, xs);
@@ -629,8 +648,8 @@ int main()
         Coeffs ca = cr; for (int P = 0; P < N; ++P) ca.isSkel[P] = 1;
         for (std::size_t f = 0; f < ca.nu3w.size(); ++f) ca.nu3w[f] = 0.2 + 0.6*U01(rng);
         Coeffs cb = ca; cb.r3 = false;
-        Csr Aa, Ab; Vec ba, bb; std::vector<GradRow> Ga = gaussGradRows(m, ca);
-        assemble(m, ca, Ga, Lq, Aa, ba); assemble(m, cb, Ga, Lq, Ab, bb);
+        Csr Aa, Ab; Vec ba, bb; std::vector<GradRow> Ga = gaussGradRows(m, ca); Layout la, lb;
+        assemble(m, ca, Ga, Lq, Aa, ba, la); assemble(m, cb, Ga, Lq, Ab, bb, lb);
         Vec x(5*N); for (auto& v : x) v = Upm(rng);
         auto apply = [&](const Csr& M, const Vec& v) { Vec y(M.n, 0.0); for (int r = 0; r < M.n; ++r) for (int j = M.p[r]; j < M.p[r + 1]; ++j) y[r] += M.x[j]*v[M.i[j]]; return y; };
         Vec ya = apply(Aa, x), yb = apply(Ab, x), vx(N), vy(N), fx, fy;
@@ -732,8 +751,8 @@ int main()
         solveStep(mp, cp, 2, x0, lu, s);
         int recip = -1; Vec Rs;
         const int gst = lu.rowScale(Rs, recip);
-        std::vector<GradRow> Gp = gaussGradRows(mp, cp); std::vector<LsqRow> Lp; Csr Ap; Vec bp;
-        assemble(mp, cp, Gp, Lp, Ap, bp);
+        std::vector<GradRow> Gp = gaussGradRows(mp, cp); std::vector<LsqRow> Lp; Csr Ap; Vec bp; Layout lp;
+        assemble(mp, cp, Gp, Lp, Ap, bp, lp);
         double lo = 0, hi = 0;
         for (int r = 0; gst == UMFPACK_OK && r < Ap.n; ++r)
         {
@@ -743,8 +762,10 @@ int main()
             hi = r == 0 ? ra : std::max(hi, ra);
         }
         const double spread = (gst == UMFPACK_OK && lo > 0) ? hi/lo : 1e300;
-        std::printf("K12 block: n %d nnz %d identity rows %d | A row abs-sum min %.3e max %.3e | do_recip %d | R.A row abs-sum min %.3e max %.3e | noffdiag %g | numericPeakGB %.4f\n",
-                    s.n, s.nnz, s.nIdentity, s.rowSumMin, s.rowSumMax, recip, lo, hi, s.noffdiag, s.numericPeakGB);
+        std::printf("K12 block: n %d nnz %d identity rows %d eliminated %d | A row abs-sum min %.3e max %.3e | do_recip %d | R.A row abs-sum min %.3e max %.3e | noffdiag %g | numericPeakGB %.4f\n",
+                    s.n, s.nnz, s.nIdentity, s.nEliminated, s.rowSumMin, s.rowSumMax, recip, lo, hi, s.noffdiag, s.numericPeakGB);
+        check(!cp.eliminateLumen && s.nIdentity > 0 && s.nEliminated == 0 && s.n == 5*Np, "K12",
+              "pinned to identityRows (S19b F6): identity rows > 0, none eliminated, n = 5N", double(s.nEliminated));
         check(s.status == UMFPACK_OK, "K12", "status OK", double(s.status));
         check(spread <= 10, "K12", "row abs-sums of R.A on A's CSR rows within a factor 10", spread);
         check(s.noffdiag == 0, "K12", "NOFF_DIAG == 0", s.noffdiag);
@@ -781,10 +802,12 @@ int main()
             UmfpackLU lu; Step s;
             solveStep(mf, cv, 2, x0, lu, s);
             const double rss = maxRssGB(), tAll = s.tSym + s.tNum + s.tSolve;
-            std::printf("%s block: n %d nnz %d identity rows %d | A row abs-sum min %.3e max %.3e | strategy %g ordering %g | lunz %.4g (estimate %.4g) | numericPeakGB %.4f (estimate %.3f) | peak RSS %.3f GB | noffdiag %g | tSym %.2f tNum %.2f tSolve %.2f s | rcond %.3g\n",
-                        tag, s.n, s.nnz, s.nIdentity, s.rowSumMin, s.rowSumMax, s.strategyUsed, s.orderingUsed,
+            std::printf("%s block: n %d nnz %d identity rows %d eliminated %d | A row abs-sum min %.3e max %.3e | strategy %g ordering %g | lunz %.4g (estimate %.4g) | numericPeakGB %.4f (estimate %.3f) | peak RSS %.3f GB | noffdiag %g | tSym %.2f tNum %.2f tSolve %.2f s | rcond %.3g\n",
+                        tag, s.n, s.nnz, s.nIdentity, s.nEliminated, s.rowSumMin, s.rowSumMax, s.strategyUsed, s.orderingUsed,
                         s.lunz, s.lunzEstimate, s.numericPeakGB, s.peakMemoryEstimateGB, rss, s.noffdiag,
                         s.tSym, s.tNum, s.tSolve, s.rcond);
+            check(!cv.eliminateLumen && s.nIdentity > 0 && s.nEliminated == 0 && s.n == 5*Nf, tag,
+                  "pinned to identityRows (S19b F6): identity rows > 0, none eliminated, n = 5N", double(s.nEliminated));
             check(s.status == UMFPACK_OK, tag, "factor and solve status OK", double(s.status));
             check(s.noffdiag == 0, tag, "NOFF_DIAG == 0", s.noffdiag);
             check(s.numericPeakGB > 0 && s.numericPeakGB <= 1.0, tag, "numericPeakGB <= 1 GB", s.numericPeakGB);
@@ -800,8 +823,8 @@ int main()
         {
             UmfpackLU lu; Step s;
             solveStep(mf, cf, 0, x0, lu, s);
-            std::vector<GradRow> Gf = gaussGradRows(mf, cf); std::vector<LsqRow> Lf; Csr Af; Vec bf;
-            assemble(mf, cf, Gf, Lf, Af, bf);
+            std::vector<GradRow> Gf = gaussGradRows(mf, cf); std::vector<LsqRow> Lf; Csr Af; Vec bf; Layout lf;
+            assemble(mf, cf, Gf, Lf, Af, bf, lf);
             double rn, bn, rsn, bsn;
             residualNorms(Af, s.x, bf, rn, bn); scaledResidualNorms(Af, s.x, bf, rsn, bsn);
             check(s.status == UMFPACK_OK && rn/bn <= 1e-12 && rsn/bsn <= 1e-12, "K13-G6",
@@ -828,6 +851,204 @@ int main()
                           skel ? "a 1e-6 error in one skeleton class fails G6 in both norms (the smaller)"
                                : "a 1e-6 error in one lumen class fails G6 in both norms (the smaller)",
                           std::min(rn/bn, rsn/bsn));
+                }
+            }
+        }
+        // S19b F6: G6 under eliminate, on the compressed system and its
+        // unknowns; there is no lumen-Vs class (Vs = U is not an unknown).
+        {
+            Coeffs ce = cf; ce.eliminateLumen = true;
+            UmfpackLU lu; Step s;
+            solveStep(mf, ce, 0, x0, lu, s);
+            std::vector<GradRow> Gf = gaussGradRows(mf, ce); std::vector<LsqRow> Lf; Csr Af; Vec bf; Layout lf;
+            assemble(mf, ce, Gf, Lf, Af, bf, lf);
+            Vec xc(lf.n, 0.0);
+            for (int i = 0; s.status == UMFPACK_OK && i < lf.nFull; ++i) if (lf.row[i] >= 0) xc[lf.row[i]] = s.x[i];
+            double rn, bn, rsn, bsn;
+            residualNorms(Af, xc, bf, rn, bn); scaledResidualNorms(Af, xc, bf, rsn, bsn);
+            check(s.status == UMFPACK_OK && lf.n < 5*Nf && rn/bn <= 1e-12 && rsn/bsn <= 1e-12, "K13-G6e",
+                  "eliminate, the exact solve: linRes and linResScaled <= 1e-12 (the larger)", std::max(rn/bn, rsn/bsn));
+            const int k0[3] = {0, 2, 4}, k1[3] = {1, 3, 4};
+            const char* cls[3] = {"U", "Vs", "p"};
+            for (int q = 0; q < 3; ++q)
+            {
+                for (int skel = 0; skel < 2; ++skel)
+                {
+                    if (q == 1 && !skel) continue;   // no lumen-Vs unknowns under eliminate
+                    std::vector<int> at;
+                    for (int P = 0; P < Nf; ++P)
+                    {
+                        if (ce.isSkel[P] != skel) continue;
+                        for (int k = k0[q]; k <= k1[q]; ++k) at.push_back(lf.row[idx(P, k)]);
+                    }
+                    double sc = 0; for (int i : at) sc = std::max(sc, std::fabs(xc[i]));
+                    Vec xe = xc;
+                    for (std::size_t t = 0; t < at.size(); ++t) xe[at[t]] += 1e-6*sc*std::cos(double(t));
+                    residualNorms(Af, xe, bf, rn, bn); scaledResidualNorms(Af, xe, bf, rsn, bsn);
+                    std::printf("K13-G6e perturb %s in %s cells by 1e-6 x max: linRes %.3e linResScaled %.3e\n",
+                                cls[q], skel ? "skeleton" : "lumen", rn/bn, rsn/bsn);
+                    check(rn/bn > 1e-10 && rsn/bsn > 1e-10, "K13-G6e",
+                          skel ? "eliminate: a 1e-6 error in one skeleton class fails G6 in both norms (the smaller)"
+                               : "eliminate: a 1e-6 error in one lumen class fails G6 in both norms (the smaller)",
+                          std::min(rn/bn, rsn/bsn));
+                }
+            }
+        }
+
+        // ---------------- K14 (S19b): identityRows is S19a, byte for byte ----------------
+        {
+            Geo gp = makeMesh(12, 8, 0.3, 1.3);
+            scaleGeo(gp, 12*4.5e-6, 5e-9);
+            std::mt19937 rp(1912);
+            const Coeffs cp = makeProdCoeffs(gp, rp, 2);
+            Vec xp0(5*gp.m.nCells, 0.0);
+            for (int P = 0; P < gp.m.nCells; ++P) { xp0[idx(P, 0)] = xp0[idx(P, 2)] = 0.05*Upm(rp); }
+            struct Sys { const char* name; const Mesh* m; Coeffs c; const Vec* x0; };
+            const Sys sys[3] = {{"K12", &gp.m, cp, &xp0}, {"K13", &mf, cf, &x0}, {"K13-R3", &mf, withR3(mf, cf), &x0}};
+            for (const Sys& y : sys)
+            {
+                const Mesh& mm = *y.m; const int Nm = mm.nCells;
+                std::vector<LsqRow> Ly; if (y.c.r3) lsqRows(mm, Ly);
+                const std::vector<GradRow> Gy = gaussGradRows(mm, y.c);
+                Csr An; Vec bn; Layout ly;
+                assemble(mm, y.c, Gy, Ly, An, bn, ly);
+                bool ident = !ly.eliminate && ly.n == 5*Nm && ly.nFull == 5*Nm && ly.nEliminated == 0;
+                for (int i = 0; ident && i < ly.nFull; ++i) ident = ly.row[i] == i && ly.col[i] == i;
+                char what[160];
+                std::snprintf(what, sizeof what, "%s: under identityRows the Layout is the identity map", y.name);
+                check(ident, "K14", what, double(ly.n - 5*Nm));
+                blockCoupledS19a::Csr Ao; Vec bo;
+                // The S19a kernel takes its own types: copy the inputs field by field.
+                blockCoupledS19a::Mesh mo;
+                mo.nCells = mm.nCells; mo.V = mm.V; mo.Cx = mm.Cx; mo.Cy = mm.Cy; mo.own = mm.own; mo.nei = mm.nei;
+                mo.Sx = mm.Sx; mo.Sy = mm.Sy; mo.magS = mm.magS; mo.w = mm.w; mo.ndc = mm.ndc; mo.kx = mm.kx; mo.ky = mm.ky;
+                mo.bCell = mm.bCell; mo.bSx = mm.bSx; mo.bSy = mm.bSy; mo.bMagS = mm.bMagS; mo.bOpen = mm.bOpen;
+                blockCoupledS19a::Coeffs co;
+                for (int k = 0; k < 2; ++k) { co.dU[k] = y.c.dU[k]; co.sU[k] = y.c.sU[k]; co.dVs[k] = y.c.dVs[k]; co.sVs[k] = y.c.sVs[k]; }
+                co.upU = y.c.upU; co.loU = y.c.loU; co.upVs = y.c.upVs; co.loVs = y.c.loVs;
+                co.K = y.c.K; co.Kres = y.c.Kres; co.phiF = y.c.phiF; co.phiS = y.c.phiS;
+                co.FelX = y.c.FelX; co.FelY = y.c.FelY; co.isSkel = y.c.isSkel;
+                co.phiFf = y.c.phiFf; co.phiSf = y.c.phiSf; co.rAf = y.c.rAf; co.cEf = y.c.cEf; co.fSigE = y.c.fSigE;
+                co.bPhiF = y.c.bPhiF; co.bPhiS = y.c.bPhiS; co.bRAf = y.c.bRAf; co.bCE = y.c.bCE; co.bFSigE = y.c.bFSigE;
+                co.bWallFlux = y.c.bWallFlux; co.pvIC = y.c.pvIC; co.pvBC = y.c.pvBC; co.pgIC = y.c.pgIC; co.pgBC = y.c.pgBC;
+                co.r3 = y.c.r3; co.nu3w = y.c.nu3w; co.bNu3w = y.c.bNu3w;
+                std::vector<blockCoupledS19a::LsqRow> Lo; if (co.r3) blockCoupledS19a::lsqRows(mo, Lo);
+                blockCoupledS19a::assemble(mo, co, blockCoupledS19a::gaussGradRows(mo, co), Lo, Ao, bo);
+                const bool sameA = An.n == Ao.n && An.p == Ao.p && An.i == Ao.i && An.x.size() == Ao.x.size()
+                    && std::memcmp(An.x.data(), Ao.x.data(), An.x.size()*sizeof(double)) == 0;
+                const bool sameB = bn.size() == bo.size() && std::memcmp(bn.data(), bo.data(), bn.size()*sizeof(double)) == 0;
+                std::snprintf(what, sizeof what, "%s: CSR arrays (p, i, x) byte-identical to S19a's", y.name);
+                check(sameA, "K14", what, double(An.p.empty() ? 0 : An.p.back()));
+                std::snprintf(what, sizeof what, "%s: right-hand side byte-identical to S19a's", y.name);
+                check(sameB, "K14", what, double(bn.size()));
+                UmfpackLU lu; Step s; solveStep(mm, y.c, 2, *y.x0, lu, s);
+                blockCoupledS19a::UmfpackLU luo; blockCoupledS19a::Step so; blockCoupledS19a::solveStep(mo, co, 2, *y.x0, luo, so);
+                const bool sameX = s.status == UMFPACK_OK && so.status == UMFPACK_OK && s.x.size() == so.x.size()
+                    && std::memcmp(s.x.data(), so.x.data(), s.x.size()*sizeof(double)) == 0
+                    && s.F.size() == so.F.size() && std::memcmp(s.F.data(), so.F.data(), s.F.size()*sizeof(double)) == 0;
+                std::snprintf(what, sizeof what, "%s: solution x and face fluxes F byte-identical to S19a's (k = 2)", y.name);
+                check(sameX, "K14", what, s.x.empty() || so.x.empty() ? 1.0 : relmax(s.x, so.x));
+            }
+        }
+
+        // ---------------- K15 (S19b): the elimination is exact where it does work ----------------
+        {
+            // K13's block with every remapped class switched on: lumen K is
+            // already 0 in only 20% of cells and upVs/loVs live on every face;
+            // here the open faces of lumen cells also carry a skeleton
+            // fraction, and lumen Vs starts away from U (so the expansion's
+            // source shows).
+            Coeffs cb = cf;
+            for (std::size_t b = 0; b < mf.bCell.size(); ++b)
+                if (mf.bOpen[b] && !cb.isSkel[mf.bCell[b]]) { cb.bPhiS[b] = 0.1; cb.bPhiF[b] = 0.9; }
+            Vec x0e = x0;
+            for (int P = 0; P < Nf; ++P)
+                if (!cb.isSkel[P]) { x0e[idx(P, 2)] = 0.03*Upm(rf); x0e[idx(P, 3)] = 0.02*Upm(rf); }
+            int nLumen = 0; for (int P = 0; P < Nf; ++P) nLumen += cb.isSkel[P] ? 0 : 1;
+            std::vector<LsqRow> Lr; lsqRows(mf, Lr);
+            for (int variant = 0; variant < 2; ++variant)
+            {
+                const char* tag = variant ? "K15-R3" : "K15";
+                const Coeffs cI = variant ? withR3(mf, cb) : cb;
+                Coeffs cE = cI; cE.eliminateLumen = true;
+                // Presence, from the coefficients (not from the assembly).
+                long nDrag = 0, nIface = 0, nR3 = 0, nProw = 0, nBnd = 0;
+                for (int P = 0; P < Nf; ++P) if (!cI.isSkel[P] && cI.K[P]*mf.V[P] != 0) ++nDrag;
+                for (std::size_t f = 0; f < mf.own.size(); ++f)
+                {
+                    const int o = mf.own[f], n = mf.nei[f];
+                    if (cI.isSkel[o] && !cI.isSkel[n] && cI.upVs[f] != 0) ++nIface;
+                    if (cI.isSkel[n] && !cI.isSkel[o] && cI.loVs[f] != 0) ++nIface;
+                    if ((!cI.isSkel[o] && mf.w[f] != 0) || (!cI.isSkel[n] && mf.w[f] != 1))
+                        if (cI.phiSf[f] != 0 && (mf.Sx[f] != 0 || mf.Sy[f] != 0)) ++nProw;
+                    if (cI.r3 && cI.nu3w[f] != 0)
+                    {
+                        FaceForm F; r3FaceForm(mf, Lr, f, cI.nu3w[f], F);
+                        for (std::size_t t = 0; t < F.cell.size(); ++t)
+                            if (!cI.isSkel[F.cell[t]] && (F.c0[t] != 0 || F.c1[t] != 0)) ++nR3;
+                    }
+                }
+                for (std::size_t b = 0; b < mf.bCell.size(); ++b)
+                    if (mf.bOpen[b] && !cI.isSkel[mf.bCell[b]] && cI.bPhiS[b] != 0) ++nBnd;
+                std::printf("%s classes: lumen drag %ld | upVs/loVs interface %ld | R3 interface %ld | p-row lumen-Vs %ld | open boundary on lumen %ld\n",
+                            tag, nDrag, nIface, nR3, nProw, nBnd);
+                check(nDrag > 0, tag, "class present: lumen drag (K V != 0 in lumen U rows)", double(nDrag));
+                check(nIface > 0, tag, "class present: upVs/loVs across skeleton-lumen faces", double(nIface));
+                if (variant) check(nR3 > 0, tag, "class present: R3 interface terms on lumen Vs", double(nR3));
+                check(nProw > 0, tag, "class present: p-row lumen-Vs references", double(nProw));
+                check(nBnd > 0, tag, "class present: an open boundary face on a lumen cell", double(nBnd));
+
+                UmfpackLU luI, luE; Step sI, sE;
+                solveStep(mf, cI, 2, x0e, luI, sI);
+                solveStep(mf, cE, 2, x0e, luE, sE);
+                std::printf("%s identityRows: n %d identity rows %d eliminated %d status %d | eliminate: n %d identity rows %d eliminated %d status %d noffdiag %g\n",
+                            tag, sI.n, sI.nIdentity, sI.nEliminated, sI.status, sE.n, sE.nIdentity, sE.nEliminated, sE.status, sE.noffdiag);
+                check(sI.status == UMFPACK_OK && sE.status == UMFPACK_OK, tag, "both modes factor and solve OK", double(sE.status));
+                check(sI.nIdentity == nLumen && sI.nEliminated == 0 && sI.n == 5*Nf, tag,
+                      "identityRows: identity rows = lumen cells, none eliminated, n = 5N", double(sI.n));
+                check(sE.nIdentity == 0 && sE.nEliminated == nLumen && sE.n == 5*Nf - 2*nLumen, tag,
+                      "eliminate: no identity rows, lumen cells eliminated, n = 5N - 2 x lumen", double(sE.n));
+                if (sI.status != UMFPACK_OK || sE.status != UMFPACK_OK) continue;
+                const char* cls[4] = {"U", "p", "skeleton Vs", "lumen Vs (= U)"};
+                for (int q = 0; q < 4; ++q)
+                {
+                    double d = 0, sc = 0;
+                    for (int P = 0; P < Nf; ++P)
+                    {
+                        for (int k = 0; k < 5; ++k)
+                        {
+                            const bool in = q == 0 ? k < 2 : q == 1 ? k == 4
+                                          : q == 2 ? (k == 2 || k == 3) && cI.isSkel[P]
+                                          : (k == 2 || k == 3) && !cI.isSkel[P];
+                            if (!in) continue;
+                            d = std::max(d, std::fabs(sE.x[idx(P, k)] - sI.x[idx(P, k)]));
+                            sc = std::max(sc, std::fabs(sI.x[idx(P, k)]));
+                        }
+                    }
+                    char what[120];
+                    std::snprintf(what, sizeof what, "eliminate = identityRows, max|d|/max|x| <= 1e-12: %s", cls[q]);
+                    check(sc > 0 && d <= 1e-12*sc, tag, what, sc > 0 ? d/sc : d);
+                }
+                double dl = 0;
+                for (int P = 0; P < Nf; ++P)
+                    if (!cI.isSkel[P]) for (int k = 0; k < 2; ++k) dl = std::max(dl, std::fabs(sE.x[idx(P, 2 + k)] - sE.x[idx(P, k)]));
+                check(dl == 0, tag, "eliminate: lumen Vs is expanded from U exactly", dl);
+                // Both orientations of the eliminated matrix: A (the kernel's
+                // own call) and A^T (batch 65's, the CSR handed over as CSC).
+                check(sE.noffdiag == 0, tag, "eliminated A factors with NOFF_DIAG 0", sE.noffdiag);
+                {
+                    std::vector<GradRow> Ge = gaussGradRows(mf, cE); Csr Ae; Vec be; Layout le;
+                    assemble(mf, cE, Ge, Lr, Ae, be, le);
+                    void* sym = nullptr; void* num = nullptr;
+                    double ctl[UMFPACK_CONTROL], inf[UMFPACK_INFO];
+                    umfpack_di_defaults(ctl); ctl[UMFPACK_PRL] = 0;
+                    int st = umfpack_di_symbolic(Ae.n, Ae.n, Ae.p.data(), Ae.i.data(), Ae.x.data(), &sym, ctl, inf);
+                    if (st == UMFPACK_OK) st = umfpack_di_numeric(Ae.p.data(), Ae.i.data(), Ae.x.data(), sym, &num, ctl, inf);
+                    const double noff = st == UMFPACK_OK ? inf[UMFPACK_NOFF_DIAG] : -1;
+                    if (num) umfpack_di_free_numeric(&num);
+                    if (sym) umfpack_di_free_symbolic(&sym);
+                    std::printf("%s eliminated A^T: status %d noffdiag %g\n", tag, st, noff);
+                    check(st == UMFPACK_OK && noff == 0, tag, "eliminated A^T factors with NOFF_DIAG 0", noff);
                 }
             }
         }

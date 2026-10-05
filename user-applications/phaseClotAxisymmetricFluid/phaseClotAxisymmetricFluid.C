@@ -1091,6 +1091,15 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
             "networkViscosityTau", 2.5e-4
         )
     ),
+    // S19b: the default is eliminate (Alireza, 2026-10-04); identityRows is
+    // S19a's system. Inert, and refused when named, under segregated.
+    blockCoupledLumen_
+    (
+        phaseClotProperties_.lookupOrDefault<word>
+        (
+            "blockCoupledLumen", "eliminate"
+        )
+    ),
     phiSkel_
     (
         IOobject
@@ -3567,6 +3576,27 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
             << "positive: eta_n = G tau_v/phi0 (S19 section 12)."
             << exit(FatalError);
     }
+    // S19b (research/designs/2026-10-04-S19b-lumen-elimination.md rev. 2,
+    // section 2.6): the value first, then the key outside blockCoupled.
+    if
+    (
+        blockCoupledLumen_ != "eliminate"
+     && blockCoupledLumen_ != "identityRows"
+    )
+    {
+        FatalErrorInFunction
+            << "blockCoupledLumen '" << blockCoupledLumen_ << "' is not "
+            << "recognised: use eliminate or identityRows (S19b section 2.6)."
+            << exit(FatalError);
+    }
+    if (phaseClotProperties_.found("blockCoupledLumen") && !s19BlockCoupled())
+    {
+        FatalErrorInFunction
+            << "blockCoupledLumen " << blockCoupledLumen_ << " is read only "
+            << "under momentumPressureCoupling blockCoupled; under "
+            << momentumPressureCoupling_ << " it would be silently inert "
+            << "(S19b section 2.6)." << exit(FatalError);
+    }
     if (s19BlockCoupled())
     {
         if
@@ -3629,6 +3659,7 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
         << " momentumPressureCoupling=" << momentumPressureCoupling_
         << " networkViscosity=" << networkViscosity_
         << " networkViscosityTau=" << networkViscosityTau_
+        << " blockCoupledLumen=" << blockCoupledLumen_
         << " etaNMax="
         << (
                networkViscosity_ == "none"
@@ -18997,6 +19028,9 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveBlockCoupledStep()
     // its own gD, so tau_KV = tau_v in every cell. With ind = theta/phi0
     // this is series(theta(1 - d)) eta_n gD, eta_n = G tau_v/phi0.
     coef.r3 = networkViscosity_ == "kelvinVoigt";
+    // S19b section 2.2: eliminate removes the lumen Vs unknowns; identityRows
+    // keeps S19a's identity rows.
+    coef.eliminateLumen = blockCoupledLumen_ == "eliminate";
     coef.nu3w.assign(nF, 0.0);
     tmp<surfaceScalarField> tNu3w;
     if (coef.r3)
@@ -19393,6 +19427,20 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveBlockCoupledStep()
         }
         const scalar bodySlipRms = bW > 0 ? sqrt(bS/bW) : 0;
 
+        // S19b section 2.7 (F5, for E1): max |.| over the cells of U, Vs and
+        // p as this step leaves them, at 17 significant digits.
+        scalar uMaxB = 0, vsMaxB = 0, pMaxB = 0;
+        for (label i = 0; i < nC; ++i)
+        {
+            uMaxB = max(uMaxB, mag(U[i]));
+            vsMaxB = max(vsMaxB, mag(Vs_[i]));
+            pMaxB = max(pMaxB, mag(p[i]));
+        }
+        std::ostringstream maxesB;
+        maxesB.precision(17);
+        maxesB << " uMax=" << uMaxB << " vsMax=" << vsMaxB
+               << " pMax=" << pMaxB;
+
         Info<< "PHASE_CLOT_S19 time=" << runTime.userTimeValue()
             << " step=" << runTime.timeIndex()
             << " mode=blockCoupled"
@@ -19420,7 +19468,10 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveBlockCoupledStep()
             << " bodySlipRms=" << bodySlipRms
             << " qInlet=" << qInlet
             << " qOutlet=" << qOutlet
-            << " lumenIdentityRows=" << st.nIdentity;
+            << " lumenIdentityRows=" << st.nIdentity
+            // S19b section 2.7: one of the two counts is 0 (lumen cells).
+            << " lumenEliminated=" << st.nEliminated
+            << maxesB.str().c_str();
         if (coef.r3)
         {
             std::vector<blockCoupled::LsqRow> lsq;

@@ -28,7 +28,16 @@
       - R3 (section 12), -div(w_f nu3 (grad Vs + grad Vs^T)), fully implicit:
         the compact parts (2 nu3 normal, nu3 tangential) and the transpose
         cross terms Vsx <-> Vsy from face-interpolated central (least-squares,
-        internal neighbours only) tangential derivatives, in the same block.
+        internal neighbours only) tangential derivatives, in the same block;
+      - S19b (research/designs/2026-10-04-S19b-lumen-elimination.md rev. 2,
+        APPROVED by Alireza 2026-10-04, section 2): under eliminateLumen a
+        lumen cell's Vs is not an unknown (Vs = U there). A Layout numbers
+        the unknowns, skipping Vs in lumen cells; every coefficient on a
+        lumen Vs lands on that cell's U, same component; the identity rows
+        are not emitted; b, the non-orthogonal rhs and p* go through the
+        Layout, and x is expanded back to 5 per cell (lumen Vs := U) before
+        the fluxes. Without it (identityRows) the system is S19a's, byte for
+        byte (K14).
 
     Units: the momentum rows are volume-integrated and kinematic (fvMatrix
     units: the shipped UEqn/VsEqn diag and source); K, Kres are 1/s; the p row
@@ -108,6 +117,11 @@ struct Coeffs
     // per boundary face the weight, which must be 0 (r3ZeroBoundaryWeights).
     bool r3 = false;
     std::vector<double> nu3w, bNu3w;
+
+    // S19b (section 2.6): true = blockCoupledLumen eliminate (lumen Vs is
+    // not an unknown), false = identityRows (S19a's system exactly). The
+    // solver sets it from its switch; here false keeps S19a's behaviour.
+    bool eliminateLumen = false;
 };
 
 
@@ -459,6 +473,53 @@ inline void r3AsDiagonal
 //  Assembly
 // ---------------------------------------------------------------------------
 
+//- S19b (section 2.1): the unknown numbering. The assembly writes every
+//  coefficient at its (cell, var) number idx(P, k); toCsr carries row i to
+//  row[i] (-1: not emitted) and column i to col[i]. Under eliminateLumen a
+//  lumen cell's Vs rows are not emitted and its Vs columns are its U's, the
+//  same component; otherwise both maps are the identity and n = nVar*N.
+struct Layout
+{
+    bool eliminate = false;
+    int nFull = 0;          // nVar*nCells
+    int n = 0;              // the unknowns
+    int nEliminated = 0;    // lumen cells whose Vs is not an unknown
+    std::vector<int> row, col;
+};
+
+inline void makeLayout(const Coeffs& c, const int N, Layout& lay)
+{
+    lay.eliminate = c.eliminateLumen;
+    lay.nFull = nVar*N;
+    lay.n = 0;
+    lay.nEliminated = 0;
+    lay.row.assign(lay.nFull, -1);
+    lay.col.assign(lay.nFull, -1);
+    for (int P = 0; P < N; ++P)
+    {
+        const bool lumenVsEliminated = lay.eliminate && !c.isSkel[P];
+        for (int k = 0; k < nVar; ++k)
+        {
+            const int i = idx(P, k);
+            if (lumenVsEliminated && (k == 2 || k == 3))
+            {
+                // Vs = U in a lumen cell: a reference to Vs_k is one to U_k.
+                lay.col[i] = lay.col[idx(P, k - 2)];
+            }
+            else
+            {
+                lay.row[i] = lay.n;
+                lay.col[i] = lay.n;
+                ++lay.n;
+            }
+        }
+        if (lumenVsEliminated)
+        {
+            ++lay.nEliminated;
+        }
+    }
+}
+
 struct Triplets
 {
     std::vector<std::vector<std::pair<int, double>>> rows;
@@ -472,18 +533,30 @@ struct Triplets
 
     //- Sorted columns, duplicates summed; every structural entry is kept
     //  (an exact zero included), so the pattern depends on the mesh, the
-    //  lumen mask and the R3 switch only.
-    void toCsr(Csr& A) const
+    //  lumen mask and the R3 switch only. S19b: rows and columns through the
+    //  Layout (identity maps: S19a's arrays exactly); a coefficient on a
+    //  lumen Vs merges with the one on that cell's U.
+    void toCsr(Csr& A, const Layout& lay) const
     {
-        const int n = int(rows.size());
+        const int nRows = int(rows.size());
+        const int n = lay.n;
         A.n = n;
         A.p.assign(n + 1, 0);
         A.i.clear();
         A.x.clear();
         std::vector<std::pair<int, double>> r;
-        for (int k = 0; k < n; ++k)
+        for (int kFull = 0; kFull < nRows; ++kFull)
         {
-            r = rows[k];
+            const int k = lay.row[kFull];
+            if (k < 0)
+            {
+                continue;
+            }
+            r = rows[kFull];
+            for (std::size_t j = 0; j < r.size(); ++j)
+            {
+                r[j].first = lay.col[r[j].first];
+            }
             std::sort
             (
                 r.begin(), r.end(),
@@ -534,14 +607,18 @@ inline void addRhieChow
 
 //- The block matrix and its right-hand side WITHOUT the explicit
 //  non-orthogonal correction (added per back-substitution). Returns the
-//  number of lumen identity rows.
+//  number of lumen cells carrying identity rows (0 under eliminateLumen).
+//  S19b: `lay` is built here from c (makeLayout); A and b are in its
+//  numbering.
 inline int assemble
 (
     const Mesh& m, const Coeffs& c, const std::vector<GradRow>& G,
-    const std::vector<LsqRow>& L, Csr& A, std::vector<double>& b
+    const std::vector<LsqRow>& L, Csr& A, std::vector<double>& b,
+    Layout& lay
 )
 {
     const int N = m.nCells;
+    makeLayout(c, N, lay);
     Triplets T(nVar*N);
     b.assign(nVar*N, 0.0);
     int nIdentity = 0;
@@ -567,15 +644,17 @@ inline int assemble
                 T.add(rS, idx(P, k), -KsV);
                 b[rS] += c.sVs[k][P] + m.V[P]*(k == 0 ? c.FelX[P] : c.FelY[P]);
             }
-            else
+            else if (!lay.eliminate)
             {
                 // THE LUMEN IDENTITY ROW, Vs - U = 0, replacing the shipped
                 // post-solve overwrite Vs = isSkel Vs + (1 - isSkel) U.
+                // S19b: not emitted under eliminateLumen, where the U row's
+                // -KV above lands on its own diagonal (dU + KV - KV).
                 T.add(rS, rS, 1.0);
                 T.add(rS, idx(P, k), -1.0);
             }
         }
-        if (!c.isSkel[P])
+        if (!c.isSkel[P] && !lay.eliminate)
         {
             ++nIdentity;
         }
@@ -714,7 +793,19 @@ inline int assemble
         b[row] -= cst;
     }
 
-    T.toCsr(A);
+    T.toCsr(A, lay);
+    // S19b section 2.3: b through the Layout (a lumen Vs row's b is 0 and
+    // is not emitted).
+    std::vector<double> bFull;
+    bFull.swap(b);
+    b.assign(lay.n, 0.0);
+    for (int i = 0; i < lay.nFull; ++i)
+    {
+        if (lay.row[i] >= 0)
+        {
+            b[lay.row[i]] = bFull[i];
+        }
+    }
     return nIdentity;
 }
 
@@ -1025,6 +1116,7 @@ struct Step
     int status = 0;        // UMFPACK status (UMFPACK_OK = 0), or -1000 setup
     int stage = 0;         // 1 symbolic, 2 numeric, 3 solve, 4 setup
     int nIdentity = 0;
+    int nEliminated = 0;   // S19b: lumen cells whose Vs is not an unknown
     int nBack = 0;
     double tSym = 0, tNum = 0, tSolve = 0;
     double rNorm = 0, bNorm = 0, rcond = 0;
@@ -1074,7 +1166,9 @@ inline void solveStep
     const std::vector<GradRow> G(gaussGradRows(m, c));
     Csr A;
     std::vector<double> b0;
-    s.nIdentity = assemble(m, c, G, L, A, b0);
+    Layout lay;
+    s.nIdentity = assemble(m, c, G, L, A, b0, lay);
+    s.nEliminated = lay.nEliminated;
     s.n = A.n;
     s.nnz = A.p[A.n];
     rowAbsSumRange(A, s.rowSumMin, s.rowSumMax);
@@ -1101,7 +1195,9 @@ inline void solveStep
         return;
     }
 
-    std::vector<double> pStar(N), kc(m.own.size(), 0.0), rhs;
+    // S19b: xc is the solution in the Layout's numbering; s.x is expanded
+    // from it below.
+    std::vector<double> pStar(N), kc(m.own.size(), 0.0), rhs, xc;
     for (int P = 0; P < N; ++P)
     {
         pStar[P] = x0[idx(P, 4)];
@@ -1119,12 +1215,12 @@ inline void solveStep
             for (std::size_t f = 0; f < m.own.size(); ++f)
             {
                 const double e = -c.rAf[f]*kc[f];
-                rhs[idx(m.own[f], 4)] -= e;
-                rhs[idx(m.nei[f], 4)] += e;
+                rhs[lay.row[idx(m.own[f], 4)]] -= e;
+                rhs[lay.row[idx(m.nei[f], 4)]] += e;
             }
         }
         const auto t0 = std::chrono::steady_clock::now();
-        const int st = lu.backSolve(A, rhs, s.x);
+        const int st = lu.backSolve(A, rhs, xc);
         s.tSolve += std::chrono::duration<double>
         (
             std::chrono::steady_clock::now() - t0
@@ -1137,11 +1233,18 @@ inline void solveStep
         }
         for (int P = 0; P < N; ++P)
         {
-            pStar[P] = s.x[idx(P, 4)];
+            pStar[P] = xc[lay.col[idx(P, 4)]];
         }
     }
-    residualNorms(A, s.x, rhs, s.rNorm, s.bNorm);
-    scaledResidualNorms(A, s.x, rhs, s.rsNorm, s.bsNorm);
+    residualNorms(A, xc, rhs, s.rNorm, s.bNorm);
+    scaledResidualNorms(A, xc, rhs, s.rsNorm, s.bsNorm);
+
+    // ---- S19b section 2.4: x back to 5 per cell, lumen Vs := U ----
+    s.x.assign(lay.nFull, 0.0);
+    for (int i = 0; i < lay.nFull; ++i)
+    {
+        s.x[i] = xc[lay.col[i]];
+    }
 
     // ---- the final face fluxes, with the correction the last solve used ----
     std::vector<double> gx, gy;

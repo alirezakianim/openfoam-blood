@@ -1170,8 +1170,14 @@ S19_SWITCHES = (
     ("momentum_pressure_coupling", "momentumPressureCoupling",
      ("segregated", "blockCoupled")),
     ("network_viscosity", "networkViscosity", ("none", "kelvinVoigt")),
+    # S19b (research/designs/2026-10-04-S19b-lumen-elimination.md rev. 2,
+    # APPROVED by Alireza 2026-10-04, section 2.6): the lumen treatment under
+    # blockCoupled. Absent = eliminate (the solver's default); identityRows
+    # is S19a's system, the control. Refused outside blockCoupled.
+    ("block_coupled_lumen", "blockCoupledLumen", ("eliminate", "identityRows")),
 )
-S19_KEYS = ("momentum_pressure_coupling", "network_viscosity", "tau_v_s")
+S19_KEYS = ("momentum_pressure_coupling", "network_viscosity", "tau_v_s",
+            "block_coupled_lumen")
 # Section 6: batch 65. Each child is its parent plus its named keys only;
 # fsb_off is fsp_k13 with the key ABSENT (V1, bit-identical). Checked on the
 # CONTROLS entries, for every build. "_"-prefixed keys are commentary.
@@ -1181,6 +1187,8 @@ S19_PARENT_PAIRS = (
     ("fsb_G40", "fsp_G40", {"momentum_pressure_coupling"}, set()),
     ("fsb_ctl", "fsp_ctl", {"momentum_pressure_coupling"}, set()),
     ("fsb_ctl_r3", "fsb_ctl", {"network_viscosity"}, set()),
+    # S19b section 4 (batch 67): the control is fsb_k13 with identityRows.
+    ("fsb_k13_id", "fsb_k13", {"block_coupled_lumen"}, set()),
 )
 
 
@@ -1258,6 +1266,12 @@ def s19_combination_refusal(child: dict) -> None:
             f"{cid}: tau_v_s is read only under network_viscosity "
             f"kelvinVoigt; without it the key would be silently inert (S19 "
             f"section 12)."
+        )
+    if "block_coupled_lumen" in child and not block:
+        raise ValueError(
+            f"{cid}: block_coupled_lumen is read only under "
+            f"momentum_pressure_coupling blockCoupled; without it the key "
+            f"would be silently inert (S19b section 2.6)."
         )
 
 
@@ -5360,6 +5374,11 @@ def main() -> int:
                 "networkViscosity": str(child.get("network_viscosity", "none")),
                 "networkViscosityTau": float(child.get("tau_v_s", 2.5e-4)),
             }
+            # S19b: ONLY for a child that names it, so every earlier
+            # child.json is identical; absent, the assessor expects
+            # eliminate under blockCoupled (D1).
+            if "block_coupled_lumen" in child:
+                spec["s19"]["blockCoupledLumen"] = str(child["block_coupled_lumen"])
         # XU (2026-09-30): what the assessor's config echo (A0) and field
         # tests (A1) read -- ONLY for a series that declares a plasma, a
         # flow axis or a core exemption, so every earlier child.json is

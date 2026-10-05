@@ -78,6 +78,8 @@ scripts/s17_fibre_kernel_test.cpp
 scripts/s17_offline_checks.py
 scripts/s18_fpe_kernel_test.cpp
 scripts/s19_block_kernel_test.cpp
+scripts/s19a_block_kernel_reference.H
+scripts/s19b_e1_score.py
 user-applications/beTransport/beTransport.H
 user-applications/phaseClotAxisymmetricFluid.rc
 user-applications/phaseClotAxisymmetricFluid/Allwmake
