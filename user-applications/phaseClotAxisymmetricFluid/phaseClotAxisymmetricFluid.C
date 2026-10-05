@@ -19261,6 +19261,15 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveBlockCoupledStep()
             << "independent neighbours for R3, -1001 a non-zero R3 boundary "
             << "weight). Any status other than UMFPACK_OK, the singular-"
             << "matrix warning included, is refused (S19 section 2)."
+            << " The matrix (S19a section 2.4): n=" << st.n
+            << " nnz=" << st.nnz
+            << " rowSumMin=" << st.rowSumMin
+            << " rowSumMax=" << st.rowSumMax
+            << "; the symbolic estimates: lunzEstimate=" << st.lunzEstimate
+            << " numericSizeEstimateGB=" << st.numericSizeEstimateGB
+            << " peakMemoryEstimateGB=" << st.peakMemoryEstimateGB
+            << " (GB = Info Units x UMFPACK_SIZE_OF_UNIT / 1e9; -1 where "
+            << "UMFPACK reported none)."
             << exit(FatalError);
     }
 
@@ -19366,6 +19375,9 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveBlockCoupledStep()
         const scalar kMatch = kMax > 0 ? dK/kMax : dK;
         const scalar kresMatch = kresMax > 0 ? dKres/kresMax : dKres;
         const scalar linRes = st.bNorm > 0 ? st.rNorm/st.bNorm : st.rNorm;
+        // S19a section 2.5: the row-sum-scaled residual, guarded as linRes.
+        const scalar linResScaled =
+            st.bsNorm > 0 ? st.rsNorm/st.bsNorm : st.rsNorm;
 
         // bodySlipRms: reportFringe()'s body population (ind >= 0.9), the
         // same weight ind*V.
@@ -19390,7 +19402,18 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveBlockCoupledStep()
             << " symbolicCount=" << label(blockLU_->symbolicCount())
             << " backSubstitutions=" << st.nBack
             << " linRes=" << linRes
+            << " linResScaled=" << linResScaled
             << " rcond=" << st.rcond
+            // S19a section 2.4: the matrix and its factor.
+            << " n=" << st.n
+            << " nnz=" << st.nnz
+            << " strategyUsed=" << st.strategyUsed
+            << " orderingUsed=" << st.orderingUsed
+            << " lunz=" << st.lunz
+            << " numericPeakGB=" << st.numericPeakGB
+            << " noffdiag=" << st.noffdiag
+            << " rowSumMin=" << st.rowSumMin
+            << " rowSumMax=" << st.rowSumMax
             << " contResAbs=" << contResAbs
             << " kMatch=" << kMatch
             << " kresMatch=" << kresMatch

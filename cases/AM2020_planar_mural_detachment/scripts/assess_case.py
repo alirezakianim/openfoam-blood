@@ -2539,7 +2539,11 @@ def s18p_report(text: str, spec: dict | None = None) -> dict:
 # the design's, fixed before the runs.
 S19_CONTRES_MAX = 1e-9     # G4: max_cells |sum_f F_f| / Q0, every step
 S19_FLUX_MATCH = 1e-10     # G4: qInlet/qOutlet vs logged inletFlux/outletFlux (relative)
-S19_LINRES_MAX = 1e-10     # G6: ||Ax - b||/||b||, every step
+S19_LINRES_MAX = 1e-10     # G6: linRes and linResScaled, every step
+# S19a (research/designs/2026-10-04-S19a-umfpack-row-equilibration.md,
+# APPROVED 2026-10-04), section 4: G6 extended to linResScaled, and G9.
+S19_NUMERIC_PEAK_GB_MAX = 1.0   # G9: numericPeakGB (UMFPACK peak, GB), every step
+S19_TNUMERIC_MAX = 5.0          # G9: tNumeric (numeric factorisation, s), every step
 
 
 def s19_report(text: str, spec: dict | None = None, case: Path | None = None) -> dict:
@@ -2550,11 +2554,17 @@ def s19_report(text: str, spec: dict | None = None, case: Path | None = None) ->
       free-shell series' reference flux, free_shell_timeseries.py, as G2's
       Q0), and qInlet, qOutlet within 1e-10 relative of the logged
       inletFlux/outletFlux at every step;
-    - G6: linRes <= 1e-10 every step;
+    - G6 (S19a section 4): linRes = ||Ax - b||/||b|| AND linResScaled (the
+      row-sum-scaled residual, S19a section 2.5) each <= 1e-10 every step; a
+      missing field fails (read as inf);
     - G7: kMatch = 0 and kresMatch = 0 exactly, every step;
-    - G8r (networkViscosity kelvinVoigt only): r3Power <= 0 every step.
+    - G8r (networkViscosity kelvinVoigt only): r3Power <= 0 every step;
+    - G9 (S19a section 4, the factor's memory and cost): numericPeakGB <= 1.0
+      AND tNumeric <= 5.0 s every step; a missing field fails (read as inf).
     Watches (not gated): bodySlipRms, symbolicCount, tSolve, rcond, r3Max,
-    etaN. G1, G2, G3 and V1 are scored against batch 64 OFFLINE."""
+    etaN; S19a: noffdiag (max; expected 0), rowSumMin (min), rowSumMax (max),
+    n and nnz of the last record (each over the records that carry the field;
+    None if none does). G1, G2, G3 and V1 are scored against batch 64 OFFLINE."""
     num = r"(-?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?|-?nan|-?inf)"
 
     def kv(line):
@@ -2579,9 +2589,17 @@ def s19_report(text: str, spec: dict | None = None, case: Path | None = None) ->
     out["g0"] = (None if not block or steps == 0 else
                  bool(engaged == steps == len(rows) and out["p_solves"] == 0))
     out["linres_max"] = max((r.get("linRes", math.inf) for r in rows), default=None)
-    out["g6"] = None if not rows else all(r.get("linRes", math.inf) <= S19_LINRES_MAX for r in rows)
+    out["linres_scaled_max"] = max((r.get("linResScaled", math.inf) for r in rows), default=None)
+    out["g6"] = None if not rows else all(
+        r.get("linRes", math.inf) <= S19_LINRES_MAX
+        and r.get("linResScaled", math.inf) <= S19_LINRES_MAX for r in rows)
     out["kmatch_max"] = max((max(r.get("kMatch", math.inf), r.get("kresMatch", math.inf)) for r in rows), default=None)
     out["g7"] = None if not rows else all(r.get("kMatch") == 0.0 and r.get("kresMatch") == 0.0 for r in rows)
+    out["numeric_peak_gb_max"] = max((r.get("numericPeakGB", math.inf) for r in rows), default=None)
+    out["t_numeric_max"] = max((r.get("tNumeric", math.inf) for r in rows), default=None)
+    out["g9"] = None if not rows else all(
+        r.get("numericPeakGB", math.inf) <= S19_NUMERIC_PEAK_GB_MAX
+        and r.get("tNumeric", math.inf) <= S19_TNUMERIC_MAX for r in rows)
     # G4: Q0 and the logged patch fluxes come from the module G2 uses.
     q0 = None
     logged = {}
@@ -2623,6 +2641,11 @@ def s19_report(text: str, spec: dict | None = None, case: Path | None = None) ->
         "lumen_identity_rows_last": rows[-1].get("lumenIdentityRows") if rows else None,
         "r3_max_max": max((r.get("r3Max", 0.0) for r in rows), default=None) if r3 else None,
         "eta_n": rows[-1].get("etaN") if (rows and r3) else None,
+        "noffdiag_max": max((r["noffdiag"] for r in rows if "noffdiag" in r), default=None),
+        "row_sum_min_min": min((r["rowSumMin"] for r in rows if "rowSumMin" in r), default=None),
+        "row_sum_max_max": max((r["rowSumMax"] for r in rows if "rowSumMax" in r), default=None),
+        "n_last": rows[-1].get("n") if rows else None,
+        "nnz_last": rows[-1].get("nnz") if rows else None,
     }
     return out
 

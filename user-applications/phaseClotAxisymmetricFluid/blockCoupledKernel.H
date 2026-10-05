@@ -17,7 +17,9 @@
         faces; lumen cells (isSkel 0) carry the identity rows Vs - U = 0;
       - UMFPACK direct LU, the symbolic factorisation kept while the CSR
         pattern (Ap, Ai) is unchanged and redone whenever it changes (red
-        team 07 F5), the numeric factorisation every step;
+        team 07 F5), the numeric factorisation every step; S19a (design
+        2026-10-04-S19a-umfpack-row-equilibration.md): UMFPACK factors and
+        solves A itself (its CSC, UMFPACK_A), so it equilibrates A's rows;
       - k = nNonOrthogonalCorrectors back-substitutions with the same LU, the
         explicit non-orthogonal flux correction updated from the new p between
         them; the final F_f carries the correction the LAST back-substitution
@@ -746,16 +748,56 @@ inline void nonOrthFaceCorr
 //  UMFPACK, the symbolic factorisation keyed to the CSR pattern
 // ---------------------------------------------------------------------------
 
+//- S19a (research/designs/2026-10-04-S19a-umfpack-row-equilibration.md
+//  section 2.1): the compressed sparse COLUMNS of the CSR matrix A -- A
+//  itself, not A^T -- in O(nnz). Column j lists its rows in ascending order.
+inline void cscOfCsr
+(
+    const Csr& A, std::vector<int>& Cp, std::vector<int>& Ci,
+    std::vector<double>& Cx
+)
+{
+    const int nz = A.p[A.n];
+    Cp.assign(A.n + 1, 0);
+    Ci.resize(nz);
+    Cx.resize(nz);
+    for (int q = 0; q < nz; ++q)
+    {
+        ++Cp[A.i[q] + 1];
+    }
+    for (int j = 0; j < A.n; ++j)
+    {
+        Cp[j + 1] += Cp[j];
+    }
+    std::vector<int> next(Cp.begin(), Cp.end() - 1);
+    for (int r = 0; r < A.n; ++r)
+    {
+        for (int q = A.p[r]; q < A.p[r + 1]; ++q)
+        {
+            const int at = next[A.i[q]]++;
+            Ci[at] = r;
+            Cx[at] = A.x[q];
+        }
+    }
+}
+
 class UmfpackLU
 {
     void* symbolic_;
     void* numeric_;
     int n_;
     std::vector<int> Ap_, Ai_;
+    // S19a: A in CSC, rebuilt from the CSR once per factor(); its pattern
+    // is the one the kept symbolic factorisation was built on.
+    std::vector<int> Cp_, Ci_;
+    std::vector<double> Cx_;
     long symbolicCount_;
     double rcond_;
     double control_[UMFPACK_CONTROL];
     double info_[UMFPACK_INFO];
+    // S19a: Info as the last symbolic factorisation left it (its estimates
+    // price a failure even when the symbolic is kept).
+    double symInfo_[UMFPACK_INFO];
 
     UmfpackLU(const UmfpackLU&);
     void operator=(const UmfpackLU&);
@@ -777,6 +819,11 @@ public:
     {
         umfpack_di_defaults(control_);
         control_[UMFPACK_PRL] = 0;
+        for (int k = 0; k < UMFPACK_INFO; ++k)
+        {
+            info_[k] = -1;
+            symInfo_[k] = -1;
+        }
     }
 
     ~UmfpackLU()
@@ -791,13 +838,44 @@ public:
         n_ = -1;
         Ap_.clear();
         Ai_.clear();
+        Cp_.clear();
+        Ci_.clear();
+        Cx_.clear();
     }
 
     long symbolicCount() const { return symbolicCount_; }
     double rcond() const { return rcond_; }
 
-    //- The CSR rows of A are handed to UMFPACK as the columns of A^T; the
-    //  solve below therefore asks for the transposed system. Returns the
+    //- UMFPACK's Info after the last call (after factor(): the numeric
+    //  factorisation's statistics; -1 where UMFPACK reported none).
+    const double* info() const { return info_; }
+
+    //- Info as the last symbolic factorisation left it.
+    const double* symbolicInfo() const { return symInfo_; }
+
+    //- The numeric factorisation's row scale factors Rs and do_recip
+    //  (umfpack_di_get_numeric): row r of the factored matrix was multiplied
+    //  by Rs[r] when doRecip is 1, divided by it when 0 (S19a K12).
+    int rowScale(std::vector<double>& Rs, int& doRecip) const
+    {
+        doRecip = -1;
+        Rs.assign(n_ > 0 ? n_ : 0, 0.0);
+        if (!numeric_)
+        {
+            return UMFPACK_ERROR_invalid_Numeric_object;
+        }
+        return umfpack_di_get_numeric
+        (
+            nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+            nullptr, nullptr, nullptr, &doRecip, Rs.data(), numeric_
+        );
+    }
+
+    //- S19a: the CSR rows of A are transposed ONCE per call into the CSC of
+    //  A itself, and UMFPACK factors A, so its default SCALE_SUM divides each
+    //  ROW of A by its abs-sum (design section 2.1; S19 handed the CSR over
+    //  as A^T and so equilibrated A's columns only). The pattern test still
+    //  compares the CSR pattern; the CSC pattern is kept with it. Returns the
     //  first status that is not UMFPACK_OK (the singular-matrix warning
     //  included), with `stage` 1 symbolic, 2 numeric.
     int factor(const Csr& A, double& tSym, double& tNum, int& stage)
@@ -806,16 +884,21 @@ public:
         tNum = 0;
         stage = 0;
         const bool samePattern = (symbolic_ != nullptr && A.n == n_ && A.p == Ap_ && A.i == Ai_);
+        cscOfCsr(A, Cp_, Ci_, Cx_);
         if (!samePattern)
         {
             const double t0 = now();
             if (symbolic_) { umfpack_di_free_symbolic(&symbolic_); symbolic_ = nullptr; }
             const int st = umfpack_di_symbolic
             (
-                A.n, A.n, A.p.data(), A.i.data(), A.x.data(),
+                A.n, A.n, Cp_.data(), Ci_.data(), Cx_.data(),
                 &symbolic_, control_, info_
             );
             tSym = now() - t0;
+            for (int k = 0; k < UMFPACK_INFO; ++k)
+            {
+                symInfo_[k] = info_[k];
+            }
             if (st != UMFPACK_OK)
             {
                 stage = 1;
@@ -830,7 +913,7 @@ public:
         if (numeric_) { umfpack_di_free_numeric(&numeric_); numeric_ = nullptr; }
         const int st = umfpack_di_numeric
         (
-            A.p.data(), A.i.data(), A.x.data(), symbolic_, &numeric_,
+            Cp_.data(), Ci_.data(), Cx_.data(), symbolic_, &numeric_,
             control_, info_
         );
         tNum = now() - t1;
@@ -842,12 +925,13 @@ public:
         return st;
     }
 
+    //- S19a: solves A x = b (UMFPACK_A) on the CSC factor()'s last call built.
     int backSolve(const Csr& A, const std::vector<double>& b, std::vector<double>& x)
     {
         x.assign(A.n, 0.0);
         return umfpack_di_solve
         (
-            UMFPACK_At, A.p.data(), A.i.data(), A.x.data(),
+            UMFPACK_A, Cp_.data(), Ci_.data(), Cx_.data(),
             x.data(), b.data(), numeric_, control_, info_
         );
     }
@@ -877,6 +961,61 @@ inline void residualNorms
 }
 
 
+//- S19a: the abs-sum of row k of the CSR, sum_j |A_kj|.
+inline double rowAbsSum(const Csr& A, const int k)
+{
+    double a = 0;
+    for (int j = A.p[k]; j < A.p[k + 1]; ++j)
+    {
+        a += std::fabs(A.x[j]);
+    }
+    return a;
+}
+
+
+//- S19a (design section 2.4): the smallest and largest row abs-sum of A.
+inline void rowAbsSumRange(const Csr& A, double& lo, double& hi)
+{
+    lo = 0;
+    hi = 0;
+    for (int k = 0; k < A.n; ++k)
+    {
+        const double a = rowAbsSum(A, k);
+        lo = k == 0 ? a : std::min(lo, a);
+        hi = k == 0 ? a : std::max(hi, a);
+    }
+}
+
+
+//- S19a (design section 2.5): ||R^-1 (A x - b)||_2 and ||R^-1 b||_2 with
+//  R = diag(sum_j |A_kj|), on the same CSR as residualNorms. A zero row is
+//  singular and refused by UMFPACK before this is reached; its weight is
+//  guarded as linRes guards ||b|| = 0.
+inline void scaledResidualNorms
+(
+    const Csr& A, const std::vector<double>& x, const std::vector<double>& b,
+    double& rNorm, double& bNorm
+)
+{
+    double r2 = 0, b2 = 0;
+    for (int k = 0; k < A.n; ++k)
+    {
+        const double a = rowAbsSum(A, k);
+        double s = -b[k];
+        for (int j = A.p[k]; j < A.p[k + 1]; ++j)
+        {
+            s += A.x[j]*x[A.i[j]];
+        }
+        const double rs = a > 0 ? s/a : s;
+        const double bs = a > 0 ? b[k]/a : b[k];
+        r2 += rs*rs;
+        b2 += bs*bs;
+    }
+    rNorm = std::sqrt(r2);
+    bNorm = std::sqrt(b2);
+}
+
+
 // ---------------------------------------------------------------------------
 //  The step
 // ---------------------------------------------------------------------------
@@ -889,6 +1028,16 @@ struct Step
     int nBack = 0;
     double tSym = 0, tNum = 0, tSolve = 0;
     double rNorm = 0, bNorm = 0, rcond = 0;
+    // S19a (design sections 2.4, 2.5): the matrix and its factor. The
+    // numeric statistics come from UMFPACK's Info after an OK factor (-1
+    // otherwise); the estimates are the last symbolic factorisation's; GB
+    // are Info's Units times Info[UMFPACK_SIZE_OF_UNIT] over 1e9.
+    int n = 0, nnz = 0;
+    double strategyUsed = -1, orderingUsed = -1;
+    double lunz = -1, numericPeakGB = -1, noffdiag = -1;
+    double lunzEstimate = -1, numericSizeEstimateGB = -1, peakMemoryEstimateGB = -1;
+    double rowSumMin = 0, rowSumMax = 0;
+    double rsNorm = 0, bsNorm = 0;  // ||R^-1(Ax - b)||_2, ||R^-1 b||_2
     std::vector<double> x;
     // Face fluxes and their parts: F = phiFf Fu + phiSf Fv - rA Xp + cE El.
     std::vector<double> F, Fu, Fv, Xp, El;
@@ -926,8 +1075,27 @@ inline void solveStep
     Csr A;
     std::vector<double> b0;
     s.nIdentity = assemble(m, c, G, L, A, b0);
+    s.n = A.n;
+    s.nnz = A.p[A.n];
+    rowAbsSumRange(A, s.rowSumMin, s.rowSumMax);
     s.status = lu.factor(A, s.tSym, s.tNum, s.stage);
     s.rcond = lu.rcond();
+    {
+        const double* si = lu.symbolicInfo();
+        const double unit = si[UMFPACK_SIZE_OF_UNIT];
+        s.strategyUsed = si[UMFPACK_STRATEGY_USED];
+        s.orderingUsed = si[UMFPACK_ORDERING_USED];
+        s.lunzEstimate = si[UMFPACK_LNZ_ESTIMATE] + si[UMFPACK_UNZ_ESTIMATE];
+        s.numericSizeEstimateGB = si[UMFPACK_NUMERIC_SIZE_ESTIMATE]*unit/1e9;
+        s.peakMemoryEstimateGB = si[UMFPACK_PEAK_MEMORY_ESTIMATE]*unit/1e9;
+        if (s.status == UMFPACK_OK)
+        {
+            const double* ni = lu.info();
+            s.lunz = ni[UMFPACK_LNZ] + ni[UMFPACK_UNZ];
+            s.numericPeakGB = ni[UMFPACK_PEAK_MEMORY]*unit/1e9;
+            s.noffdiag = ni[UMFPACK_NOFF_DIAG];
+        }
+    }
     if (s.status != UMFPACK_OK)
     {
         return;
@@ -973,6 +1141,7 @@ inline void solveStep
         }
     }
     residualNorms(A, s.x, rhs, s.rNorm, s.bNorm);
+    scaledResidualNorms(A, s.x, rhs, s.rsNorm, s.bsNorm);
 
     // ---- the final face fluxes, with the correction the last solve used ----
     std::vector<double> gx, gy;

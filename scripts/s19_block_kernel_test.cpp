@@ -34,11 +34,23 @@
 //       interp(gD G)_f built here from cell values (rel. 1e-12, Dg > 0
 //       included), and on uniform cells it is theta(1 - d) eta_n gD
 //       (G 4, 40, 400; Dg 0 and 0.5)
+//   K12 S19a (research/designs/2026-10-04-S19a-umfpack-row-equilibration.md
+//       section 3): on a small production-scale block with lumen identity
+//       rows, UMFPACK's row scale factors applied to A's own CSR rows leave
+//       row abs-sums within a factor 10; NOFF_DIAG == 0; linRes and
+//       linResScaled <= 1e-12
+//   K13 S19a: the 448 x 70 production-scale block, and its R3 variant,
+//       factor and solve OK with NOFF_DIAG == 0, numericPeakGB <= 1 GB and
+//       within x3 of the peak RSS, factor + solve <= 10 s, both residuals
+//       <= 1e-12; G6 fails (> 1e-10, both norms) on a 1e-6 error in any one
+//       class and passes on the exact solve. Run only when all else passed.
 #include "blockCoupledKernel.H"
 
 #include <cstdio>
 #include <cstdlib>
 #include <random>
+
+#include <sys/resource.h>
 
 using namespace blockCoupled;
 
@@ -204,6 +216,137 @@ static Coeffs makeCoeffs(const Geo& g, std::mt19937& rng, const double lumenShar
     c.bNu3w.assign(nB, 0.0);
     return c;
 }
+
+// ---------------------------------------------------------------------------
+// S19a (research/designs/2026-10-04-S19a-umfpack-row-equilibration.md
+// section 3): a PRODUCTION-SCALE block. The skewed unit mesh is scaled to
+// cell sizes of microns (Ls) with a wedge depth dz, so V ~ 1e-19 m^3, and
+// the momentum rows are volume-integrated fvMatrix rows (kinematic: ddt
+// V/dt, viscous nu |S| ndc, drag K V up to 1e8 V) beside the lumen
+// identity rows Vs - U = 0 (+-1): the unit spread batch 65 died of.
+// ---------------------------------------------------------------------------
+static void scaleGeo(Geo& g, const double Ls, const double dz)
+{
+    Mesh& m = g.m;
+    for (auto& v : m.V) v *= Ls*Ls*dz;
+    for (auto& v : m.Cx) v *= Ls;
+    for (auto& v : m.Cy) v *= Ls;
+    for (auto& v : m.Sx) v *= Ls*dz;
+    for (auto& v : m.Sy) v *= Ls*dz;
+    for (auto& v : m.magS) v *= Ls*dz;
+    for (auto& v : m.ndc) v /= Ls;
+    for (auto& v : m.bSx) v *= Ls*dz;
+    for (auto& v : m.bSy) v *= Ls*dz;
+    for (auto& v : m.bMagS) v *= Ls*dz;
+}
+
+static Coeffs makeProdCoeffs(const Geo& g, std::mt19937& rng, const int skelRows)
+{
+    const Mesh& m = g.m;
+    std::uniform_real_distribution<double> U01(0.0, 1.0), Upm(-1.0, 1.0);
+    const int N = m.nCells; const std::size_t nF = m.own.size(), nB = m.bCell.size();
+    const double nu = 3.3e-6, dt = 4.76e-6;
+    Coeffs c;
+    c.isSkel.resize(N);
+    for (int P = 0; P < N; ++P) c.isSkel[P] = (P/g.nx >= g.ny - skelRows) ? 1 : 0;
+    for (int k = 0; k < 2; ++k)
+    {
+        c.dU[k].resize(N); c.sU[k].resize(N); c.dVs[k].resize(N); c.sVs[k].resize(N);
+    }
+    c.upU.resize(nF); c.loU.resize(nF); c.upVs.resize(nF); c.loVs.resize(nF);
+    std::vector<double> offU(N, 0.0), offV(N, 0.0);
+    for (std::size_t f = 0; f < nF; ++f)
+    {
+        const double vis = nu*m.magS[f]*m.ndc[f];
+        c.upU[f] = -vis*(1 + 0.2*U01(rng)); c.loU[f] = -vis*(1 + 0.2*U01(rng));
+        c.upVs[f] = -0.5*vis*(1 + 0.2*U01(rng)); c.loVs[f] = -0.5*vis*(1 + 0.2*U01(rng));
+        offU[m.own[f]] += std::fabs(c.upU[f]); offU[m.nei[f]] += std::fabs(c.loU[f]);
+        offV[m.own[f]] += std::fabs(c.upVs[f]); offV[m.nei[f]] += std::fabs(c.loVs[f]);
+    }
+    c.K.resize(N); c.Kres.resize(N); c.phiF.resize(N); c.phiS.resize(N);
+    c.FelX.resize(N); c.FelY.resize(N);
+    for (int P = 0; P < N; ++P)
+    {
+        for (int k = 0; k < 2; ++k)
+        {
+            c.dU[k][P] = offU[P] + m.V[P]/dt*(1 + 0.1*U01(rng));
+            c.dVs[k][P] = offV[P] + m.V[P]/dt*(1 + 0.1*U01(rng));
+            c.sU[k][P] = m.V[P]/dt*0.05*Upm(rng);
+            c.sVs[k][P] = m.V[P]/dt*0.01*Upm(rng);
+        }
+        c.K[P] = U01(rng) < 0.2 ? 0.0 : std::pow(10.0, 2 + 6*U01(rng));
+        c.Kres[P] = 1e3*U01(rng);
+        c.phiS[P] = c.isSkel[P] ? 0.2 + 0.25*U01(rng) : 0.0;
+        c.phiF[P] = 1 - c.phiS[P];
+        c.FelX[P] = c.isSkel[P] ? 1e3*Upm(rng) : 0.0;
+        c.FelY[P] = c.isSkel[P] ? 1e3*Upm(rng) : 0.0;
+    }
+    c.phiFf.resize(nF); c.phiSf.resize(nF); c.rAf.resize(nF); c.cEf.resize(nF); c.fSigE.resize(nF);
+    for (std::size_t f = 0; f < nF; ++f)
+    {
+        const int o = m.own[f], n = m.nei[f];
+        c.phiFf[f] = m.w[f]*c.phiF[o] + (1 - m.w[f])*c.phiF[n];
+        c.phiSf[f] = 1 - c.phiFf[f];
+        c.rAf[f] = 1.0/(1.0/dt + 0.5*(c.K[o] + c.K[n]));
+        c.cEf[f] = 0.02*c.rAf[f]*Upm(rng);
+        c.fSigE[f] = m.magS[f]*Upm(rng);
+    }
+    c.bPhiF.resize(nB); c.bPhiS.resize(nB); c.bRAf.resize(nB); c.bCE.resize(nB);
+    c.bFSigE.resize(nB); c.bWallFlux.assign(nB, 0.0);
+    c.pvIC.resize(nB); c.pvBC.resize(nB); c.pgIC.resize(nB); c.pgBC.resize(nB);
+    for (std::size_t b = 0; b < nB; ++b)
+    {
+        const int P = m.bCell[b];
+        c.bPhiF[b] = c.phiF[P]; c.bPhiS[b] = c.phiS[P];
+        c.bRAf[b] = 1.0/(1.0/dt + c.K[P]); c.bCE[b] = 0.0;
+        c.bFSigE[b] = m.bMagS[b]*Upm(rng);
+        if (g.bPatch[b] == 2)
+        {
+            c.pvIC[b] = 1; c.pvBC[b] = 0; c.pgIC[b] = 0; c.pgBC[b] = 0;
+        }
+        else
+        {
+            const double pb = g.bPatch[b] == 0 ? 0.0737066 : 0.0;
+            const double dcb = 2.0*m.bMagS[b]/m.V[P];
+            c.pvIC[b] = 0; c.pvBC[b] = pb; c.pgIC[b] = -dcb; c.pgBC[b] = dcb*pb;
+        }
+    }
+    c.r3 = false;
+    c.nu3w.assign(nF, 0.0);
+    c.bNu3w.assign(nB, 0.0);
+    return c;
+}
+
+//- R3 on a production block: tau_v times the elastic face coefficient at
+//  G 40 on faces between two skeleton cells (fsb_ctl_r3's rows), 0 elsewhere
+//  and on every boundary face.
+static Coeffs withR3(const Mesh& m, Coeffs c)
+{
+    c.r3 = true;
+    for (std::size_t f = 0; f < m.own.size(); ++f)
+    {
+        c.nu3w[f] = (c.isSkel[m.own[f]] && c.isSkel[m.nei[f]])
+            ? r3FaceCoefficient(0.45, 40.0, 2.5e-4, 1060.0) : 0.0;
+    }
+    return c;
+}
+
+//- The process's peak resident set (GB): getrusage's ru_maxrss is bytes on
+//  macOS and kilobytes on Linux.
+static double maxRssGB()
+{
+    struct rusage u;
+    getrusage(RUSAGE_SELF, &u);
+#ifdef __APPLE__
+    return double(u.ru_maxrss)/1e9;
+#else
+    return double(u.ru_maxrss)*1024.0/1e9;
+#endif
+}
+
+//- linResScaled exactly as the solver logs it.
+static double linResScaledOf(const Step& s) { return s.bsNorm > 0 ? s.rsNorm/s.bsNorm : s.rsNorm; }
+static double linResOf(const Step& s) { return s.bNorm > 0 ? s.rNorm/s.bNorm : s.rNorm; }
 
 // ---------------------------------------------------------------------------
 // The independent dense reference, block layout [Ux|Uy|Vsx|Vsy|p].
@@ -570,6 +713,124 @@ int main()
             }
         }
         check(worst <= 1e-12, "K11", "uniform-cell face coefficient = theta(1 - d) eta_n gD at G 4/40/400", worst);
+    }
+
+    // ---------------- K12 (S19a): UMFPACK equilibrates A's ROWS ----------------
+    // A small production-scale block (V ~ 1e-19 m^3, lumen identity rows).
+    // R is read from the numeric factorisation (do_recip honoured) and applied
+    // to the kernel's OWN CSR rows; on the arrays UMFPACK was handed the
+    // spread is 1 in either orientation, so that check could not fail.
+    {
+        Geo gp = makeMesh(12, 8, 0.3, 1.3);
+        scaleGeo(gp, 12*4.5e-6, 5e-9);
+        const Mesh& mp = gp.m; const int Np = mp.nCells;
+        std::mt19937 rp(1912);
+        const Coeffs cp = makeProdCoeffs(gp, rp, 2);
+        Vec x0(5*Np, 0.0);
+        for (int P = 0; P < Np; ++P) { x0[idx(P, 0)] = x0[idx(P, 2)] = 0.05*Upm(rp); }
+        UmfpackLU lu; Step s;
+        solveStep(mp, cp, 2, x0, lu, s);
+        int recip = -1; Vec Rs;
+        const int gst = lu.rowScale(Rs, recip);
+        std::vector<GradRow> Gp = gaussGradRows(mp, cp); std::vector<LsqRow> Lp; Csr Ap; Vec bp;
+        assemble(mp, cp, Gp, Lp, Ap, bp);
+        double lo = 0, hi = 0;
+        for (int r = 0; gst == UMFPACK_OK && r < Ap.n; ++r)
+        {
+            const double a = rowAbsSum(Ap, r);
+            const double ra = recip == 1 ? a*Rs[r] : a/Rs[r];
+            lo = r == 0 ? ra : std::min(lo, ra);
+            hi = r == 0 ? ra : std::max(hi, ra);
+        }
+        const double spread = (gst == UMFPACK_OK && lo > 0) ? hi/lo : 1e300;
+        std::printf("K12 block: n %d nnz %d identity rows %d | A row abs-sum min %.3e max %.3e | do_recip %d | R.A row abs-sum min %.3e max %.3e | noffdiag %g | numericPeakGB %.4f\n",
+                    s.n, s.nnz, s.nIdentity, s.rowSumMin, s.rowSumMax, recip, lo, hi, s.noffdiag, s.numericPeakGB);
+        check(s.status == UMFPACK_OK, "K12", "status OK", double(s.status));
+        check(spread <= 10, "K12", "row abs-sums of R.A on A's CSR rows within a factor 10", spread);
+        check(s.noffdiag == 0, "K12", "NOFF_DIAG == 0", s.noffdiag);
+        check(linResOf(s) <= 1e-12, "K12", "linRes <= 1e-12", linResOf(s));
+        check(linResScaledOf(s) <= 1e-12, "K12", "linResScaled <= 1e-12", linResScaledOf(s));
+    }
+
+    // ---------------- K13 (S19a): the full-size block, the fixed path only ----------------
+    // 448 x 70 at production scale through the kernel's own assemble, then
+    // R3 on (fsb_ctl_r3's rows), then G6's power to fail. Run ONLY when every
+    // earlier check passed: a mutated kernel (the old A^T orientation above
+    // all, 30 s and 2 GB) is never factored at full size.
+    if (failures != 0)
+    {
+        check(false, "K13", "not run: an earlier check failed (no full-size factorisation of a failed kernel)", double(failures));
+    }
+    else
+    {
+        Geo gf = makeMesh(448, 70, 0.3, 1.3);
+        scaleGeo(gf, 448*4.5e-6, 5e-9);
+        const Mesh& mf = gf.m; const int Nf = mf.nCells;
+        std::mt19937 rf(1913);
+        const Coeffs cf = makeProdCoeffs(gf, rf, 14);
+        Vec x0(5*Nf, 0.0);
+        for (int P = 0; P < Nf; ++P)
+        {
+            x0[idx(P, 0)] = x0[idx(P, 2)] = 0.05*Upm(rf);
+            x0[idx(P, 1)] = x0[idx(P, 3)] = 0.01*Upm(rf);
+        }
+        for (int variant = 0; variant < 2; ++variant)
+        {
+            const char* tag = variant ? "K13-R3" : "K13";
+            const Coeffs cv = variant ? withR3(mf, cf) : cf;
+            UmfpackLU lu; Step s;
+            solveStep(mf, cv, 2, x0, lu, s);
+            const double rss = maxRssGB(), tAll = s.tSym + s.tNum + s.tSolve;
+            std::printf("%s block: n %d nnz %d identity rows %d | A row abs-sum min %.3e max %.3e | strategy %g ordering %g | lunz %.4g (estimate %.4g) | numericPeakGB %.4f (estimate %.3f) | peak RSS %.3f GB | noffdiag %g | tSym %.2f tNum %.2f tSolve %.2f s | rcond %.3g\n",
+                        tag, s.n, s.nnz, s.nIdentity, s.rowSumMin, s.rowSumMax, s.strategyUsed, s.orderingUsed,
+                        s.lunz, s.lunzEstimate, s.numericPeakGB, s.peakMemoryEstimateGB, rss, s.noffdiag,
+                        s.tSym, s.tNum, s.tSolve, s.rcond);
+            check(s.status == UMFPACK_OK, tag, "factor and solve status OK", double(s.status));
+            check(s.noffdiag == 0, tag, "NOFF_DIAG == 0", s.noffdiag);
+            check(s.numericPeakGB > 0 && s.numericPeakGB <= 1.0, tag, "numericPeakGB <= 1 GB", s.numericPeakGB);
+            check(s.numericPeakGB > 0 && rss <= 3*s.numericPeakGB && s.numericPeakGB <= 3*rss, tag,
+                  "numericPeakGB within x3 of the peak RSS (ratio RSS/peak)", s.numericPeakGB > 0 ? rss/s.numericPeakGB : 0.0);
+            check(tAll <= 10, tag, "factor + solve <= 10 s", tAll);
+            check(linResOf(s) <= 1e-12, tag, "linRes <= 1e-12", linResOf(s));
+            check(linResScaledOf(s) <= 1e-12, tag, "linResScaled <= 1e-12", linResScaledOf(s));
+        }
+        // G6 must fail on an inexact solution and pass on the exact one, in
+        // both norms: the orthogonal solve, then x + 1e-6 max|x_class|
+        // cos(t) in ONE class (U, Vs, p; lumen or skeleton) at a time.
+        {
+            UmfpackLU lu; Step s;
+            solveStep(mf, cf, 0, x0, lu, s);
+            std::vector<GradRow> Gf = gaussGradRows(mf, cf); std::vector<LsqRow> Lf; Csr Af; Vec bf;
+            assemble(mf, cf, Gf, Lf, Af, bf);
+            double rn, bn, rsn, bsn;
+            residualNorms(Af, s.x, bf, rn, bn); scaledResidualNorms(Af, s.x, bf, rsn, bsn);
+            check(s.status == UMFPACK_OK && rn/bn <= 1e-12 && rsn/bsn <= 1e-12, "K13-G6",
+                  "the exact solve: linRes and linResScaled <= 1e-12 (the larger)", std::max(rn/bn, rsn/bsn));
+            const int k0[3] = {0, 2, 4}, k1[3] = {1, 3, 4};
+            const char* cls[3] = {"U", "Vs", "p"};
+            for (int q = 0; q < 3; ++q)
+            {
+                for (int skel = 0; skel < 2; ++skel)
+                {
+                    std::vector<int> at;
+                    for (int P = 0; P < Nf; ++P)
+                    {
+                        if (cf.isSkel[P] != skel) continue;
+                        for (int k = k0[q]; k <= k1[q]; ++k) at.push_back(idx(P, k));
+                    }
+                    double sc = 0; for (int i : at) sc = std::max(sc, std::fabs(s.x[i]));
+                    Vec xe = s.x;
+                    for (std::size_t t = 0; t < at.size(); ++t) xe[at[t]] += 1e-6*sc*std::cos(double(t));
+                    residualNorms(Af, xe, bf, rn, bn); scaledResidualNorms(Af, xe, bf, rsn, bsn);
+                    std::printf("K13-G6 perturb %s in %s cells by 1e-6 x max: linRes %.3e linResScaled %.3e\n",
+                                cls[q], skel ? "skeleton" : "lumen", rn/bn, rsn/bsn);
+                    check(rn/bn > 1e-10 && rsn/bsn > 1e-10, "K13-G6",
+                          skel ? "a 1e-6 error in one skeleton class fails G6 in both norms (the smaller)"
+                               : "a 1e-6 error in one lumen class fails G6 in both norms (the smaller)",
+                          std::min(rn/bn, rsn/bsn));
+                }
+            }
+        }
     }
 
     std::printf("%s: %d failure(s)\n", failures ? "KERNEL TEST FAILED" : "KERNEL TEST PASSED", failures);
