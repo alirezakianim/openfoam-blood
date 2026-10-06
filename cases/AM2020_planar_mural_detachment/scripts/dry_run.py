@@ -204,6 +204,13 @@ def synthesise_child(
     # ... and the failure that looks like it from a distance: the WHOLE body
     # translating, core and all, which is exactly what Dr Li rejected.
     core_shift_cells: int = 0,
+    # THE CONTENT-FCT LINE (S20 G3'lambda), one per step, in the solver's own format
+    # (phaseClotAxisymmetricFluid.C, the PHASE_CLOT_CONTENT_FCT Info). None emits no
+    # line (every other scenario); (lambdaFluxMean, zeroFluxRule) emits one, with
+    # zeroFluxRule None giving the pre-S20 line (run 20261001-102832 xu5_g500 read
+    # "activeFaces=56369 limitedFaces=10111 lambdaMin=0 lambdaFluxMean=0.99982924806
+    # negAfter=0"). Step 1 is idle (activeFaces=0, lambdaFluxMean=1), as that log's was.
+    fct: tuple | None = None,
 ) -> None:
     dt = spec["delta_t_s"]
 
@@ -412,6 +419,15 @@ def synthesise_child(
             f"VnMagMax=3.75e-05 wOverBound=0 WpDevMax=0.05 qMin=1e-06 "
             f"wDevBlood=0.1\n"
         )
+        if fct is not None:
+            lam, rule = fct
+            act, lim, lam_k = (0, 0, 1) if k == 1 else (56369, 10111, lam)
+            lines.append(
+                f"PHASE_CLOT_CONTENT_FCT time={t:.10g} activeFaces={act} "
+                f"limitedFaces={lim} lambdaMin={0 if act else 1} lambdaFluxMean={lam_k} "
+                f"negAfter=0"
+                + ("" if rule is None else f" zeroFluxRule={rule} partitionSumDevMax=0")
+                + "\n")
         if tear_rows is not None and k >= max(1, int(tear_from_step * n_steps)):
             if k == max(1, int(tear_from_step * n_steps)):
                 lines.append(
@@ -1629,6 +1645,22 @@ def main() -> int:
     exercise("a_watcher_stopped_child_is_never_complete", variant(), watcher_stopped,
              after=_write_watcher_records)
     run_direct("g3_lambda_is_na_before_s20_and_fails_on_lambda_0", g3_lambda_contract)
+    # G3'lambda IS AN ADMISSIBILITY GATE (S20 section 2.3; docket 20261005-1621 report 21):
+    # an otherwise healthy child whose S20-format FCT lines read lambdaFluxMean 0 is
+    # inadmissible and named for it; its S20 twin at 0.99 and a pre-S20 log at 0 (N/A)
+    # stay admissible.
+    exercise("g3_lambda_0_on_s20_log_is_inadmissible",
+             variant(fsf_G4_kxu_v250=dict(fct=(0, "exactZero"))),
+             only("fsf_G4_kxu_v250", "G3'lambda: the median lambdaFluxMean"))
+    for g3l_label, g3l_fct in (("g3_lambda_0p99_on_s20_log_is_admissible", (0.99, "exactZero")),
+                               ("g3_lambda_0_on_pre_s20_log_is_na", (0, None))):
+        def g3l_kept(r, code, _fct=g3l_fct):
+            healthy(r, code)
+            s10 = r["children"]["fsf_G4_kxu_v250"]["s10"]
+            want = None if _fct[1] is None else True
+            assert s10["g3_lambda"] is want, (s10["g3_lambda"], s10["g3_lambda_note"])
+            assert s10["fct_records"] > 1, s10["fct_records"]
+        exercise(g3l_label, variant(fsf_G4_kxu_v250=dict(fct=g3l_fct)), g3l_kept)
     run_direct("s21_generator_refuses_built_in_and_deleted_keys", s21_generator_negatives)
 
 

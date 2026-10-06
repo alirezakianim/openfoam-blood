@@ -1062,7 +1062,8 @@ def s21_spec(spec: dict, key: str):
 def s10_report(text: str, g_pa: float | None) -> dict:
     """The pre-registered S10 quantities, READ so they are not unread lines.
 
-    Reported, NOT gated on admissibility: the gates are pre-registered in
+    Reported, NOT gated on admissibility -- EXCEPT g3_lambda, which
+    assess_child ANDs into "admissible" (False gates; None is N/A) -- the gates are pre-registered in
     em51's expectation and judged in its run record. `None` means the solver
     did not emit the field (an older binary) -- never a pass.
 
@@ -5486,7 +5487,30 @@ def assess_child(case: Path, spec: dict, controls: dict) -> dict:
             f"itself establish depletion, conservation failure, or causation."
         )
 
+    # G3'lambda ADMISSIBILITY (research/designs/2026-10-05-S20-content-fct-neutral-zero-flux.md
+    # rev. 5 section 2.3). s10_report computes it; this is the verdict that reads it. A log
+    # whose FCT lines carry zeroFluxRule=exactZero and whose median lambdaFluxMean over the
+    # steps with activeFaces > 0 is below G3_LAMBDA_MEDIAN_MIN (g3_lambda False) admitted no
+    # second-order content flux: batch 68's fsf_G4 read 0 on every step. None (a pre-S20
+    # log, or no active step) is N/A and does not gate.
+    g3l = result["s10"]["g3_lambda"]
+    g3l_ok = g3l is not False
+    g3l_reason = None
+    if not g3l_ok:
+        s10 = result["s10"]
+        med = s10["g3_lambda_median"]
+        g3l_reason = (
+            f"G3'lambda: the median lambdaFluxMean over the "
+            f"{s10['fct_active_records']} PHASE_CLOT_CONTENT_FCT records with "
+            f"activeFaces > 0 is {'n/a' if med is None else f'{med:.6g}'} (must be >= "
+            f"{s10['g3_lambda_min_median']}; S20 section 2.3)"
+            + (f"; {s10['g3_lambda_note']}" if s10.get("g3_lambda_note") else "")
+            + ". The content limiter admitted no second-order flux: inadmissible."
+        )
+
     result.update({
+        "g3_lambda_ok": g3l_ok,
+        "g3_lambda_reason": g3l_reason,
         "carrier_ok": carrier_ok,
         "carrier_reason": carrier_reason,
         "carrier_records": len(carrier),
@@ -5624,7 +5648,7 @@ def assess_child(case: Path, spec: dict, controls: dict) -> dict:
         # visible in the report rather than simply absent from a row.
         "admissible": bool(
             completed and bounded and vs_ok and mass_ok and wp_ok
-            and c_bound_ok and shell_mx_ok and carrier_ok and pn_ok
+            and c_bound_ok and shell_mx_ok and carrier_ok and pn_ok and g3l_ok
         ),
     })
     if not vs_ok and not result["bounds_reason"]:
@@ -5641,6 +5665,8 @@ def assess_child(case: Path, spec: dict, controls: dict) -> dict:
         result["bounds_reason"] = shell_mx_reason
     if not carrier_ok and not result["bounds_reason"]:
         result["bounds_reason"] = carrier_reason
+    if not g3l_ok and not result["bounds_reason"]:
+        result["bounds_reason"] = g3l_reason
     return result
 
 

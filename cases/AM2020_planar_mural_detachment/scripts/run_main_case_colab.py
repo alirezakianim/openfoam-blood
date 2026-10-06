@@ -211,7 +211,12 @@ WATCH_TIME_S = 0.005             # the frame judged (S20 V6)
 WATCH_TIME_TOL_S = 1e-7          # << dt (4.76e-6): the log prints time=0.005 exactly
 WIDTH_MAX_UM = 4.0               # S20 V6: replay 3.47, batch 68 4.54, instrument agreement 0.01
 LAMBDA_MEDIAN_MIN = 0.9          # S20 V6, over the steps with activeFaces > 0
-PARTITION_SUM_DEV_MAX = 1e-12    # S20 V6: the components sum to theta within 1e-12
+# REPORTED, not a stop (report 19): batch 68, with S20 OFF, already drifts
+# 1.0e-10 at 15 ms and 3.3e-8 at 25 ms, from a source outside transport (OI-52).
+# At 5 ms its written value (2.2e-12) is at the write precision, so it is not
+# resolved (verification 20, D2). Transport alone adds <= 1.7e-14 per 200 steps (V4),
+# so a 1e-12 stop cannot be priced, and C+ under S20 is priced offline by V4.
+PARTITION_SUM_B68_5MS = 2.2e-12  # batch 68's relative sum deviation at 5 ms (the reference)
 WATCHER_LOG = "log.phaseClotAxisymmetricFluid"
 WATCHER_VERDICT = "watcher-verdict.json"
 WATCHER_STOP_FILE = "stopWatcher"   # the function object's name: stopAtFile.C:81
@@ -310,8 +315,8 @@ def evaluate_child(case: Path, width_stops: bool, width_fn, seconds: float = WAT
         for name, rule in (("lambda_median", f"median lambdaFluxMean over activeFaces > 0 >= {LAMBDA_MEDIAN_MIN}"),
                            ("neg_after", "negAfter == 0 on every record"),
                            ("zero_flux_rule", "zeroFluxRule == exactZero on every record"),
-                           ("partition_sum", f"max partitionSumDevMax <= {PARTITION_SUM_DEV_MAX:g}")):
-            clauses.append(_clause(name, rule, "ERROR", note=why))
+                           ("partition_sum", f"max partitionSumDevMax, REPORTED (batch 68 at 5 ms: {PARTITION_SUM_B68_5MS:g}; OI-52)")):
+            clauses.append(_clause(name, rule, "REPORTED" if name == "partition_sum" else "ERROR", note=why))
     else:
         _, bad_time = _numbers(fct, "time")
         clauses.append(_clause("fct_records", "at least one record, each with a time",
@@ -348,14 +353,13 @@ def evaluate_child(case: Path, width_stops: bool, width_fn, seconds: float = WAT
             clauses.append(_clause("zero_flux_rule", rule, "FAIL" if odd else "PASS",
                                    odd[0] if odd else "exactZero", "exactZero"))
         psd, bad_p = _numbers(fct, "partitionSumDevMax")
-        rule = f"max partitionSumDevMax <= {PARTITION_SUM_DEV_MAX:g}"
+        rule = f"max partitionSumDevMax, REPORTED (batch 68 at 5 ms: {PARTITION_SUM_B68_5MS:g}; OI-52)"
         if bad_p:
-            clauses.append(_clause("partition_sum", rule, "ERROR",
+            clauses.append(_clause("partition_sum", rule, "REPORTED",
                                    note=f"{bad_p} records lack a numeric partitionSumDevMax (absent or NA)"))
         else:
-            clauses.append(_clause("partition_sum", rule,
-                                   "PASS" if max(psd) <= PARTITION_SUM_DEV_MAX else "FAIL",
-                                   max(psd), PARTITION_SUM_DEV_MAX))
+            clauses.append(_clause("partition_sum", rule, "REPORTED",
+                                   max(psd), PARTITION_SUM_B68_5MS))
     clauses.append(_clause("kernel_refusal", "no 'refused' or FOAM FATAL line before the watch time",
                            "FAIL" if refusals else ("ERROR" if log_error else "PASS"),
                            len(refusals), 0, "; ".join(refusals[:2]) if refusals else (log_error or "")))

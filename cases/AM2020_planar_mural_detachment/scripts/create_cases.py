@@ -358,9 +358,17 @@ S17_FIBRE_FIELDS = ("thetaPendingB", "thetaPendingP")
 
 
 
+# Scheduling metadata, read only by scripts/check_notebook_batch_selector.py:
+# it says why a defined child is not run by any BATCHES entry. It is never
+# configuration, so no parent check compares it (S21 P2, 2026-10-06).
+_SCHEDULING_KEYS = frozenset({"not_scheduled_because"})
+
+
 def _flat_diff(a: dict, b: dict, prefix: str = "") -> set:
     out = set()
     for k in set(a) | set(b):
+        if not prefix and k in _SCHEDULING_KEYS:
+            continue
         path = prefix + k
         va, vb = a.get(k), b.get(k)
         if isinstance(va, dict) and isinstance(vb, dict):

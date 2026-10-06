@@ -1136,7 +1136,8 @@
     "Gfield",
     "Us"
    ],
-   "_what_a_failing_run_looks_like": "Any difference between P1's 0.2 ms frame and batch 68's in a field value or in the set of field names (S21 V21-6). A frame directory other than 0.0002 at the end (the window is not what V21-6 compares)."
+   "_what_a_failing_run_looks_like": "Any difference between P1's 0.2 ms frame and batch 68's in a field value or in the set of field names (S21 V21-6). A frame directory other than 0.0002 at the end (the window is not what V21-6 compares).",
+   "not_scheduled_because": "S21 validation child (V21-6/V21-8). It runs as BATCH 70 on P1 (release-c53a61a6, digest-f874e5ff9947) against the R0 reference; not scheduled on later releases, kept for re-validation."
   },
   {
    "adhesive_strength_pa": 0.4,
@@ -1333,7 +1334,8 @@
    "seed_theta_peak": {
     "theta": 0.4725,
     "cells": 50
-   }
+   },
+   "not_scheduled_because": "S21 validation child (V21-6/V21-8). It runs as BATCH 70 on P1 (release-c53a61a6, digest-f874e5ff9947) against the R0 reference; not scheduled on later releases, kept for re-validation."
   }
  ]
 }

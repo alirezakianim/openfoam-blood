@@ -1611,6 +1611,7 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
         << " wallFluxConstraint=on"
         << " skeletonWall="
         << "slip"
+        << " zeroFluxRule=exactZero"
         << endl;
 
     // ---- S11: THE SIX ROOT-CAUSE SWITCHES OF RUN 20260923-031942 ----
@@ -5436,10 +5437,20 @@ Foam::solvers::phaseClotAxisymmetricFluid::fctLimiter
         )
     );
     scalarField& lam = tlambda.ref().primitiveFieldRef();
+    // S20 (design 2026-10-05-S20 rev. 4 section 2.1): R1's exact-zero rule
+    // (damagePartitionKernel.H limiterR1). A face where this field's flux is
+    // EXACTLY 0 carries none of it, so it places no constraint on the shared
+    // minimum: lambda = 1. A subnormal flux is still not spent (requirement
+    // 3 above): lambda = 0. A field uniform 0 (thetaH) no longer vetoes every
+    // face.
     forAll(own, facei)
     {
         const scalar a = Ai[facei];
-        if (mag(a) < tiny)
+        if (a == 0)
+        {
+            lam[facei] = 1.0;
+        }
+        else if (mag(a) < tiny)
         {
             lam[facei] = 0.0;
         }
@@ -9021,6 +9032,16 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveContentComponents
         }
     }
 
+    // S20 (rev. 4 section 2.2): the FCT block's numbers, carried to the
+    // PHASE_CLOT_CONTENT_FCT line printed after C+ below, whose partition
+    // sum that line also reports. -1: not yet set (the block always sets
+    // them).
+    label fctActive = -1;
+    label fctLimited = -1;
+    scalar fctLamMin = -1;
+    scalar fctLamFluxMean = -1;
+    label fctNegAfter = -1;
+
     // S10 FIX 3: THE FLUX CORRECTION. Everything above is the upwind
     // predictor; this adds, face by face, as much of the (linear - upwind)
     // flux as keeps EVERY transported field within its local bounds. ONE
@@ -9111,13 +9132,12 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveContentComponents
         reduce(den, sumOp<scalar>());
         reduce(negAfter, sumOp<label>());
 
-        Info<< "PHASE_CLOT_CONTENT_FCT time=" << runTime.userTimeValue()
-            << " activeFaces=" << active
-            << " limitedFaces=" << limited
-            << " lambdaMin=" << lamMin
-            << " lambdaFluxMean=" << (den > 0 ? num/den : 1.0)
-            << " negAfter=" << negAfter
-            << endl;
+        // S20: printed after C+, below.
+        fctActive = active;
+        fctLimited = limited;
+        fctLamMin = lamMin;
+        fctLamFluxMean = (den > 0 ? num/den : 1.0);
+        fctNegAfter = negAfter;
     }
 
 
@@ -9278,6 +9298,42 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveContentComponents
         s16FoutMax_ = max(s16FoutMax_, returnReduce(stC.FoutMax, maxOp<scalar>()));
         s16MuMin_ = min(s16MuMin_, returnReduce(stE.muMin, minOp<scalar>()));
         s16MuMean_ = stE.muMean;
+    }
+    // S20 (rev. 4 sections 2.1-2.2): THE FCT LINE, once the partition has
+    // taken theta's limited flux. Read by assess_case.py (s10 block: G3',
+    // G3'lambda) and run_main_case_colab.py's 5 ms watcher (V6), which
+    // treats a missing key as an error. zeroFluxRule names fctLimiter's rule
+    // (an exactly-zero flux places no constraint). partitionSumDevMax is
+    // PHASE_CLOT_S16's quantity, max|P1 + (P2 + P3) - theta| over max theta,
+    // here after the transport and on every step: C+ above is unconditional
+    // in this function, so the number is always defined where this prints.
+    {
+        const scalarField& p1 = thetaIntact_.primitiveField();
+        const scalarField& p2 = thetaPending_.primitiveField();
+        const scalarField& p3 = thetaBroken_.primitiveField();
+        const scalarField& c1 = thetaC_.primitiveField();
+        const scalarField& h1 = thetaH_.primitiveField();
+        scalar devT = 0;
+        scalar thetaTop = 0;
+        forAll(p1, celli)
+        {
+            const scalar thc = c1[celli] + h1[celli];
+            thetaTop = max(thetaTop, thc);
+            devT = max(devT, mag(p1[celli] + (p2[celli] + p3[celli]) - thc));
+        }
+        reduce(devT, maxOp<scalar>());
+        reduce(thetaTop, maxOp<scalar>());
+
+        Info<< "PHASE_CLOT_CONTENT_FCT time=" << runTime.userTimeValue()
+            << " activeFaces=" << fctActive
+            << " limitedFaces=" << fctLimited
+            << " lambdaMin=" << fctLamMin
+            << " lambdaFluxMean=" << fctLamFluxMean
+            << " negAfter=" << fctNegAfter
+            << " zeroFluxRule=exactZero"
+            << " partitionSumDevMax="
+            << (thetaTop > 0 ? devT/thetaTop : 0)
+            << endl;
     }
     // S16 C: ruptured_ = D/theta for every consumer of d; the partition is
     // checked (negative or non-finite is fatal), never bounded.
