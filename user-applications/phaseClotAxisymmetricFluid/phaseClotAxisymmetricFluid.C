@@ -359,22 +359,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
         mesh,
         dimensionedScalar("zero", dimArea, 1e-14)
     ),
-    contentDragK_
-    (
-        IOobject("contentDragK", runTime.name(), mesh, IOobject::NO_READ,
-                 IOobject::NO_WRITE),
-        mesh,
-        dimensionedScalar("zero", dimless/dimTime, 0),
-        zeroGradientFvPatchField<scalar>::typeName
-    ),
-    contentInvPermKC_
-    (
-        IOobject("contentInvPermKC", runTime.name(), mesh, IOobject::NO_READ,
-                 IOobject::AUTO_WRITE),
-        mesh,
-        dimensionedScalar("zero", dimless/dimArea, 0),
-        zeroGradientFvPatchField<scalar>::typeName
-    ),
     // THE FIELD TO LOOK AT IN PARAVIEW, and the reason it is written.
     //
     // poroPerm is Kozeny-Carman, k ~ q^3/(1-q)^2, so it DIVERGES as q -> 1.
@@ -422,12 +406,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
         mesh,
         dimensionedSymmTensor("zero", dimPressure, Zero)
     ),
-    divSigmaExp_
-    (
-        IOobject("divSigmaExp", runTime.name(), mesh, IOobject::NO_READ, IOobject::NO_WRITE),
-        mesh,
-        dimensionedVector("zero", dimPressure/dimLength, Zero)
-    ),
     // AUTO_WRITE: the whole point of this field is that the bond's view of the
     // stress can be inspected, and a log number that cannot be looked at in
     // ParaView is how the zero traction went unexamined in the first place.
@@ -442,17 +420,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
         dimensionedSymmTensor("zero", dimPressure, Zero)
     ),
 
-    eulerianSolid_
-    (
-        phaseClotProperties_.lookupOrDefault<Switch>("eulerianSolid", false)
-    ),
-
-    // Declared immediately after eulerianSolid_ in the header, and
-    // initialised immediately after it here. -Werror=reorder-ctor is on.
-    eulerianBrinkman_
-    (
-        phaseClotProperties_.lookupOrDefault<Switch>("eulerianBrinkman", false)
-    ),
     be_
     (
         // READ_IF_PRESENT with AUTO_WRITE: be is STATE. A restart that lost it
@@ -488,56 +455,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
     (
         phaseClotProperties_.lookupOrDefault<label>("beCorrectors", 3)
     ),
-    beTraceFreeSource_
-    (
-        phaseClotProperties_.lookupOrDefault<Switch>
-        (
-            "beTraceFreeSource", Switch(false)
-        )
-    ),
-    eulerianMaterialFluxIsPhi_
-    (
-        phaseClotProperties_.lookupOrDefault<Switch>
-        (
-            "eulerianMaterialFluxIsPhi", Switch(true)
-        )
-    ),
-    beFluxConsistentGradU_
-    (
-        phaseClotProperties_.lookupOrDefault<Switch>
-        (
-            "beFluxConsistentGradU", Switch(true)
-        )
-    ),
-    beTermDiagnostic_
-    (
-        phaseClotProperties_.lookupOrDefault<Switch>
-        (
-            "beTermDiagnostic", Switch(false)
-        )
-    ),
-    // Declared between beFluxConsistentGradU_ and beDetRenormalise_ in the
-    // header, so it is initialised there too -- gcc's -Wreorder is on via
-    // -Wall and an out-of-order initialiser list is a warning this build
-    // treats as noise it must not generate.
-    //
-    // elasticForce_ is a tmp and is deliberately absent from this list: its
-    // default construction is the invalid state that correctPressure() reads
-    // as "defer to the base implementation".
-    faceConsistentElasticForce_
-    (
-        phaseClotProperties_.lookupOrDefault<Switch>
-        (
-            "faceConsistentElasticForce", Switch(false)
-        )
-    ),
-    beDetRenormalise_
-    (
-        phaseClotProperties_.lookupOrDefault<Switch>
-        (
-            "beDetRenormalise", Switch(false)
-        )
-    ),
     elasticCourant_
     (
         phaseClotProperties_.lookupOrDefault<scalar>("elasticCourant", 0.5)
@@ -572,38 +489,12 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
     D_(phaseClotProperties_.lookup("D")),
     alpha_(phaseClotProperties_.lookup("alpha")),
     k0_(phaseClotProperties_.lookup("k0")),
-    k1_(phaseClotProperties_.lookup("k1")),
     etaP_(phaseClotProperties_.lookup("etaP")),
     gradFloor_(phaseClotProperties_.lookup("gradFloor")),
     qFloor_(phaseClotProperties_.lookup("qFloor")),
     penaltyExponent_
     (
         phaseClotProperties_.lookupOrDefault<scalar>("penaltyExponent", 1)
-    ),
-    // Default preserves the legacy linear law so every previously passed
-    // gate reproduces byte-identically without editing its dictionary.
-    shearEnhancementModel_
-    (
-        phaseClotProperties_.lookupOrDefault<word>
-        (
-            "shearEnhancementModel", word("linear")
-        )
-    ),
-    // Legacy default, for the same reason: an old dictionary must keep
-    // producing the old answer. Every new case sets "reaction" explicitly.
-    growthClosure_
-    (
-        phaseClotProperties_.lookupOrDefault<word>
-        (
-            "growthClosure", word("gradient")
-        )
-    ),
-    interfaceDepletionModel_
-    (
-        phaseClotProperties_.lookupOrDefault<word>
-        (
-            "interfaceDepletionModel", word("none")
-        )
     ),
     // Read as plain scalars in 1/s and dimension them here: v13 has no
     // dictionary lookupOrDefault overload for dimensionedScalar.
@@ -623,11 +514,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
     (
         phaseClotProperties_.lookupOrDefault<scalar>("enhancementMax", 20)
     ),
-    // --- v3 mechanics controls; default false keeps the rigid v2 path exact ---
-    clotMechanics_
-    (
-        phaseClotProperties_.lookupOrDefault<Switch>("clotMechanics", false)
-    ),
     G_("G", dimPressure, phaseClotProperties_.lookupOrDefault<scalar>("G", 58.6)),
     poissonRatio_(phaseClotProperties_.lookupOrDefault<scalar>("poissonRatio", 0.12)),
     lambdaLame_
@@ -638,66 +524,14 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
        *phaseClotProperties_.lookupOrDefault<scalar>("poissonRatio", 0.12)
        /(1.0 - 2.0*phaseClotProperties_.lookupOrDefault<scalar>("poissonRatio", 0.12))
     ),
-    permeabilityModel_
-    (
-        phaseClotProperties_.lookupOrDefault<word>
-        (
-            "permeabilityModel", word("kozenyCarman")
-        )
-    ),
     k0p_("k0p", dimArea, phaseClotProperties_.lookupOrDefault<scalar>("k0p", 3.5e-14)),
-    phi0_(phaseClotProperties_.lookupOrDefault<scalar>("phi0", 0.5)),
     Gc_("Gc", dimPressure*dimLength, phaseClotProperties_.lookupOrDefault<scalar>("Gc", 1.0)),
     ell_("ell", dimLength, phaseClotProperties_.lookupOrDefault<scalar>("ell", 2.6e-4)),
     etaRes_(phaseClotProperties_.lookupOrDefault<scalar>("etaRes", 1e-6)),
     DgDetach_(phaseClotProperties_.lookupOrDefault<scalar>("DgDetach", 0.95)),
-    nSkeletonCorrectors_
-    (
-        phaseClotProperties_.lookupOrDefault<label>("nSkeletonCorrectors", 20)
-    ),
-    nStaggeredCorrectors_
-    (
-        phaseClotProperties_.lookupOrDefault<label>("nStaggeredCorrectors", 5)
-    ),
-    // Default false keeps the small-strain assembly exact. Declared before
-    // stronglyCoupledFSI_, so it is initialised here: -Wextra warns on any
-    // initialiser order that does not match the declaration order, and this
-    // build has been warning-free twice.
-    finiteStrain_
-    (
-        phaseClotProperties_.lookupOrDefault<Switch>("finiteStrain", false)
-    ),
-    // --- strongly-coupled exchange; default false keeps the loose path exact ---
-    stronglyCoupledFSI_
-    (
-        phaseClotProperties_.lookupOrDefault<Switch>("stronglyCoupledFSI", false)
-    ),
-    nFSICorrectors_
-    (
-        phaseClotProperties_.lookupOrDefault<label>("nFSICorrectors", 20)
-    ),
-    fsiTolerance_
-    (
-        phaseClotProperties_.lookupOrDefault<scalar>("fsiTolerance", 1e-4)
-    ),
     fsiRelaxation_
     (
         phaseClotProperties_.lookupOrDefault<scalar>("fsiRelaxation", 1.0)
-    ),
-    fsiAitken_
-    (
-        phaseClotProperties_.lookupOrDefault<Switch>("fsiAitken", true)
-    ),
-    skeletonFixedPointTolerance_
-    (
-        phaseClotProperties_.lookupOrDefault<scalar>
-        (
-            "skeletonFixedPointTolerance", 1e-7
-        )
-    ),
-    advectReleased_
-    (
-        phaseClotProperties_.lookupOrDefault<Switch>("advectReleased", false)
     ),
     releaseSupportSweeps_
     (
@@ -715,27 +549,9 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
     (
         phaseClotProperties_.lookupOrDefault<scalar>("bondHoldPenalty", 0.0)
     ),
-    bondHoldCarrier_
-    (
-        phaseClotProperties_.lookupOrDefault<Switch>("bondHoldCarrier", false)
-    ),
-    bondHoldTaper_
-    (
-        phaseClotProperties_.lookupOrDefault<Switch>("bondHoldTaper", false)
-    ),
     releaseCoreExempt_
     (
         phaseClotProperties_.lookupOrDefault<Switch>("releaseCoreExempt", true)
-    ),
-    // Diagnostic only, default OFF, and it must stay default off: it writes
-    // three extra vector fields per write time and answers a question that is
-    // open on one run rather than a quantity any case needs.
-    skeletonResidualDiagnostic_
-    (
-        phaseClotProperties_.lookupOrDefault<Switch>
-        (
-            "skeletonResidualDiagnostic", false
-        )
     ),
     skelElasticForce_
     (
@@ -756,37 +572,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
         ),
         mesh,
         dimensionedVector("zero", dimAcceleration, Zero)
-    ),
-    skelVs_
-    (
-        IOobject
-        (
-            "skelVs", runTime.name(), mesh,
-            IOobject::NO_READ, IOobject::AUTO_WRITE
-        ),
-        mesh,
-        dimensionedVector("zero", dimVelocity, Zero)
-    ),
-    twoVelocitySkeleton_
-    (
-        phaseClotProperties_.lookupOrDefault<Switch>
-        (
-            "twoVelocitySkeleton", false
-        )
-    ),
-    materialCarrierBlend_
-    (
-        phaseClotProperties_.lookupOrDefault<Switch>
-        (
-            "materialCarrierBlend", false
-        )
-    ),
-    vnCapEnabled_
-    (
-        phaseClotProperties_.lookupOrDefault<Switch>
-        (
-            "vnCapEnabled", false
-        )
     ),
     Vs_
     (
@@ -821,16 +606,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
             "skeletonVolumeFraction", 0.01
         )
     ),
-    // DEFAULT OFF. See the header: an ON default would hand a model to twelve
-    // returned children that never named the key.
-    contentModel_
-    (
-        phaseClotProperties_.lookupOrDefault<Switch>("contentModel", false)
-    ),
-    contentOperator_
-    (
-        phaseClotProperties_.lookupOrDefault<word>("contentOperator", "content")
-    ),
     // Declared, not fitted. 1e-17 m3 is an order-of-magnitude platelet volume
     // and is a PLACEHOLDER for Stage 1, where kinetics are off and vP
     // therefore multiplies nothing. It must be sourced before Stage 2 gives
@@ -855,84 +630,7 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
     (
         phaseClotProperties_.lookupOrDefault<scalar>("phiSMax", 0.6)
     ),
-    networkPressureModel_
-    (
-        phaseClotProperties_.lookupOrDefault<word>
-        (
-            "networkPressureModel", "poleAtMax"
-        )
-    ),
-    networkPressureReference_
-    (
-        phaseClotProperties_.lookupOrDefault<word>
-        (
-            "networkPressureReference", "nominal"
-        )
-    ),
-    contentTransportScheme_
-    (
-        phaseClotProperties_.lookupOrDefault<word>
-        (
-            "contentTransportScheme", "upwind"
-        )
-    ),
-    releasedCarrier_
-    (
-        phaseClotProperties_.lookupOrDefault<word>
-        (
-            "releasedCarrier", "rigidBody"
-        )
-    ),
-    skeletonMomentumForm_
-    (
-        phaseClotProperties_.lookupOrDefault<word>
-        (
-            "skeletonMomentumForm", "conservative"
-        )
-    ),
-    blockFaceInverse_
-    (
-        phaseClotProperties_.lookupOrDefault<word>
-        (
-            "blockFaceInverse", "cellInverse"
-        )
-    ),
-    stressFaceTransmission_
-    (
-        phaseClotProperties_.lookupOrDefault<word>
-        (
-            "stressFaceTransmission", "linear"
-        )
-    ),
-    networkPressureForce_
-    (
-        phaseClotProperties_.lookupOrDefault<word>
-        (
-            "networkPressureForce", "stressDivergence"
-        )
-    ),
-    beRelaxBasis_
-    (
-        phaseClotProperties_.lookupOrDefault<word>
-        (
-            "beRelaxBasis", "blood"
-        )
-    ),
-    explicitStabilityBounds_
-    (
-        phaseClotProperties_.lookupOrDefault<word>
-        (
-            "explicitStabilityBounds", "off"
-        )
-    ),
     explicitDiffusionRate_(0),
-    dragOccupancyBasis_
-    (
-        phaseClotProperties_.lookupOrDefault<word>
-        (
-            "dragOccupancyBasis", "legacy"
-        )
-    ),
     networkPressureWeight_
     (
         phaseClotProperties_.lookupOrDefault<word>
@@ -940,29 +638,11 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
             "networkPressureWeight", "depositedOccupancy"
         )
     ),
-    beStretchGradient_
-    (
-        phaseClotProperties_.lookupOrDefault<word>
-        (
-            "beStretchGradient", "cellGradient"
-        )
-    ),
-    networkRupture_
-    (
-        phaseClotProperties_.lookupOrDefault<word>("networkRupture", "off")
-    ),
     networkCriticalStretch_
     (
         phaseClotProperties_.lookupOrDefault<scalar>
         (
             "networkCriticalStretch", 2.8
-        )
-    ),
-    elasticStabilityStiffness_
-    (
-        phaseClotProperties_.lookupOrDefault<word>
-        (
-            "elasticStabilityStiffness", "modulus"
         )
     ),
     networkDamageOnsetStretch_
@@ -996,77 +676,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
             "networkReleaseTime", 3.3e-4
         )
     ),
-    networkDamageProgressive_
-    (
-        phaseClotProperties_.lookupOrDefault<Switch>
-        (
-            "networkDamageProgressive", true
-        )
-    ),
-    skeletonFloorBasis_
-    (
-        phaseClotProperties_.lookupOrDefault<word>
-        (
-            "skeletonFloorBasis", "intactWeight"
-        )
-    ),
-    damageTransport_
-    (
-        phaseClotProperties_.lookupOrDefault<word>
-        (
-            "damageTransport", "volumeFlux"
-        )
-    ),
-    networkPressureDamage_
-    (
-        phaseClotProperties_.lookupOrDefault<word>
-        (
-            "networkPressureDamage", "off"
-        )
-    ),
-    // S17 C: the shipped explicit coupling by default.
-    elasticCoupling_
-    (
-        phaseClotProperties_.lookupOrDefault<word>
-        (
-            "elasticCoupling", "explicit"
-        )
-    ),
-    // S17b: each default is S17's behaviour.
-    fibreSlack_
-    (
-        phaseClotProperties_.lookupOrDefault<word>("fibreSlack", "off")
-    ),
-    fibreArithmetic_
-    (
-        phaseClotProperties_.lookupOrDefault<word>
-        (
-            "fibreArithmetic", "shipped"
-        )
-    ),
-    skeletonWallFace_
-    (
-        phaseClotProperties_.lookupOrDefault<word>
-        (
-            "skeletonWallFace", "shipped"
-        )
-    ),
-    // S18: each default is S17b's behaviour.
-    frozenPendingPressure_
-    (
-        phaseClotProperties_.lookupOrDefault<word>
-        (
-            "frozenPendingPressure", "shipped"
-        )
-    ),
-    wallPatchSplit_
-    (
-        phaseClotProperties_.lookupOrDefault<word>("wallPatchSplit", "shipped")
-    ),
-    cplusOrder_
-    (
-        phaseClotProperties_.lookupOrDefault<word>("cplusOrder", "shipped")
-    ),
     // S18p: the default is S18 as built (no counters, no dump).
     projSiteLog_
     (
@@ -1089,15 +698,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
         phaseClotProperties_.lookupOrDefault<scalar>
         (
             "networkViscosityTau", 2.5e-4
-        )
-    ),
-    // S19b: the default is eliminate (Alireza, 2026-10-04); identityRows is
-    // S19a's system. Inert, and refused when named, under segregated.
-    blockCoupledLumen_
-    (
-        phaseClotProperties_.lookupOrDefault<word>
-        (
-            "blockCoupledLumen", "eliminate"
         )
     ),
     phiSkel_
@@ -1140,57 +740,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
         ),
         phi_*dimensionedScalar("zero", dimless, 0)
     ),
-    // 6 -> 15. The mask boundary must sit where grad(c) is NEGLIGIBLE, not
-    // merely outside the c = 0 contour, because the advecting velocity jumps
-    // across it: Ubody inside, the local fluid flux outside.
-    //
-    // Measured on run 20260813-013923, up a column through the clot:
-    //
-    //   cells above c=0    c        material still above
-    //         6         0.9145            1.1%
-    //        12         0.9896            0.1%
-    //        15         0.9974            0.0%
-    //
-    // At 6 cells the boundary sat at c = 0.91 with 1.1% of the material
-    // outside it, and the local fluid there runs at about 3.4e-3 m/s against
-    // Ubody = 1.5e-3 -- a 2x velocity jump straight through the tail. Fast
-    // fluid above the clot dragged the upper tail forward while slow near-wall
-    // fluid held the lower tail back, and the body stretched: c < 0 height
-    // 18 -> 22 um, c < 0.5 envelope 22 -> 27 um.
-    //
-    // A LARGE dilation is safe, which is the non-obvious part. The advection
-    // is the non-conservative u.grad(c) form, so in the region where c is
-    // uniformly 1 the mask velocity is irrelevant -- grad(c) is zero and
-    // advecting there does nothing at all. Enlarging the mask therefore costs
-    // nothing except dilation sweeps, and buys a boundary that lies in dead
-    // field. 15 cells puts it at c = 0.9974.
-    releasedMaskDilation_
-    (
-        phaseClotProperties_.lookupOrDefault<label>
-        (
-            "releasedMaskDilation", 3
-        )
-    ),
-    //- c above which a cell carries no meaningful clot material. The mask
-    //  stops growing here, so the velocity jump lands where grad(c) is
-    //  negligible. 0.9999 corresponds to about 20 cells past the c = 0
-    //  contour at epsilonC = 6 um, where the measured shedding over a full
-    //  transit is dc = 0.007.
-    releasedMaskLimit_
-    (
-        phaseClotProperties_.lookupOrDefault<scalar>
-        (
-            "releasedMaskLimit", 0.9999
-        )
-    ),
-    //- Safety cap on the growth sweeps. The loop exits when nothing changes.
-    releasedMaskSweeps_
-    (
-        phaseClotProperties_.lookupOrDefault<label>
-        (
-            "releasedMaskSweeps", 400
-        )
-    ),
     skeletonDivergenceRun_
     (
         phaseClotProperties_.lookupOrDefault<label>
@@ -1198,102 +747,7 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
             "skeletonDivergenceRun", 5
         )
     ),
-    skeletonDiverged_(false),
-    skeletonGrowthRun_(0),
-    skeletonPrevResidual_(great),
-    constitutiveModel_
-    (
-        phaseClotProperties_.lookupOrDefault<word>
-        (
-            "constitutiveModel", "stVenantKirchhoff"
-        )
-    ),
-    neoHookean_(constitutiveModel_ == "neoHookean"),
-    skeletonBestResidual_(great),
-    skeletonDivergenceGrowth_
-    (
-        phaseClotProperties_.lookupOrDefault<scalar>
-        (
-            "skeletonDivergenceGrowth", 1.0e5
-        )
-    ),
-    skeletonHardFailure_(false),
-    skeletonDivergedSteps_(0),
-    divergenceTimeIndex_(-1),
-    stepDiverged_(false),
-    nSkeletonDivergedSteps_
-    (
-        phaseClotProperties_.lookupOrDefault<label>
-        (
-            "nSkeletonDivergedSteps", 3
-        )
-    ),
     deltaTIncrement_(runTime.deltaTValue()),
-    materialCourant_
-    (
-        phaseClotProperties_.lookupOrDefault<scalar>("materialCourant", 0.5)
-    ),
-    materialDeltaTMin_
-    (
-        phaseClotProperties_.lookupOrDefault<scalar>
-        (
-            "materialDeltaTMin", 1e-8
-        )
-    ),
-    nMaterialFloorSteps_
-    (
-        phaseClotProperties_.lookupOrDefault<label>
-        (
-            "nMaterialFloorSteps", 20
-        )
-    ),
-    materialFloorSteps_(0),
-    skeletonUsBound_
-    (
-        phaseClotProperties_.lookupOrDefault<scalar>("skeletonUsBound", 1e-3)
-    ),
-    releasedAmbientQ_
-    (
-        phaseClotProperties_.lookupOrDefault<scalar>
-        (
-            "releasedAmbientQ", 0.95
-        )
-    ),
-    skeletonPressureForce_
-    (
-        phaseClotProperties_.lookupOrDefault<Switch>
-        (
-            "skeletonPressureForce", false
-        )
-    ),
-    skeletonImplicitFactor_
-    (
-        phaseClotProperties_.lookupOrDefault<scalar>
-        (
-            "skeletonImplicitFactor", 1.0
-        )
-    ),
-    skeletonIters_(0),
-    skeletonResidual_(0.0),
-    fsiOmegaMin_
-    (
-        phaseClotProperties_.lookupOrDefault<scalar>("fsiOmegaMin", 0.01)
-    ),
-    fsiOmegaMax_
-    (
-        phaseClotProperties_.lookupOrDefault<scalar>("fsiOmegaMax", 1.0)
-    ),
-    fsiSweepTrace_
-    (
-        phaseClotProperties_.lookupOrDefault<Switch>("fsiSweepTrace", false)
-    ),
-    fsiNormProbeFraction_
-    (
-        phaseClotProperties_.lookupOrDefault<scalar>
-        (
-            "fsiNormProbeFraction", 0.5
-        )
-    ),
     fsiResidual_
     (
         IOobject("fsiResidual", runTime.name(), mesh, IOobject::NO_READ, IOobject::NO_WRITE),
@@ -1323,75 +777,10 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
     tRelease_(0.0),
     tStepStart_(0.0),
 
-    // Default false keeps the previous platelet assembly exact.
-    plateletFluxConsistent_
-    (
-        phaseClotProperties_.lookupOrDefault<Switch>
-        (
-            "plateletFluxConsistent",
-            false
-        )
-    ),
-    // DEFAULT ON since 2026-08-23. It was default OFF, and that was a mistake
-    // that cost a run.
-    //
-    // WHY IT IS THE RIGHT FORMULATION. w is a CONCENTRATION, intensive. The
-    // conserved quantity is the platelet CONTENT per unit total volume,
-    // Wp = q*w, and transport conserves content and not concentration whenever
-    // the carrier fraction q varies. Recovering w = Wp/q then divides by a
-    // quantity that reaches q = 1.3e-5 in the clot core -- a 77000x error
-    // amplifier built into the ratio form. Measured on the same test:
-    // |Wp - q| = 6.686e-12 on this branch against max|w - 1| = 63.769 on the
-    // w branch, and with growth on the w branch reaches wMax = 7312 with 1446
-    // cells out of bounds.
-    //
-    // WHY THE DEFAULT HAD TO CHANGE, not just the children. Run
-    // 20260823-023233 ran force_cell and force_face -- the momentum-force A/B,
-    // built by copying renorm_off, which predates this work -- and both
-    // silently inherited the w branch. Wp sat at uniform 1, never solved, and
-    // Vn (built from grad(w)) reached 0.594 and 1.368 m/s in the two arms,
-    // contaminating the clot geometry the A/B was measuring. A validated fix
-    // left as an opt-in flag is inherited-broken by every child built from an
-    // older one.
-    //
-    // This is exactly the rule run 20260818-125909 wrote for
-    // eulerianMaterialFluxIsPhi -- "shipping a known-inapplicable construction
-    // behind an off-by-default flag is how the defect survives" -- applied to
-    // the case it was written for and then not followed.
-    //
-    // The switch REMAINS, because six children are deliberate w-branch
-    // controls: gate_a_advect (paired against gate_a_content) and the five
-    // plt_* probes, which are read against a w-branch control and whose
-    // operator audit decomposes the w equation itself. Those pin it to no.
-    plateletContentFormulation_
-    (
-        phaseClotProperties_.lookupOrDefault<Switch>
-        (
-            "plateletContentFormulation",
-            true
-        )
-    ),
 
-    plateletOuter_(0),
     nPhaseCorrectors_
     (
         phaseClotProperties_.lookupOrDefault<label>("nPhaseCorrectors", 1)
-    ),
-    operatorAudit_
-    (
-        phaseClotProperties_.lookupOrDefault<bool>("operatorAudit", false)
-    ),
-    operatorLocalisationAudit_
-    (
-        phaseClotProperties_.lookupOrDefault<bool>
-        (
-            "operatorLocalisationAudit",
-            false
-        )
-    ),
-    operatorAuditEvery_
-    (
-        phaseClotProperties_.lookupOrDefault<label>("operatorAuditEvery", 1)
     ),
     previousInventory_(0),
     detachedContentStep_(0),
@@ -1616,41 +1005,9 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
         dimensionedScalar("zero", dimless, 0),
         zeroGradientFvPatchField<scalar>::typeName
     ),
-    plateletContentModel_
-    (
-        phaseClotProperties_.lookupOrDefault<Switch>
-        (
-            "plateletContentModel", false
-        )
-    ),
-    plateletOuterTransactions_
-    (
-        phaseClotProperties_.lookupOrDefault<Switch>
-        (
-            "plateletOuterTransactions", false
-        )
-    ),
-    plateletOuterForceReject_
-    (
-        phaseClotProperties_.lookupOrDefault<Switch>
-        (
-            "plateletOuterForceReject", false
-        )
-    ),
     plateletAttempt_
     (
         phaseClotProperties_.lookupOrDefault<label>("plateletAttempt", 0)
-    ),
-    // No usable default. "undeclared" is caught by
-    // checkPlateletConfiguration() so a case that forgets the key FAILS
-    // rather than silently picking a convention -- the exact error this
-    // equation shipped with in its first draft.
-    plateletFluxConvention_
-    (
-        phaseClotProperties_.lookupOrDefault<word>
-        (
-            "plateletFluxConvention", "undeclared"
-        )
     ),
     plateletDiffusivity_
     (
@@ -1675,13 +1032,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
             "plateletBindRate", 0.0
         )
     ),
-    plateletBindLocalisation_
-    (
-        phaseClotProperties_.lookupOrDefault<word>
-        (
-            "plateletBindLocalisation", "uniform"
-        )
-    ),
     plateletAdhesionSpeed_
     (
         phaseClotProperties_.lookupOrDefault<scalar>
@@ -1689,116 +1039,11 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
             "plateletAdhesionSpeed", -1.0
         )
     ),
-    phaseWeightBasis_
-    (
-        phaseClotProperties_.lookupOrDefault<word>
-        (
-            "phaseWeightBasis", "legacy"
-        )
-    ),
-    unlocalisedPhaseWeightsAccepted_
-    (
-        phaseClotProperties_.lookupOrDefault<Switch>
-        (
-            "unlocalisedPhaseWeightsAccepted", false
-        )
-    ),
-    phaseForceBasis_
-    (
-        phaseClotProperties_.lookupOrDefault<word>
-        (
-            "phaseForceBasis", "legacy"
-        )
-    ),
-    phaseMomentumFluxBasis_
-    (
-        phaseClotProperties_.lookupOrDefault<word>
-        (
-            "phaseMomentumFluxBasis", "legacy"
-        )
-    ),
-    phaseFluidFractionBasis_
-    (
-        // S7. WAS "legacy", WHICH IS THE VALUE S6c-2 REFUSES.
-        // A refusal added to a key whose default is the refused
-        // value makes OMISSION fatal, and 201 cases omit these.
-        // Flipped with the generator's fallback in the same change,
-        // per the two-place rule. This does NOT revive a case with
-        // contentModel off: for those the surviving value is refused
-        // too, and OI-24 records that they have no legal dictionary.
-        phaseClotProperties_.lookupOrDefault<word>
-        (
-            "phaseFluidFractionBasis", "content"
-        )
-    ),
-    phaseLimiterBasis_
-    (
-        // S7. WAS "legacy", WHICH IS THE VALUE S6c-2 REFUSES.
-        // A refusal added to a key whose default is the refused
-        // value makes OMISSION fatal, and 201 cases omit these.
-        // Flipped with the generator's fallback in the same change,
-        // per the two-place rule. This does NOT revive a case with
-        // contentModel off: for those the surviving value is refused
-        // too, and OI-24 records that they have no legal dictionary.
-        phaseClotProperties_.lookupOrDefault<word>
-        (
-            "phaseLimiterBasis", "content"
-        )
-    ),
-    phasePlateletFluxBasis_
-    (
-        phaseClotProperties_.lookupOrDefault<word>
-        (
-            "phasePlateletFluxBasis", "legacy"
-        )
-    ),
-    phaseIndicatorBasis_
-    (
-        phaseClotProperties_.lookupOrDefault<word>
-        (
-            "phaseIndicatorBasis", "legacy"
-        )
-    ),
-    phaseDeltaBasis_
-    (
-        phaseClotProperties_.lookupOrDefault<word>
-        (
-            "phaseDeltaBasis", "content"
-        )
-    ),
-    phaseNormalBasis_
-    (
-        // S7. WAS "legacy", WHICH IS THE VALUE S6c-2 REFUSES.
-        // A refusal added to a key whose default is the refused
-        // value makes OMISSION fatal, and 201 cases omit these.
-        // Flipped with the generator's fallback in the same change,
-        // per the two-place rule. This does NOT revive a case with
-        // contentModel off: for those the surviving value is refused
-        // too, and OI-24 records that they have no legal dictionary.
-        phaseClotProperties_.lookupOrDefault<word>
-        (
-            "phaseNormalBasis", "content"
-        )
-    ),
-    phaseGrowthDriver_
-    (
-        phaseClotProperties_.lookupOrDefault<word>
-        (
-            "phaseGrowthDriver", "transfer"
-        )
-    ),
     plateletTransportOnly_
     (
         phaseClotProperties_.lookupOrDefault<Switch>
         (
             "plateletTransportOnly", false
-        )
-    ),
-    plateletCarrierArchive_
-    (
-        phaseClotProperties_.lookupOrDefault<Switch>
-        (
-            "plateletCarrierArchive", false
         )
     ),
     nP_
@@ -1894,14 +1139,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
         )
     ),
 
-    // --- diffuse-domain skeleton weighting; default false = previous matrix ---
-    skeletonDiffuseDomain_
-    (
-        phaseClotProperties_.lookupOrDefault<Switch>
-        (
-            "skeletonDiffuseDomain", false
-        )
-    ),
     skeletonSolidFloor_
     (
         phaseClotProperties_.lookupOrDefault<scalar>("skeletonSolidFloor", 1e-4)
@@ -1928,22 +1165,166 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
             "skeletonPinExponent", 8.0
         )
     ),
-    phaseFieldMaterialVelocity_
-    (
-        phaseClotProperties_.lookupOrDefault<Switch>
-        (
-            "phaseFieldMaterialVelocity", false
-        )
-    ),
     permeabilityFloor_
     (
         phaseClotProperties_.lookupOrDefault<scalar>("permeabilityFloor", small)
-    ),
-    dragDriver_
-    (
-        phaseClotProperties_.lookupOrDefault<word>("dragDriver", "legacy")
     )
 {
+    // ---- S21: THE BUILT-IN KEYS ------------------------------------------
+    //
+    // research/designs/2026-10-05-S21-clean-solver.md section 1.2. Each key
+    // in this table is no longer an option: the solver runs only the listed
+    // value, and the code of every other value was deleted with the key's
+    // member. A dictionary that still names one is REFUSED, whatever value it
+    // gives, so no case can believe it selects something the solver no longer
+    // implements. Old runs are reproduced from release-4198bb17 or its
+    // archive backup. Groups B and C append their keys to this one table.
+    {
+        static const char* const s21BuiltInKeys[][2] =
+        {
+            // S21 group A
+            {"contentModel", "true"},
+            {"contentOperator", "content"},
+            {"contentTransportScheme", "fct"},
+            {"cplusOrder", "shared"},
+            {"materialCarrierBlend", "false"},
+            {"phaseDeltaBasis", "content"},
+            {"phaseFieldMaterialVelocity", "true"},
+            {"phaseFluidFractionBasis", "content"},
+            {"phaseForceBasis", "content"},
+            {"phaseGrowthDriver", "transfer"},
+            {"phaseIndicatorBasis", "content"},
+            {"phaseLimiterBasis", "content"},
+            {"phaseMomentumFluxBasis", "shared"},
+            {"phaseNormalBasis", "content"},
+            {"phasePlateletFluxBasis", "content"},
+            {"phaseWeightBasis", "content"},
+            {"plateletBindLocalisation", "interface"},
+            {"plateletCarrierArchive", "false"},
+            {"plateletContentFormulation", "true"},
+            {"plateletContentModel", "true"},
+            {"plateletFluxConsistent", "false"},
+            {"plateletFluxConvention", "intrinsic"},
+            {"plateletOuterForceReject", "false"},
+            {"plateletOuterTransactions", "false"},
+            // S21 group B
+            {"advectReleased", "true"},
+            {"damageTransport", "contentPartition"},
+            {"elasticCoupling", "implicitTangent"},
+            {"elasticStabilityStiffness", "tangent"},
+            {"fibreArithmetic", "fieldUnits"},
+            {"fibreSlack", "v1"},
+            {"frozenPendingPressure", "none"},
+            {"networkDamageProgressive", "true"},
+            {"networkPressureDamage", "tensile"},
+            {"networkPressureForce", "faceGradient"},
+            {"networkPressureModel", "convexExcess"},
+            {"networkPressureReference", "deposited"},
+            {"networkRupture", "fibreRelease"},
+            {"releasedCarrier", "material"},
+            {"stressFaceTransmission", "series"},
+            // S21 group C
+            {"beDetRenormalise", "true"},
+            {"beFluxConsistentGradU", "true"},
+            {"beRelaxBasis", "networkAbsent"},
+            {"beStretchGradient", "fluxConsistent"},
+            {"beTermDiagnostic", "true"},
+            {"beTraceFreeSource", "false"},
+            {"blockCoupledLumen", "eliminate"},
+            {"blockFaceInverse", "faceAssembled"},
+            {"bondHoldCarrier", "true"},
+            {"bondHoldTaper", "false"},
+            {"clotMechanics", "true"},
+            {"constitutiveModel", "neoHookean"},
+            {"dragDriver", "legacy"},
+            {"dragOccupancyBasis", "intrinsic"},
+            {"eulerianBrinkman", "true"},
+            {"eulerianMaterialFluxIsPhi", "true"},
+            {"eulerianSolid", "true"},
+            {"explicitStabilityBounds", "on"},
+            {"faceConsistentElasticForce", "false"},
+            {"finiteStrain", "true"},
+            {"fsiAitken", "false"},
+            {"fsiSweepTrace", "true"},
+            {"growthClosure", "reaction"},
+            {"interfaceDepletionModel", "none"},
+            {"operatorAudit", "false"},
+            {"operatorLocalisationAudit", "false"},
+            {"permeabilityModel", "kozenyCarmanSolid"},
+            {"shearEnhancementModel", "thresholdSaturating"},
+            {"skeletonDiffuseDomain", "true"},
+            {"skeletonFloorBasis", "occupancy"},
+            {"skeletonMomentumForm", "phaseContinuity"},
+            {"skeletonPressureForce", "false"},
+            {"skeletonResidualDiagnostic", "false"},
+            {"skeletonWallFace", "zeroed"},
+            {"stronglyCoupledFSI", "false"},
+            {"twoVelocitySkeleton", "true"},
+            {"unlocalisedPhaseWeightsAccepted", "false"},
+            {"vnCapEnabled", "false"},
+            {"wallPatchSplit", "split"}
+        };
+
+        for (const auto& builtIn : s21BuiltInKeys)
+        {
+            if (phaseClotProperties_.found(builtIn[0]))
+            {
+                FatalErrorInFunction
+                    << "phaseClotProperties key `" << builtIn[0] << "` is"
+                    << " built in since S21, at `" << builtIn[1] << "`, and"
+                    << " must not be set. Remove it from the dictionary: its"
+                    << " other values were deleted with their code. Reproduce"
+                    << " an older run from release-4198bb17."
+                    << exit(FatalError);
+            }
+        }
+    }
+    // ---- S21: THE DELETED KEYS ----------------------------------------
+    //
+    // Each entry in this table was read only by code S21 deleted (groups A,
+    // B and C): no value of it has any effect any more. A dictionary that
+    // still names one is REFUSED, so a case cannot believe it sets
+    // something the solver no longer reads.
+    {
+        static const char* const s21DeletedKeys[] =
+        {
+            "fsiNormProbeFraction",
+            "fsiOmegaMax",
+            "fsiOmegaMin",
+            "fsiTolerance",
+            "k1",
+            "materialCourant",
+            "materialDeltaTMin",
+            "nFSICorrectors",
+            "nMaterialFloorSteps",
+            "nSkeletonCorrectors",
+            "nSkeletonDivergedSteps",
+            "nStaggeredCorrectors",
+            "operatorAuditEvery",
+            "phi0",
+            "releasedAmbientQ",
+            "releasedMaskDilation",
+            "releasedMaskLimit",
+            "releasedMaskSweeps",
+            "skeletonDivergenceGrowth",
+            "skeletonFixedPointTolerance",
+            "skeletonImplicitFactor",
+            "skeletonUsBound"
+        };
+
+        for (const char* const deleted : s21DeletedKeys)
+        {
+            if (phaseClotProperties_.found(deleted))
+            {
+                FatalErrorInFunction
+                    << "phaseClotProperties key `" << deleted << "`: S21:"
+                    << " deleted, no effect. Remove it from the dictionary:"
+                    << " the code that read it was deleted. Reproduce an"
+                    << " older run from release-4198bb17."
+                    << exit(FatalError);
+            }
+        }
+    }
     // THE BOND HOLD IS APPLIED ONCE, AND ON THE TWO-VELOCITY PATH IT IS
     // APPLIED TO Vs.
     //
@@ -1966,22 +1347,15 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
     // Forced rather than rejected, because every existing two-velocity child
     // sets it and failing them would only invite someone to turn the anchor
     // off instead. Reported so the override cannot be silent.
-    if (twoVelocitySkeleton_ && bondHoldCarrier_)
-    {
-        bondHoldCarrier_ = false;
-        Info<< "PHASE_CLOT_CONFIG bondHoldCarrier=forced-off"
-            << " reason=two-velocity-anchor-is-on-Vs" << nl;
-    }
 
     // WHICH VOLUMETRIC LAW IS ACTUALLY RUNNING. A model selected by a word in
     // a dictionary is exactly the kind of thing that gets assumed rather than
     // read, and the two forms differ by six orders of magnitude at the
     // diffuse fringe. Stated once, at startup, next to phi_s0 -- which is the
     // other half of the answer, since the fringe force scales as phi_s0^2.
-    if (twoVelocitySkeleton_)
     {
         Info<< "PHASE_CLOT_CONFIG networkPressureModel="
-            << networkPressureModel_
+            << "convexExcess"
             << " networkPressureCoeff=" << networkPressureCoeff_
             << " skeletonVolumeFraction=" << skeletonVolumeFraction_
             << " phiSMax=" << phiSMax_
@@ -1995,18 +1369,11 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
             << (clotErosionRate_ > 0
                     ? " erosion=ON"
                     : " erosion=OFF-the-clot-CANNOT-shorten")
-            << (materialCarrierBlend_
-                    ? " materialCarrier=chi-BLENDED-to-phi-in-the-lumen"
-                    : " materialCarrier=RAW-phiSkel-everywhere-see-14-of-14-failures")
             << " skeletonDiluteDragRate=" << skeletonDiluteDragRate_
             << (skeletonDiluteDragRate_ > 0
                     ? " dragFloor=ON-K-at-least-k1-times-chi"
                     : " dragFloor=OFF-KozenyCarman-alone-below-the-packed-limit")
-            << (networkPressureModel_ == "cubic"
-                    ? " note=phiSMax-is-UNUSED-by-the-cubic"
-                    : networkPressureModel_ == "poleCubic"
-                    ? " note=poleCubic-double-root-at-0-AND-pole-at-phiSMax"
-                    : " note=poleAtMax-applies-a-fringe-force-see-networkPressure")
+            << " note=poleAtMax-applies-a-fringe-force-see-networkPressure"
             << nl;
 
         // THE POLE NEEDS ROOM TO BE A POLE.
@@ -2026,12 +1393,11 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
         // note=phiSMax-is-UNUSED-by-the-cubic.
         if
         (
-            networkPressureModel_ != "cubic"
-         && phiSMax_ <= skeletonVolumeFraction_
+            phiSMax_ <= skeletonVolumeFraction_
         )
         {
             FatalErrorInFunction
-                << "networkPressureModel = " << networkPressureModel_
+                << "networkPressureModel = " << "convexExcess"
                 << " needs phiSMax > skeletonVolumeFraction, but phiSMax = "
                 << phiSMax_ << " and skeletonVolumeFraction = "
                 << skeletonVolumeFraction_ << "." << nl
@@ -2049,61 +1415,12 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
     // this project keeps paying for: the run completes, the assessor reports
     // passed, and the answer is about a model that was never assembled. Both
     // of these would do exactly that.
-    if (eulerianBrinkman_ && !eulerianSolid_)
-    {
-        FatalErrorInFunction
-            << "eulerianBrinkman is on but eulerianSolid is off." << nl
-            << "The Brinkman term is added inside the eulerianSolid branch of"
-            << " momentumPredictor(); on the skeleton path the drag is"
-            << " already assembled as fvm::Sp(dragCoeff, U) - dragCoeff*Us,"
-            << " so this switch would do nothing and the run would report a"
-            << " result for a model it never built." << nl
-            << "Set eulerianSolid yes, or eulerianBrinkman no."
-            << exit(FatalError);
-    }
-    // RETAINED, BUT THE REASON CHANGED ON 2026-09-04. It used to be the one
-    // that mattered most: with the LAB-FRAME term, advectReleased off meant
-    // released_ was identically zero, (1 - released_) identically one, and
-    // the drag pinned every clot cell including a detached embolus.
-    //
-    // The term is now the relative-velocity pair, so released_ = 0 gives
-    // skeletonVelocity = 0 and the drag reduces to the lab-frame form on
-    // ATTACHED material -- which is correct, not a failure, because attached
-    // material is exactly what the lab-frame form describes. The guard is
-    // kept for a narrower reason: without advectReleased nothing can ever be
-    // released, so the embolus branch is unreachable and a case that asks for
-    // it would silently get a mural-clot model instead. That is still a run
-    // reporting a result for a model it did not build.
-    if (eulerianBrinkman_ && !advectReleased_)
-    {
-        FatalErrorInFunction
-            << "eulerianBrinkman is on but advectReleased is off." << nl
-            << "updateReleasedIndicator() returns with released = 0 everywhere"
-            << " when advectReleased is off, so the drag would be applied to"
-            << " detached material as well as attached material and a clot"
-            << " that had fully debonded could never leave." << nl
-            << "Set advectReleased yes, or eulerianBrinkman no."
-            << exit(FatalError);
-    }
-    if (eulerianBrinkman_ && !clotMechanics_)
-    {
-        FatalErrorInFunction
-            << "eulerianBrinkman is on but clotMechanics is off." << nl
-            << "updatePermeability() is called from prePredictor() inside the"
-            << " clotMechanics branch, so poroPerm would never be updated and"
-            << " the drag coefficient would be built from a stale or"
-            << " uninitialised permeability - at the floor that is"
-            << " chi*nu/permeabilityFloor, which would freeze the clot for a"
-            << " reason that has nothing to do with the model."
-            << exit(FatalError);
-    }
 
     updateDerivedFields();
 
     // W = q*w, once q exists. Done BEFORE the second updateDerivedFields()
     // because on the content branch Vn is built from W, and the first call
     // above ran while W still held w's initial values.
-    if (plateletContentFormulation_)
     {
         Wp_ = q_*w_;
         Wp_.correctBoundaryConditions();
@@ -2149,78 +1466,13 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
     //
     // Only when contentModel is on, and only if a restart has not already
     // supplied the fields (gMax > 0 means they were read).
-    // A TYPO IN contentOperator MUST NOT LOOK LIVE.
-    //
-    // lookupOrDefault returns "content" for a missing key AND for a
-    // misspelled value, so `contentOperator matchd` would run the shipped
-    // model while the child's manifest claimed the identity test, and the
-    // result would be read as a failure of the assembly. Validated here,
-    // once, at construction -- not at the first solve, which is 272 steps of
-    // wall time later.
-    if
-    (
-        contentModel_
-     && contentOperator_ != "content"
-    )
-    {
-        FatalErrorInFunction
-            << "contentOperator must be `content`, found `"
-            << contentOperator_ << "`." << nl
-            << "  content: ddt(theta) + div(theta u_s) = 0, upwind."
-            << " The shipped Stage 1 model." << nl
-            << "  matched: DELETED IN S6c-2. It was the conservative image"
-            << " of the legacy chi equation, and its mapped source read"
-            << " mobility and muC, which were deleted with c. A case naming"
-            << " it is REFUSED rather than quietly given `content`, because"
-            << " the two operators assemble different matrices." << nl
-            << exit(FatalError);
-    }
-
     // STAGE 3 DRAG DRIVER -- THREE REFUSALS, ALL AT CONSTRUCTION.
     //
     // Spec: research/model-specs/AM2020-content-drag-v1.md.
-    if (dragDriver_ != "legacy" && dragDriver_ != "content")
-    {
-        FatalErrorInFunction
-            << "dragDriver must be `legacy` or `content`, found `"
-            << dragDriver_ << "`." << nl
-            << "  legacy : the shipped chi-driven coefficient. The default,"
-            << " and unchanged." << nl
-            << "  content: K formed from theta = thetaC + thetaH and"
-            << " s = thetaH/theta. Opt-in, Stage 3." << nl
-            << exit(FatalError);
-    }
-    if (dragDriver_ == "content" && !contentModel_)
-    {
-        // There is no theta to drive it with. Refusing here rather than
-        // reading two zero fields and reporting a plausible zero drag.
-        FatalErrorInFunction
-            << "dragDriver `content` requires contentModel on: the driver is"
-            << " theta = thetaC + thetaH and those fields do not exist."
-            << exit(FatalError);
-    }
-    if (dragDriver_ == "content" && !twoVelocitySkeleton_)
-    {
-        // THE CANCELLATION IS CONVENTION-BOUND (spec section 2.1).
-        //
-        // K = A(s)*theta^3/(1-theta) is the cancelled form of
-        // chi_ref*(1-theta)^2*nu/k, and the (1-theta)^2 is the two-velocity
-        // fluid-fraction factor. Without it the same substitution gives
-        // theta^3/(1-theta)^3 -- a DIFFERENT rational function, differing by
-        // 1/(1-theta)^2, which is 3.3058 at theta_ref = 0.45 and 1.5625 at
-        // theta = 0.2. It is not a prefactor and it must not be applied to a
-        // one-velocity path by leaving this branch reachable there.
-        FatalErrorInFunction
-            << "dragDriver `content` requires twoVelocitySkeleton: its"
-            << " cancellation assumes the (1-theta)^2 fluid-fraction factor"
-            << " that only the two-velocity convention carries."
-            << exit(FatalError);
-    }
 
     if
     (
-        contentModel_
-     && thetaCHeaderPresent_ != thetaHHeaderPresent_
+        thetaCHeaderPresent_ != thetaHHeaderPresent_
     )
     {
         FatalErrorInFunction
@@ -2233,9 +1485,7 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
 
     if
     (
-        contentModel_
-     && plateletContentModel_
-     && nPHeaderPresent_ != thetaCHeaderPresent_
+        nPHeaderPresent_ != thetaCHeaderPresent_
     )
     {
         FatalErrorInFunction
@@ -2249,23 +1499,7 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
             << exit(FatalError);
     }
 
-    if (plateletOuterTransactions_ && !plateletContentModel_)
-    {
-        FatalErrorInFunction
-            << "plateletOuterTransactions requires plateletContentModel true."
-            << nl << "The switch is an isolated content-transaction gate, not"
-            << " a request to repeat the legacy platelet/growth solve."
-            << exit(FatalError);
-    }
-
-    if (plateletOuterForceReject_ && !plateletOuterTransactions_)
-    {
-        FatalErrorInFunction
-            << "plateletOuterForceReject requires plateletOuterTransactions true."
-            << exit(FatalError);
-    }
-
-    if (plateletAttempt_ < 0 || (plateletAttempt_ != 0 && !plateletOuterTransactions_))
+    if (plateletAttempt_ < 0 || plateletAttempt_ != 0)
     {
         FatalErrorInFunction
             << "plateletAttempt must be non-negative and a nonzero value requires "
@@ -2273,7 +1507,7 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
             << exit(FatalError);
     }
 
-    if (contentModel_ && !thetaCHeaderPresent_ && !thetaHHeaderPresent_)
+    if (!thetaCHeaderPresent_ && !thetaHHeaderPresent_)
     {
         const volScalarField theta0
         (
@@ -2309,89 +1543,18 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
     // unchanged. Each refuses a value it does not implement and a combination
     // it cannot honour, because a switch that silently does nothing reads
     // exactly like a fix that did not work.
-    if
-    (
-        networkPressureReference_ != "nominal"
-     && networkPressureReference_ != "deposited"
-    )
-    {
-        FatalErrorInFunction
-            << "networkPressureReference must be nominal or deposited, not "
-            << networkPressureReference_ << exit(FatalError);
-    }
-    if
-    (
-        networkPressureReference_ == "deposited"
-     && !(contentModel_ && twoVelocitySkeleton_ && phaseForceBasis_ == "content")
-    )
-    {
-        FatalErrorInFunction
-            << "networkPressureReference deposited measures compaction as "
-            << "theta - thetaNetRef, so it needs contentModel true, "
-            << "twoVelocitySkeleton true (the only path with a network "
-            << "pressure) and phaseForceBasis content (the only basis on "
-            << "which the force fraction is theta)." << exit(FatalError);
-    }
-    if
-    (
-        contentTransportScheme_ != "upwind"
-     && contentTransportScheme_ != "limitedLinear"
-     && contentTransportScheme_ != "fct"
-    )
-    {
-        FatalErrorInFunction
-            << "contentTransportScheme must be upwind, fct or limitedLinear, "
-            << "not " << contentTransportScheme_ << exit(FatalError);
-    }
-    if (contentTransportScheme_ != "upwind" && !contentModel_)
-    {
-        FatalErrorInFunction
-            << "contentTransportScheme " << contentTransportScheme_
-            << " needs contentModel true: it is the operator of the content "
-            << "equation." << exit(FatalError);
-    }
-    if (contentTransportScheme_ == "limitedLinear")
-    {
-        // Selectable ONLY to reproduce run 20260923-012704. Not refused,
-        // because a failure that cannot be reproduced cannot be re-examined.
-        Info<< "PHASE_CLOT_S10_WARNING contentTransportScheme limitedLinear "
-            << "is NOT positivity-preserving when assembled implicitly: run "
-            << "20260923-012704 died on step 2 of negative content. Use fct."
-            << endl;
-    }
-    if (releasedCarrier_ != "rigidBody" && releasedCarrier_ != "material")
-    {
-        FatalErrorInFunction
-            << "releasedCarrier must be rigidBody or material, not "
-            << releasedCarrier_ << exit(FatalError);
-    }
-    if (releasedCarrier_ == "material" && !twoVelocitySkeleton_)
-    {
-        FatalErrorInFunction
-            << "releasedCarrier material carries released clot on the SOLVED "
-            << "skeleton flux, which exists only with twoVelocitySkeleton "
-            << "true. The one-velocity path has no skeleton velocity to use."
-            << exit(FatalError);
-    }
 
     // THE REFERENCE IS THE CONTENT AS DEPOSITED, SO AT t = 0 IT IS theta.
     // That is the whole of the step-1 fix: with thetaNetRef = theta, the
     // network pressure is exactly zero in every cell, the interface included,
     // before anything has moved. Read from disk on a restart, so a restart
     // does not silently re-reference a compacted clot as stress-free.
-    if (networkPressureReference_ == "deposited")
     {
         if (!thetaNetRefHeaderPresent_)
         {
             thetaNetRef_ = thetaC_ + thetaH_;
             thetaNetRef_.correctBoundaryConditions();
         }
-    }
-    else
-    {
-        // Not solved, so not written: a field on disk that nothing evolves
-        // would be read by someone as though it meant something.
-        thetaNetRef_.writeOpt() = IOobject::NO_WRITE;
     }
 
     // S10 FIX 2: THE SKELETON'S WALL CONDITION BECOMES SLIP.
@@ -2410,7 +1573,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
     // does. Bonded material is still held by the bond-hold term, which is
     // where the bond lives; a hard no-slip here would weld a released clot
     // to the wall for ever -- the objection recorded at Vs_'s construction.
-    if (releasedCarrier_ == "material")
     {
         label nSlip = 0;
         forAll(mesh.boundary(), patchi)
@@ -2442,17 +1604,13 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
     }
 
     Info<< "PHASE_CLOT_S10_CONFIG"
-        << " networkPressureReference=" << networkPressureReference_
         << " thetaNetRefSource="
         << (
-               networkPressureReference_ != "deposited" ? "unused"
-             : thetaNetRefHeaderPresent_ ? "read" : "content-at-start"
+               thetaNetRefHeaderPresent_ ? "read" : "content-at-start"
            )
-        << " contentTransportScheme=" << contentTransportScheme_
-        << " releasedCarrier=" << releasedCarrier_
         << " wallFluxConstraint=on"
         << " skeletonWall="
-        << (releasedCarrier_ == "material" ? "slip" : "zeroGradient")
+        << "slip"
         << endl;
 
     // ---- S11: THE SIX ROOT-CAUSE SWITCHES OF RUN 20260923-031942 ----
@@ -2463,155 +1621,8 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
     // why, because each dependency is a failure that would otherwise be
     // shipped silently.
     {
-        auto refuse = [](const word& key, const word& value, const char* ok)
-        {
-            FatalErrorInFunction
-                << key << " must be " << ok << ", not " << value
-                << exit(FatalError);
-        };
-        if
-        (
-            skeletonMomentumForm_ != "conservative"
-         && skeletonMomentumForm_ != "phaseContinuity"
-        )
-        {
-            refuse
-            (
-                "skeletonMomentumForm", skeletonMomentumForm_,
-                "conservative or phaseContinuity"
-            );
-        }
-        if
-        (
-            blockFaceInverse_ != "cellInverse"
-         && blockFaceInverse_ != "faceAssembled"
-        )
-        {
-            refuse
-            (
-                "blockFaceInverse", blockFaceInverse_,
-                "cellInverse or faceAssembled"
-            );
-        }
-        if
-        (
-            stressFaceTransmission_ != "linear"
-         && stressFaceTransmission_ != "series"
-        )
-        {
-            refuse
-            (
-                "stressFaceTransmission", stressFaceTransmission_,
-                "linear or series"
-            );
-        }
-        if
-        (
-            networkPressureForce_ != "stressDivergence"
-         && networkPressureForce_ != "faceGradient"
-        )
-        {
-            refuse
-            (
-                "networkPressureForce", networkPressureForce_,
-                "stressDivergence or faceGradient"
-            );
-        }
-        if (beRelaxBasis_ != "blood" && beRelaxBasis_ != "networkAbsent")
-        {
-            refuse("beRelaxBasis", beRelaxBasis_, "blood or networkAbsent");
-        }
-        if
-        (
-            explicitStabilityBounds_ != "off"
-         && explicitStabilityBounds_ != "on"
-        )
-        {
-            refuse
-            (
-                "explicitStabilityBounds", explicitStabilityBounds_,
-                "off or on"
-            );
-        }
 
-        const bool anyS11 =
-            skeletonMomentumForm_ != "conservative"
-         || blockFaceInverse_ != "cellInverse"
-         || stressFaceTransmission_ != "linear"
-         || networkPressureForce_ != "stressDivergence"
-         || beRelaxBasis_ != "blood"
-         || explicitStabilityBounds_ != "off"
-         || networkPressureModel_ == "convexExcess";
 
-        if (anyS11 && !(twoVelocitySkeleton_ && eulerianSolid_))
-        {
-            FatalErrorInFunction
-                << "the S11 switches act on the two-velocity Eulerian "
-                << "skeleton's 2x2 block, momentum equation, stress and be; "
-                << "they need twoVelocitySkeleton true and eulerianSolid true."
-                << exit(FatalError);
-        }
-        if
-        (
-            networkPressureModel_ == "convexExcess"
-         && networkPressureReference_ != "deposited"
-        )
-        {
-            FatalErrorInFunction
-                << "networkPressureModel convexExcess weights the dense "
-                << "network's volumetric stress by the occupancy DEPOSITED, "
-                << "thetaNetRef/phi_s0; it needs networkPressureReference "
-                << "deposited." << exit(FatalError);
-        }
-        if
-        (
-            networkPressureForce_ == "faceGradient"
-         && networkPressureModel_ != "convexExcess"
-        )
-        {
-            FatalErrorInFunction
-                << "networkPressureForce faceGradient applies -grad(Pi) with a "
-                << "COMPACT stencil, which resolves every mode the law "
-                << "produces. It is well-posed only if the partial pressure "
-                << "Pi is monotone in the content: " << networkPressureModel_
-                << " is not (theta*p_n softens below its tension peak, run "
-                << "20260923-031942), so the compact force would be "
-                << "anti-diffusive there. Use networkPressureModel "
-                << "convexExcess." << exit(FatalError);
-        }
-        if
-        (
-            networkPressureForce_ == "faceGradient"
-         && explicitStabilityBounds_ != "on"
-        )
-        {
-            FatalErrorInFunction
-                << "networkPressureForce faceGradient is EXPLICIT in the "
-                << "content, so it is stable only while its diffusion number "
-                << "D*dt/h^2 stays under the 2-D limit. At the reference state "
-                << "it is ~0.04; in a dilated void the barrier stiffness grows "
-                << "as 1/a^2 and it does not. Set explicitStabilityBounds on, "
-                << "which bounds dt by it." << exit(FatalError);
-        }
-        if
-        (
-            beRelaxBasis_ == "networkAbsent"
-         && (
-                networkPressureReference_ != "deposited"
-             || blockFaceInverse_ != "faceAssembled"
-            )
-        )
-        {
-            FatalErrorInFunction
-                << "beRelaxBasis networkAbsent needs networkPressureReference "
-                << "deposited (thetaNetRef is what says where network exists) "
-                << "AND blockFaceInverse faceAssembled. The shipped q^2 "
-                << "relaxation is what keeps the clot EDGE at be = I; once the "
-                << "edge keeps its strain it carries force, and under "
-                << "cellInverse a clot-surface face multiplies that force by "
-                << "the lumen's skeleton mobility (~1/Kres, ~1e4x the clot's)."
-                << exit(FatalError);
-        }
 
         // phaseContinuity removes the ddt(phi) half of the continuity error
         // and relies on the BOUNDED div scheme to remove the div(F) half.
@@ -2619,7 +1630,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
         // leave the div half in, a bounded one plus a full correction would
         // remove it twice. primitiveEntry::stream() rewinds, so reading the
         // first word here does not disturb the later fvm::div.
-        if (skeletonMomentumForm_ == "phaseContinuity")
         {
             for
             (
@@ -2640,15 +1650,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
             }
         }
 
-        Info<< "PHASE_CLOT_S11_CONFIG"
-            << " skeletonMomentumForm=" << skeletonMomentumForm_
-            << " blockFaceInverse=" << blockFaceInverse_
-            << " stressFaceTransmission=" << stressFaceTransmission_
-            << " networkPressureForce=" << networkPressureForce_
-            << " networkPressureModel=" << networkPressureModel_
-            << " beRelaxBasis=" << beRelaxBasis_
-            << " explicitStabilityBounds=" << explicitStabilityBounds_
-            << endl;
     }
 
     // ---- S12: THE DRAG, WEIGHTED AS THE STRESS ALREADY IS ----------------
@@ -2656,56 +1657,7 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
     // Every requirement below is a dependency, refused with its reason, so
     // the basis cannot ship in a configuration where it means something
     // else. research/designs/2026-09-23-S12-intrinsic-occupancy-drag.md.
-    if
-    (
-        dragOccupancyBasis_ != "legacy"
-     && dragOccupancyBasis_ != "intrinsic"
-    )
     {
-        FatalErrorInFunction
-            << "dragOccupancyBasis '" << dragOccupancyBasis_
-            << "' is not recognised: use legacy or intrinsic."
-            << exit(FatalError);
-    }
-    if (dragOccupancyBasis_ == "intrinsic")
-    {
-        if (!(twoVelocitySkeleton_ && eulerianSolid_))
-        {
-            FatalErrorInFunction
-                << "dragOccupancyBasis intrinsic weights the drag of the 2x2 "
-                << "skeleton/fluid block; it needs twoVelocitySkeleton true "
-                << "and eulerianSolid true." << exit(FatalError);
-        }
-        if
-        (
-            networkPressureReference_ != "deposited"
-         || networkPressureModel_ != "convexExcess"
-        )
-        {
-            FatalErrorInFunction
-                << "dragOccupancyBasis intrinsic evaluates the permeability "
-                << "at the network's intrinsic density a = phi_s0 + theta - "
-                << "thetaNetRef. a exists only under networkPressureReference "
-                << "deposited, and is guaranteed inside (0, phiSMax) only by "
-                << "networkPressureModel convexExcess, whose infinite "
-                << "barriers and domain check hold it there."
-                << exit(FatalError);
-        }
-        if (permeabilityModel_ != "kozenyCarmanSolid")
-        {
-            FatalErrorInFunction
-                << "dragOccupancyBasis intrinsic re-evaluates the case's "
-                << "Kozeny-Carman law at the intrinsic density; "
-                << "permeabilityModel is '" << permeabilityModel_ << "', not "
-                << "kozenyCarmanSolid." << exit(FatalError);
-        }
-        if (dragDriver_ == "content")
-        {
-            FatalErrorInFunction
-                << "dragOccupancyBasis intrinsic and dragDriver content both "
-                << "replace the drag coefficient; choose one."
-                << exit(FatalError);
-        }
         if (skeletonDiluteDragRate_ > 0)
         {
             FatalErrorInFunction
@@ -2732,30 +1684,11 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
             << "' is not recognised: use depositedOccupancy, "
             << "networkPresence or contentRatio." << exit(FatalError);
     }
-    if
-    (
-        beStretchGradient_ != "cellGradient"
-     && beStretchGradient_ != "fluxConsistent"
-    )
-    {
-        FatalErrorInFunction
-            << "beStretchGradient '" << beStretchGradient_
-            << "' is not recognised: use cellGradient or fluxConsistent."
-            << exit(FatalError);
-    }
     // S18 C (R2b, DECISIONS 2026-09-29): contentRatio is networkPresence
     // times theta/thetaNetRef, so it needs everything networkPresence does,
     // and the deposited reference its ratio divides by.
     if (networkPressureWeight_ == "contentRatio")
     {
-        if (networkPressureReference_ != "deposited")
-        {
-            FatalErrorInFunction
-                << "networkPressureWeight contentRatio weights the intact "
-                << "network pressure by theta/thetaNetRef; it needs "
-                << "networkPressureReference deposited (design S18 section "
-                << "2 C)." << exit(FatalError);
-        }
     }
     if
     (
@@ -2763,15 +1696,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
      || networkPressureWeight_ == "contentRatio"
     )
     {
-        if (networkPressureModel_ != "convexExcess")
-        {
-            FatalErrorInFunction
-                << "networkPressureWeight " << networkPressureWeight_
-                << " re-weights the "
-                << "convexExcess partial pressure p(phi_s0 + theta - "
-                << "thetaNetRef); networkPressureModel is '"
-                << networkPressureModel_ << "'." << exit(FatalError);
-        }
         if (!(residualChi_ > 0))
         {
             FatalErrorInFunction
@@ -2782,122 +1706,15 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
                 << residualChi_ << ". Set it positive." << exit(FatalError);
         }
     }
-    if
-    (
-        beStretchGradient_ == "fluxConsistent"
-     && !(twoVelocitySkeleton_ && eulerianSolid_)
-    )
-    {
-        FatalErrorInFunction
-            << "beStretchGradient fluxConsistent builds be's stretch from the "
-            << "skeleton flux of the two-velocity Eulerian path; it needs "
-            << "twoVelocitySkeleton true and eulerianSolid true (the "
-            << "one-velocity path has beFluxConsistentGradU)."
-            << exit(FatalError);
-    }
     // ---- S14: RUPTURE AT THE CRITICAL STRETCH, AND THE ELASTIC BOUND -----
     //
     // research/designs/2026-09-23-S14-network-rupture.md.
-    if
-    (
-        networkRupture_ != "off"
-     && networkRupture_ != "criticalStretch"
-     && networkRupture_ != "progressiveDamage"
-     && networkRupture_ != "terminalRelease"
-     && networkRupture_ != "fibreRelease"
-    )
-    {
-        FatalErrorInFunction
-            << "networkRupture '" << networkRupture_ << "' is not recognised: "
-            << "use off, criticalStretch, progressiveDamage, "
-            << "terminalRelease or fibreRelease."
-            << exit(FatalError);
-    }
-    if
-    (
-        elasticStabilityStiffness_ != "modulus"
-     && elasticStabilityStiffness_ != "tangent"
-    )
-    {
-        FatalErrorInFunction
-            << "elasticStabilityStiffness '" << elasticStabilityStiffness_
-            << "' is not recognised: use modulus or tangent."
-            << exit(FatalError);
-    }
-    if
-    (
-        elasticStabilityStiffness_ == "tangent"
-     && explicitStabilityBounds_ != "on"
-    )
-    {
-        FatalErrorInFunction
-            << "elasticStabilityStiffness tangent changes the elastic "
-            << "stability number that explicitStabilityBounds on bounds dt "
-            << "by; with the bounds off it would change nothing."
-            << exit(FatalError);
-    }
-    if (networkRupture_ == "criticalStretch" && !(networkCriticalStretch_ > 1))
-    {
-        FatalErrorInFunction
-            << "networkCriticalStretch " << networkCriticalStretch_
-            << " is a principal stretch and must exceed 1 (Tutwiler et "
-            << "al. 2020 measured 2.8; single fibres 2.5-3.3)."
-            << exit(FatalError);
-    }
-    if
-    (
-        networkRupture_ == "progressiveDamage"
-     && !(networkDamageOnsetStretch_ > 1 && networkDamageStretchScale_ > 0)
-    )
-    {
-        FatalErrorInFunction
-            << "networkDamageOnsetStretch " << networkDamageOnsetStretch_
-            << " must exceed 1 and networkDamageStretchScale "
-            << networkDamageStretchScale_ << " must be positive "
-            << "(Kliuchnikov et al. 2025 Eq. 6: 2.105 and 1.0)."
-            << exit(FatalError);
-    }
     // S15: every consequence of a damaged network -- the (1 - d) stress and
     // BSD weights, the intact-content memory, the deposit dilution, the
     // label transport -- is shared by both rupture laws; only how d is set
     // differs. So the requirements below are the same for both.
-    if (networkRupture_ != "off")
-    {
-        if
-        (
-            !(twoVelocitySkeleton_ && eulerianSolid_)
-         || networkPressureReference_ != "deposited"
-         || beRelaxBasis_ != "networkAbsent"
-        )
-        {
-            FatalErrorInFunction
-                << "networkRupture " << networkRupture_ << " reads be where network "
-                << "was deposited and keeps a ruptured network's be at I by "
-                << "the networkAbsent relaxation; it needs the two-velocity "
-                << "Eulerian skeleton, networkPressureReference deposited and "
-                << "beRelaxBasis networkAbsent." << exit(FatalError);
-        }
-        if (elasticStabilityStiffness_ != "tangent")
-        {
-            FatalErrorInFunction
-                << "networkRupture " << networkRupture_ << " bounds the "
-                << "tangent stiffness of the network it acts on (at "
-                << "~G*lambda_c^2, or (1 - d)*(8/9)*b1*G <= 5.51*G under "
-                << "progressive damage) -- the point is lost unless the dt "
-                << "bound reads that stiffness. Set "
-                << "elasticStabilityStiffness tangent." << exit(FatalError);
-        }
-    }
-    // Written only when it is computed: a field of zeros on disk reads as
-    // "nothing ruptured" in a run where rupture was never evaluated.
-    if (networkRupture_ == "off")
-    {
-        ruptured_.writeOpt() = IOobject::NO_WRITE;
-    }
     Info<< "PHASE_CLOT_S14_CONFIG"
-        << " networkRupture=" << networkRupture_
         << " networkCriticalStretch=" << networkCriticalStretch_
-        << " elasticStabilityStiffness=" << elasticStabilityStiffness_
         << endl;
 
     // ---- S15: THE MATERIAL LABEL FROM THE CONTENTS; PROGRESSIVE DAMAGE ---
@@ -2917,7 +1734,7 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
     if
     (
         materialLabelBasis_ == "contentComposition"
-     && !(contentModel_ && coreShell_)
+     && !coreShell_
     )
     {
         FatalErrorInFunction
@@ -2929,7 +1746,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
     }
     Info<< "PHASE_CLOT_S15_CONFIG"
         << " materialLabelBasis=" << materialLabelBasis_
-        << " networkRupture=" << networkRupture_
         << " networkDamageOnsetStretch=" << networkDamageOnsetStretch_
         << " networkDamageStretchScale=" << networkDamageStretchScale_
         << endl;
@@ -2944,51 +1760,14 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
     // switch defaults to the shipped behaviour. The VALUE of every switch is
     // checked before any combination, so a misspelt value is reported as
     // what it is and not as a missing dependency.
-    if
-    (
-        skeletonFloorBasis_ != "intactWeight"
-     && skeletonFloorBasis_ != "occupancy"
-    )
-    {
-        FatalErrorInFunction
-            << "skeletonFloorBasis '" << skeletonFloorBasis_
-            << "' is not recognised: use intactWeight or occupancy."
-            << exit(FatalError);
-    }
-    if
-    (
-        damageTransport_ != "volumeFlux"
-     && damageTransport_ != "contentPartition"
-    )
-    {
-        FatalErrorInFunction
-            << "damageTransport '" << damageTransport_
-            << "' is not recognised: use volumeFlux or contentPartition."
-            << exit(FatalError);
-    }
-    if
-    (
-        networkPressureDamage_ != "off"
-     && networkPressureDamage_ != "tensile"
-    )
-    {
-        FatalErrorInFunction
-            << "networkPressureDamage '" << networkPressureDamage_
-            << "' is not recognised: use off or tensile."
-            << exit(FatalError);
-    }
     // S17 A: fibreRelease IS terminalRelease's event and release (design
     // 2A "The event, as S16" and "The release, as S16"); only what the
     // pending share carries differs. Every S16 requirement applies to it.
-    const bool terminal =
-        networkRupture_ == "terminalRelease"
-     || networkRupture_ == "fibreRelease";
-    if (terminal)
     {
         if (!(networkCriticalStretch_ > 1))
         {
             FatalErrorInFunction
-                << "networkRupture " << networkRupture_
+                << "networkRupture " << "fibreRelease"
                 << ": networkCriticalStretch "
                 << networkCriticalStretch_ << " is the rupture stretch lc, "
                 << "a principal stretch, and must exceed 1 (2.8, source 28)."
@@ -2997,13 +1776,12 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
         if (!(networkReleaseTime_ > 0))
         {
             FatalErrorInFunction
-                << "networkRupture " << networkRupture_
+                << "networkRupture " << "fibreRelease"
                 << ": networkReleaseTime "
                 << networkReleaseTime_ << " s is the release time tau of "
                 << "dd/dt = (d* - d)/tau and must be positive (3.3e-4 s, "
                 << "source 63, waiver D4)." << exit(FatalError);
         }
-        if (networkDamageProgressive_)
         {
             if
             (
@@ -3012,7 +1790,7 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
             )
             {
                 FatalErrorInFunction
-                    << "networkRupture " << networkRupture_ << " with "
+                    << "networkRupture " << "fibreRelease" << " with "
                     << "networkDamageProgressive on: networkDamageOnsetStretch "
                     << networkDamageOnsetStretch_ << " must exceed 1 and "
                     << "networkDamageStretchScale "
@@ -3022,7 +1800,7 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
             if (!(networkCriticalStretch_ > networkDamageOnsetStretch_))
             {
                 FatalErrorInFunction
-                    << "networkRupture " << networkRupture_ << " with "
+                    << "networkRupture " << "fibreRelease" << " with "
                     << "networkDamageProgressive on: networkCriticalStretch "
                     << networkCriticalStretch_ << " must exceed "
                     << "networkDamageOnsetStretch "
@@ -3032,79 +1810,11 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
                     << "set networkDamageProgressive off." << exit(FatalError);
             }
         }
-        if
-        (
-            damageTransport_ != "contentPartition"
-         || skeletonFloorBasis_ != "occupancy"
-         || networkPressureDamage_ != "tensile"
-        )
-        {
-            FatalErrorInFunction
-                << "networkRupture " << networkRupture_
-                << " releases a ruptured cell "
-                << "to ZERO stress, which holds only with all three of: "
-                << "damageTransport contentPartition (is " << damageTransport_
-                << "; otherwise transport mixes d by volume and makes steps "
-                << "the release does not rate-limit), skeletonFloorBasis "
-                << "occupancy (is " << skeletonFloorBasis_ << "; otherwise "
-                << "the floor overrides 1 - d), networkPressureDamage tensile "
-                << "(is " << networkPressureDamage_ << "; otherwise the "
-                << "undamaged tensile pressure holds the released tail)."
-                << exit(FatalError);
-        }
     }
-    if
-    (
-        networkRupture_ == "off"
-     && (
-            damageTransport_ != "volumeFlux"
-         || skeletonFloorBasis_ != "intactWeight"
-         || networkPressureDamage_ != "off"
-        )
-    )
-    {
-        FatalErrorInFunction
-            << "damageTransport " << damageTransport_
-            << ", skeletonFloorBasis " << skeletonFloorBasis_
-            << " and networkPressureDamage " << networkPressureDamage_
-            << ": each acts on the network damage d, and networkRupture off "
-            << "has none -- the switch would be silently inert. Choose a "
-            << "rupture law or leave them at volumeFlux, intactWeight, off."
-            << exit(FatalError);
-    }
-    if (skeletonFloorBasis_ == "occupancy" && !skeletonDiffuseDomain_)
-    {
-        FatalErrorInFunction
-            << "skeletonFloorBasis occupancy moves the diffuse-domain floor "
-            << "off the damage; with skeletonDiffuseDomain false there is no "
-            << "floor and the switch would be silently inert."
-            << exit(FatalError);
-    }
-    if (damageTransport_ == "contentPartition")
-    {
-        if (!contentModel_)
-        {
-            FatalErrorInFunction
-                << "damageTransport contentPartition carries the damage as a "
-                << "partition of the network content on the content's own "
-                << "transport; it needs contentModel true."
-                << exit(FatalError);
-        }
-        if (contentTransportScheme_ == "limitedLinear")
-        {
-            FatalErrorInFunction
-                << "damageTransport contentPartition is non-negative only on "
-                << "an M-matrix predictor (upwind, or fct's upwind + Zalesak); "
-                << "contentTransportScheme limitedLinear is not one "
-                << "(run 20260923-012704)." << exit(FatalError);
-        }
-    }
-
     // S16 C, THE INITIAL CONDITION: the partition is read all-or-none, or
     // seeded from the contents and the damage the case starts with
     // (ruptured_, 0 on a fresh start): (theta(1 - d), 0, theta d), d* = d.
     // theta*(1 - 0) is theta exactly, so a fresh start is (theta, 0, 0).
-    if (damageTransport_ == "contentPartition")
     {
         const bool hasI = thetaIntact_.headerOk();
         const bool hasP = thetaPending_.headerOk();
@@ -3151,57 +1861,12 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
         thetaBroken_.oldTime();
         syncDamageFromPartition("initial condition");
     }
-    else
-    {
-        thetaIntact_.writeOpt() = IOobject::NO_WRITE;
-        thetaPending_.writeOpt() = IOobject::NO_WRITE;
-        thetaBroken_.writeOpt() = IOobject::NO_WRITE;
-    }
     // ---- S17: FIBRE-FORM RELEASE AND IMPLICIT ELASTIC COUPLING ----------
     //
     // research/designs/2026-09-26-S17-frozen-release-implicit-elastic-
     // startup.md (revision 4, APPROVED 2026-09-26), sections 2A, 2C, 4, 5.
     // The VALUE of the new switch first, then every combination.
-    if
-    (
-        elasticCoupling_ != "explicit"
-     && elasticCoupling_ != "implicitTangent"
-    )
     {
-        FatalErrorInFunction
-            << "elasticCoupling '" << elasticCoupling_
-            << "' is not recognised: use explicit or implicitTangent."
-            << exit(FatalError);
-    }
-    if (fibreRelease() && !beDetRenormalise_)
-    {
-        FatalErrorInFunction
-            << "networkRupture fibreRelease needs beDetRenormalise yes: its "
-            << "guarantee (iii), the non-negative loading tangent, is stated "
-            << "for the renormalised (isochoric) model, and the solver calls "
-            << "the renormalisation NOT A DEFAULT (design section 4; red "
-            << "team 11 (d))." << exit(FatalError);
-    }
-    if (elasticCoupling_ == "implicitTangent")
-    {
-        if (!fibreRelease())
-        {
-            FatalErrorInFunction
-                << "elasticCoupling implicitTangent needs networkRupture "
-                << "fibreRelease: Gamma_t >= 0 is the linearisation of the "
-                << "fibre-form stress, whose loading tangent is non-negative "
-                << "by construction; the other laws' is not (design 2C, "
-                << "section 4)." << exit(FatalError);
-        }
-        if (stressFaceTransmission_ != "series")
-        {
-            FatalErrorInFunction
-                << "elasticCoupling implicitTangent: Gamma_t,f = series(w)_f "
-                << "interp(gD G k_eff)_f dt/rho linearises the SERIES face "
-                << "stress (docket 10); stressFaceTransmission is "
-                << stressFaceTransmission_ << ", for which no Gamma_t is "
-                << "specified." << exit(FatalError);
-        }
         const dictionary& solvers = mesh.solution().solversDict();
         for (const word& name : {word("Vs"), word("VsFinal")})
         {
@@ -3239,33 +1904,7 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
     // research/designs/2026-09-27-S17b-slack-fibre-field-units-wall-face.md
     // (revision 2, APPROVED 2026-09-27), section 2. Values first, then every
     // combination; each default is S17's behaviour.
-    if (fibreSlack_ != "off" && fibreSlack_ != "v1")
     {
-        FatalErrorInFunction
-            << "fibreSlack '" << fibreSlack_ << "' is not recognised: use "
-            << "off or v1." << exit(FatalError);
-    }
-    if (fibreArithmetic_ != "shipped" && fibreArithmetic_ != "fieldUnits")
-    {
-        FatalErrorInFunction
-            << "fibreArithmetic '" << fibreArithmetic_ << "' is not "
-            << "recognised: use shipped or fieldUnits." << exit(FatalError);
-    }
-    if (skeletonWallFace_ != "shipped" && skeletonWallFace_ != "zeroed")
-    {
-        FatalErrorInFunction
-            << "skeletonWallFace '" << skeletonWallFace_ << "' is not "
-            << "recognised: use shipped or zeroed." << exit(FatalError);
-    }
-    if (fibreSlack_ == "v1")
-    {
-        if (!fibreRelease())
-        {
-            FatalErrorInFunction
-                << "fibreSlack v1 acts on the pending share's fibre; it needs "
-                << "networkRupture fibreRelease (design A1)."
-                << exit(FatalError);
-        }
         // theta_T <= theta_P EXACTLY rests on the predictors running the
         // same matrix through the same operation sequence (06: "same
         // M-matrix, b_T <= b_P and monotone Gauss-Seidel"; red team 16:
@@ -3355,26 +1994,9 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
             }
         }
     }
-    if (fibreArithmetic_ == "fieldUnits" && damageTransport_ != "contentPartition")
-    {
-        FatalErrorInFunction
-            << "fibreArithmetic fieldUnits assembles the partition and fibre "
-            << "predictors in field units; with damageTransport "
-            << damageTransport_ << " there are none, and the switch would be "
-            << "silently inert (design A2)." << exit(FatalError);
-    }
-    if (skeletonWallFace_ == "zeroed" && !twoVelocitySkeleton_)
-    {
-        FatalErrorInFunction
-            << "skeletonWallFace zeroed acts on the two-velocity block's Vs "
-            << "and U reconstructs; without twoVelocitySkeleton there are "
-            << "none, and the switch would be silently inert (design A3)."
-            << exit(FatalError);
-    }
     // S17b A1, THE INITIAL CONDITION of the taut share: read all-or-none
     // with the pending fibre; a fresh start has no pending content, so 0.
     // Pending content with no taut share read cannot be split by guessing.
-    if (fibreSlack_ == "v1")
     {
         const bool hasT = thetaTaut_.headerOk();
         if (!hasT && gMax(thetaPending_.primitiveField()) > 0)
@@ -3416,10 +2038,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
         }
         thetaTaut_.oldTime();
     }
-    else
-    {
-        thetaTaut_.writeOpt() = IOobject::NO_WRITE;
-    }
     s17bSlackEvents_ = 0;
     s17bSlackContent_ = 0;
     s17bSlackDdMax_ = 0;
@@ -3438,11 +2056,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
     s17bSumLnMu_.setSize(mesh.nCells(), 0.0);
     s17bSumMinLnMu_.setSize(mesh.nCells(), 0.0);
     s17bLastSlackTime_.setSize(mesh.nCells(), -1.0);
-    Info<< "PHASE_CLOT_S17B_CONFIG"
-        << " fibreSlack=" << fibreSlack_
-        << " fibreArithmetic=" << fibreArithmetic_
-        << " skeletonWallFace=" << skeletonWallFace_
-        << endl;
 
     // ---- S18, THE SOFT STAGE: NO FROZEN PRESSURE, THE WALL-PATCH SPLIT,
     //      THE CONTENT-WEIGHTED INTACT PRESSURE, ONE C+ ORDER ------------
@@ -3451,61 +2064,16 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
     // network-viscosity.md, rev. 10 (APPROVED 2026-09-29), section 2 A, B,
     // C, E, F. D (R3), I and H are deferred to OI-44 and are not here.
     // Values first, then each switch's dependency; each default is S17b's.
-    if (frozenPendingPressure_ != "shipped" && frozenPendingPressure_ != "none")
-    {
-        FatalErrorInFunction
-            << "frozenPendingPressure '" << frozenPendingPressure_ << "' is "
-            << "not recognised: use shipped or none." << exit(FatalError);
-    }
-    if (wallPatchSplit_ != "shipped" && wallPatchSplit_ != "split")
-    {
-        FatalErrorInFunction
-            << "wallPatchSplit '" << wallPatchSplit_ << "' is not "
-            << "recognised: use shipped or split." << exit(FatalError);
-    }
-    if (cplusOrder_ != "shipped" && cplusOrder_ != "shared")
-    {
-        FatalErrorInFunction
-            << "cplusOrder '" << cplusOrder_ << "' is not recognised: use "
-            << "shipped or shared." << exit(FatalError);
-    }
-    if
-    (
-        (
-            frozenPendingPressure_ == "none" || wallPatchSplit_ == "split"
-         || cplusOrder_ == "shared"
-        )
-     && !fibreRelease()
-    )
-    {
-        FatalErrorInFunction
-            << "frozenPendingPressure none, wallPatchSplit split and "
-            << "cplusOrder shared act on the pending fibre (its frozen "
-            << "tension, its split, its passengers); they need "
-            << "networkRupture fibreRelease, without which each would be "
-            << "silently inert (design section 2 A, B, E)." << exit(FatalError);
-    }
     s18CarrierDtLimit_ = great;
     s18WallSplitDevMax_ = 0;
     Info<< "PHASE_CLOT_S18_CONFIG"
-        << " frozenPendingPressure=" << frozenPendingPressure_
-        << " wallPatchSplit=" << wallPatchSplit_
         << " networkPressureWeight=" << networkPressureWeight_
-        << " cplusOrder=" << cplusOrder_
         << endl;
 
     // ---- S18p, THE em76 ATTRIBUTION PROBE: LOG-ONLY ----------------------
     // research/designs/2026-10-01-S18p-em76-attribution-probe.md, rev. 2,
     // section 2. projSiteLog yes counts P-LS by site and dumps raised
     // cells; nothing it computes is read by a field, flux, solve or dt.
-    if (projSiteLog_ && !fibreRelease())
-    {
-        FatalErrorInFunction
-            << "projSiteLog yes counts the P-LS projections of the pending "
-            << "fibre (the transfer and the transport sites); without "
-            << "networkRupture fibreRelease neither runs and the probe would "
-            << "be silently inert (S18p design section 2)." << exit(FatalError);
-    }
     if (projSiteLog_ && Pstream::parRun())
     {
         FatalErrorInFunction
@@ -3578,67 +2146,14 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
     }
     // S19b (research/designs/2026-10-04-S19b-lumen-elimination.md rev. 2,
     // section 2.6): the value first, then the key outside blockCoupled.
-    if
-    (
-        blockCoupledLumen_ != "eliminate"
-     && blockCoupledLumen_ != "identityRows"
-    )
-    {
-        FatalErrorInFunction
-            << "blockCoupledLumen '" << blockCoupledLumen_ << "' is not "
-            << "recognised: use eliminate or identityRows (S19b section 2.6)."
-            << exit(FatalError);
-    }
-    if (phaseClotProperties_.found("blockCoupledLumen") && !s19BlockCoupled())
-    {
-        FatalErrorInFunction
-            << "blockCoupledLumen " << blockCoupledLumen_ << " is read only "
-            << "under momentumPressureCoupling blockCoupled; under "
-            << momentumPressureCoupling_ << " it would be silently inert "
-            << "(S19b section 2.6)." << exit(FatalError);
-    }
     if (s19BlockCoupled())
     {
-        if
-        (
-            !twoVelocitySkeleton_ || !eulerianSolid_
-         || releasedCarrier_ != "material"
-        )
-        {
-            FatalErrorInFunction
-                << "momentumPressureCoupling blockCoupled solves the "
-                << "two-velocity block: it needs twoVelocitySkeleton yes, "
-                << "eulerianSolid yes and releasedCarrier material (S19 "
-                << "section 2)." << exit(FatalError);
-        }
         if (networkPressureWeight_ == "contentRatio")
         {
             FatalErrorInFunction
                 << "momentumPressureCoupling blockCoupled with "
                 << "networkPressureWeight contentRatio: refused (S19 section "
                 << "2; C off)." << exit(FatalError);
-        }
-        if (elasticCoupling_ != "implicitTangent")
-        {
-            FatalErrorInFunction
-                << "momentumPressureCoupling blockCoupled needs "
-                << "elasticCoupling implicitTangent (its VsEqn carries the "
-                << "implicit half of Gamma_t); got " << elasticCoupling_
-                << " (S19 section 2)." << exit(FatalError);
-        }
-        if (faceConsistentElasticForce_)
-        {
-            FatalErrorInFunction
-                << "momentumPressureCoupling blockCoupled with "
-                << "faceConsistentElasticForce yes: refused (S19 section 2)."
-                << exit(FatalError);
-        }
-        if (blockFaceInverse_ != "faceAssembled")
-        {
-            FatalErrorInFunction
-                << "momentumPressureCoupling blockCoupled takes rA_f from the "
-                << "face-assembled 2x2 inverse; blockFaceInverse is "
-                << blockFaceInverse_ << " (S19 section 2)." << exit(FatalError);
         }
         if (Pstream::parRun())
         {
@@ -3659,7 +2174,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
         << " momentumPressureCoupling=" << momentumPressureCoupling_
         << " networkViscosity=" << networkViscosity_
         << " networkViscosityTau=" << networkViscosityTau_
-        << " blockCoupledLumen=" << blockCoupledLumen_
         << " etaNMax="
         << (
                networkViscosity_ == "none"
@@ -3674,7 +2188,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
     // fresh start there is no pending content, so the contents are zero and
     // the fibre is the isotropic one (n = e_x, lf = 1, p_P = 0). A partition
     // that holds pending content with no fibre to carry it is refused.
-    if (fibreRelease())
     {
         const bool hasN = pendingAxis_.headerOk();
         const bool hasL = pendingStretch_.headerOk();
@@ -3733,13 +2246,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
         thetaPendingP_.oldTime();
         syncPendingFibres("initial condition");
     }
-    else
-    {
-        pendingAxis_.writeOpt() = IOobject::NO_WRITE;
-        pendingStretch_.writeOpt() = IOobject::NO_WRITE;
-        pendingB_.writeOpt() = IOobject::NO_WRITE;
-        pendingPressure_.writeOpt() = IOobject::NO_WRITE;
-    }
     s17TransferB1Max_ = 0;
     s17Transfers_ = 0;
     s17RotRatioMedian_ = 1;
@@ -3768,10 +2274,7 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
     // ONE LINE, compared with child.json by assess_case.py (the S17 config
     // gate).
     Info<< "PHASE_CLOT_S17_CONFIG"
-        << " networkRupture=" << networkRupture_
-        << " elasticCoupling=" << elasticCoupling_
-        << " beDetRenormalise=" << (beDetRenormalise_ ? "yes" : "no")
-        << " pendingForm=" << (fibreRelease() ? "fibre" : "none")
+        << " pendingForm=" << "fibre"
         << endl;
 
     s16LawReleaseMax_ = 0;
@@ -3788,27 +2291,18 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
 
     // ONE LINE, compared with child.json by assess_case.py (the config gate).
     Info<< "PHASE_CLOT_S16_CONFIG"
-        << " networkRupture=" << networkRupture_
         << " networkCriticalStretch=" << networkCriticalStretch_
         << " networkReleaseTime=" << networkReleaseTime_
-        << " networkDamageProgressive="
-        << (networkDamageProgressive_ ? "on" : "off")
         << " networkDamageOnsetStretch=" << networkDamageOnsetStretch_
         << " networkDamageStretchScale=" << networkDamageStretchScale_
-        << " skeletonFloorBasis=" << skeletonFloorBasis_
-        << " damageTransport=" << damageTransport_
-        << " networkPressureDamage=" << networkPressureDamage_
         << " releaseLaw="
         << (
-               !terminal ? "none"
-             : networkDamageProgressive_ ? "progressive+terminal"
-             : "terminal-only"
+             "progressive+terminal"
            )
         << endl;
 
     Info<< "PHASE_CLOT_S13_CONFIG"
         << " networkPressureWeight=" << networkPressureWeight_
-        << " beStretchGradient=" << beStretchGradient_
         << endl;
 
     {
@@ -3818,7 +2312,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
         const scalar Kcore =
             sqr(1.0 - phi0)*nu_.value()/max(k0pcore_.value(), vSmall);
         Info<< "PHASE_CLOT_S12_CONFIG"
-            << " dragOccupancyBasis=" << dragOccupancyBasis_
             << " intrinsicDragAtReferenceShell=" << Kshell
             << " intrinsicDragAtReferenceCore=" << Kcore
             << " diluteFloorK1=" << skeletonDiluteDragRate_
@@ -3876,166 +2369,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
 
     checkPlateletConfiguration();
 
-    // ---- C1/C2 PHASE-WEIGHT BASIS ----------------------------------------
-    //
-    // Validated HERE and not in checkPlateletConfiguration(), which returns
-    // early when plateletContentModel_ is off. This key changes the momentum
-    // and pressure weights on every path, so a misspelling must fail on every
-    // path too.
-    if (phaseWeightBasis_ != "legacy" && phaseWeightBasis_ != "content")
-    {
-        FatalErrorInFunction
-            << "phaseWeightBasis must be 'legacy' or 'content'; found '"
-            << phaseWeightBasis_ << "'"
-            << exit(FatalError);
-    }
-
-    if (phaseWeightBasis_ == "content")
-    {
-        // FAIL CLOSED ON A DEAD FIELD. Without the content model nothing
-        // solves thetaC_/thetaH_, so the weights would silently become the
-        // initialisation frozen for the whole run -- a wrong answer that
-        // looks entirely plausible in every diagnostic.
-        if (!plateletContentModel_)
-        {
-            FatalErrorInFunction
-                << "phaseWeightBasis 'content' requires plateletContentModel"
-                << " true: without it nothing solves thetaC/thetaH and the"
-                << " phase weights would be frozen at their initialisation."
-                << exit(FatalError);
-        }
-
-        // THE ORDERING CONSTRAINT, AND IT IS MEASURED. A uniform bind rate
-        // deposits in every cell, so theta becomes nonzero throughout the
-        // lumen -- 4.18e-05 in all 19119 lumen cells of run 20260915-073208,
-        // where solidFraction() is exactly 0. Out there the skeleton diagonal
-        // is only Kres ~ 67 1/s against 3.3e+05 inside the clot, so a
-        // spurious force is divided by something ~5000x too small. Run
-        // 20260905-191135 died exactly this way from a lumen weight of 1e-04
-        // (whole-field maxVs 0.62 m/s while every clot-cell metric stayed
-        // ordinary). 4.18e-05 is a factor 2.4 under that, not a margin.
-        //
-        // With the interface localiser the same cells carry 2.66e-13 (run
-        // 20260915-101308) -- nine decades under the precedent.
-        if (plateletBindLocalisation_ != "interface"
-         && !plateletTransportOnly_
-         && plateletBindRate_ > 0
-         && !unlocalisedPhaseWeightsAccepted_)
-        {
-            FatalErrorInFunction
-                << "phaseWeightBasis 'content' with an UNLOCALISED accepted"
-                << " transfer (plateletBindLocalisation '"
-                << plateletBindLocalisation_ << "', lambda "
-                << plateletBindRate_ << ") puts solid content in every lumen"
-                << " cell and then uses it as a momentum weight, where the"
-                << " skeleton diagonal is ~5000x too small to resist it."
-                << " Run 20260905-191135 died of a lumen weight of 1e-04."
-                << " Set plateletBindLocalisation 'interface', or set"
-                << " unlocalisedPhaseWeightsAccepted true with a recorded"
-                << " reason."
-                << exit(FatalError);
-        }
-    }
-
-    // ---- C1/C2 FORCE BASIS -----------------------------------------------
-    if (phaseForceBasis_ != "legacy" && phaseForceBasis_ != "content")
-    {
-        FatalErrorInFunction
-            << "phaseForceBasis must be 'legacy' or 'content'; found '"
-            << phaseForceBasis_ << "'"
-            << exit(FatalError);
-    }
-
-    if (phaseForceBasis_ == "content")
-    {
-        if (!plateletContentModel_)
-        {
-            FatalErrorInFunction
-                << "phaseForceBasis 'content' requires plateletContentModel"
-                << " true: without it nothing solves thetaC/thetaH and the"
-                << " network-pressure force would be evaluated on a fraction"
-                << " frozen at its initialisation."
-                << exit(FatalError);
-        }
-
-        // REFUSED BECAUSE IT IS STRICTLY WORSE THAN EITHER PURE STATE. With
-        // content forces and legacy weights the skeleton row of the 2x2 block
-        // carries -phi_s*grad(p) with phi_s = solidFraction() while F_s
-        // carries -grad(phi_s p_n) with phi_s = theta -- the same
-        // force/weight disagreement this key exists to remove, merely moved
-        // to the other side. Nothing downstream would catch it.
-        //
-        // No override switch, deliberately: there is no experiment this
-        // configuration answers that the two pure states do not answer
-        // better.
-        if (phaseWeightBasis_ != "content")
-        {
-            FatalErrorInFunction
-                << "phaseForceBasis 'content' requires phaseWeightBasis"
-                << " 'content' (found '" << phaseWeightBasis_ << "'). Content"
-                << " forces against legacy weights disagree about the solid"
-                << " fraction inside a single momentum equation, which is"
-                << " worse than either basis used consistently."
-                << exit(FatalError);
-        }
-    }
-
-    // ---- OI-6: THE MOMENTUM ADVECTIVE FLUX --------------------------------
-    //
-    // Validated unconditionally: a misspelling must fail on every path.
-    if
-    (
-        phaseMomentumFluxBasis_ != "legacy"
-     && phaseMomentumFluxBasis_ != "shared"
-    )
-    {
-        FatalErrorInFunction
-            << "phaseMomentumFluxBasis must be 'legacy' or 'shared'; found '"
-            << phaseMomentumFluxBasis_ << "'"
-            << exit(FatalError);
-    }
-
-    if (phaseMomentumFluxBasis_ == "shared")
-    {
-        // Each refusal names the field that would not exist, not a policy.
-        if (!contentModel_)
-        {
-            FatalErrorInFunction
-                << "phaseMomentumFluxBasis 'shared' requires contentModel"
-                << " true: without it solveContentComponents() returns early,"
-                << " no theta equation is assembled, and there is no face"
-                << " value for the momentum flux to inherit."
-                << exit(FatalError);
-        }
-
-        if (!twoVelocitySkeleton_)
-        {
-            FatalErrorInFunction
-                << "phaseMomentumFluxBasis 'shared' requires"
-                << " twoVelocitySkeleton true: phiSkelFlux is built only on"
-                << " that path, so the key would be inert -- and inert config"
-                << " that looks live gets tuned by someone expecting an"
-                << " effect."
-                << exit(FatalError);
-        }
-
-        // REFUSED BECAUSE THE TWO FIELDS WOULD BE DIFFERENT FIELDS. Under
-        // legacy weights phiSkel_ is solidFraction() = theta_ref*chi, built
-        // from c, while contentFaceWeights_ are the weights theta was
-        // advected with. Interpolating one field with the other's weights is
-        // not consistency, it is a second mismatch wearing the first one's
-        // name.
-        if (phaseWeightBasis_ != "content")
-        {
-            FatalErrorInFunction
-                << "phaseMomentumFluxBasis 'shared' requires phaseWeightBasis"
-                << " 'content' (found '" << phaseWeightBasis_ << "'). The"
-                << " shared face value is the one the theta equation used;"
-                << " applying it to solidFraction() would interpolate one"
-                << " field with another field's weights."
-                << exit(FatalError);
-        }
-    }
 
     // ---- S6c-2: THE KEY VALUES THAT DIED WITH c --------------------------
     //
@@ -4049,101 +2382,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
     // The keys themselves survive one release so the refusal has something
     // to fire on; S7 retires them.
     {
-        // S7: THE MESSAGE MUST NAME A BLOCKER THE READER CAN ACT ON.
-        //
-        // The original text ended "Set <key> to the content form". For a
-        // case with the content model off that is IMPOSSIBLE advice: the
-        // surviving value is refused too, by the precondition a few
-        // hundred lines above, so the key has no legal value at all and
-        // the case cannot run on this solver by any dictionary edit.
-        // 185 of the project's cases are in exactly that position and
-        // every one of them was being told to set a value that would
-        // abort on the next check. `available` says which of the two it
-        // is, so the reader is not sent round the loop.
-        const auto refuseDeadValue = []
-        (
-            const word& key,
-            const word& value,
-            const word& dead,
-            const bool available,
-            const char* needs,
-            const char* why
-        )
-        {
-            if (value != dead)
-            {
-                return;
-            }
-
-            // ONE stream expression, not two. FatalErrorInFunction buffers
-            // into the global error and only the terminating exit() throws,
-            // so a first invocation without exit() would leave a half-built
-            // message for the next caller to inherit.
-            FatalErrorInFunction
-                << key << " '" << dead << "' was DELETED in S6c-2."
-                << " Its implementation read c, which no longer exists: "
-                << why << nl
-                << (
-                       available
-                     ? "  Refused rather than silently replaced by the"
-                       " surviving value, because the two are not the same"
-                       " model. Set the key to the content form, or check"
-                       " out a pre-S6c-2 build to reproduce an archived"
-                       " legacy run."
-                     : "  AND THERE IS NO LEGAL VALUE FOR THIS KEY IN THIS"
-                       " CASE: the surviving value requires the switch named"
-                       " below, which this case does not set, so no edit to"
-                       " this key will start the run. The case predates the"
-                       " content model and cannot run on this solver -- q is"
-                       " now theta-derived unconditionally, so with the"
-                       " content model off thetaC/thetaH never move and q is"
-                       " frozen at its initialisation. Enable the content"
-                       " model to make it a different experiment, or check"
-                       " out a pre-S6c-2 build to reproduce the archived run."
-                   )
-                << nl
-                << "  The surviving value requires: " << needs << nl
-                << exit(FatalError);
-        };
-
-        refuseDeadValue
-        (
-            "phaseNormalBasis", phaseNormalBasis_, "legacy",
-            plateletContentModel_,
-            "plateletContentModel true",
-            "normal_ was grad(c)/max(|grad c|, gradFloor)."
-        );
-        refuseDeadValue
-        (
-            "phaseDeltaBasis", phaseDeltaBasis_, "legacy",
-            plateletContentModel_,
-            "plateletContentModel true",
-            "interfaceDelta_ was deltaC_ = 0.5*|grad c|."
-        );
-        refuseDeadValue
-        (
-            "phaseLimiterBasis", phaseLimiterBasis_, "legacy",
-            contentModel_,
-            "contentModel true",
-            "the limiter was evaluated on c itself, by name, so that"
-            " fvc::grad resolved grad(c)."
-        );
-        refuseDeadValue
-        (
-            "phaseFluidFractionBasis", phaseFluidFractionBasis_, "legacy",
-            contentModel_,
-            "contentModel true",
-            "q was 0.5*(c + 1)."
-        );
-        refuseDeadValue
-        (
-            "phaseGrowthDriver", phaseGrowthDriver_, "front",
-            plateletContentModel_,
-            "plateletContentModel true",
-            "the Stefan front sourced the c equation with"
-            " Vn_*phaseGradient_, and that equation is gone."
-        );
-
         // mobility and epsilonC are no longer read at all. A case still
         // setting a NONZERO mobility is asking for the Cahn-Hilliard term,
         // and getting silence instead would be a model change disguised as a
@@ -4180,30 +2418,7 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
     }
 
     // ---- S6a: WHAT DEFINES q ----------------------------------------------
-    if
-    (
-        phaseFluidFractionBasis_ != "legacy"
-     && phaseFluidFractionBasis_ != "content"
-    )
     {
-        FatalErrorInFunction
-            << "phaseFluidFractionBasis must be 'legacy' or 'content'; found '"
-            << phaseFluidFractionBasis_ << "'"
-            << exit(FatalError);
-    }
-
-    if (phaseFluidFractionBasis_ == "content")
-    {
-        if (!contentModel_)
-        {
-            FatalErrorInFunction
-                << "phaseFluidFractionBasis 'content' requires contentModel"
-                << " true: without it thetaC/thetaH are frozen at their"
-                << " initialisation and q -- which 53 sites read -- would"
-                << " stop responding to the clot entirely."
-                << exit(FatalError);
-        }
-
         // The ratio divides by theta_ref. A solver that reached here with the
         // default 0.01 would rescale q by 45x and every consumer with it.
         if (skeletonVolumeFraction_ <= small)
@@ -4217,29 +2432,7 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
     }
 
     // ---- S6b-1: WHICH FIELD THE PHASE LIMITER READS -----------------------
-    //
-    // Validated unconditionally: a misspelling must fail on every path.
-    if (phaseLimiterBasis_ != "legacy" && phaseLimiterBasis_ != "content")
     {
-        FatalErrorInFunction
-            << "phaseLimiterBasis must be 'legacy' or 'content'; found '"
-            << phaseLimiterBasis_ << "'"
-            << exit(FatalError);
-    }
-
-    if (phaseLimiterBasis_ == "content")
-    {
-        if (!contentModel_)
-        {
-            FatalErrorInFunction
-                << "phaseLimiterBasis 'content' requires contentModel true:"
-                << " without it thetaC/thetaH are frozen at their"
-                << " initialisation, and the limiter would be evaluated on a"
-                << " field that never moves -- pure central differencing on"
-                << " every interior face."
-                << exit(FatalError);
-        }
-
         if (skeletonVolumeFraction_ <= small)
         {
             FatalErrorInFunction
@@ -4248,100 +2441,10 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
                 << skeletonVolumeFraction_ << ")."
                 << exit(FatalError);
         }
-
-        // REFUSED BECAUSE IT WOULD CREATE THE MISMATCH IT REPAIRS. With q
-        // still defined as 0.5*(1 + c), advecting Wp with theta's limiter
-        // would give the content equation a foreign field's weights -- the
-        // 2026-09-02 defect, restated. The two keys move in this order.
-        if (phaseFluidFractionBasis_ != "content")
-        {
-            FatalErrorInFunction
-                << "phaseLimiterBasis 'content' requires"
-                << " phaseFluidFractionBasis 'content' (found '"
-                << phaseFluidFractionBasis_ << "'). Weights built from theta"
-                << " against a q still defined by c is a new mismatch, not a"
-                << " repair."
-                << exit(FatalError);
-        }
-    }
-
-    // ---- S6b-2: WHICH FACE VALUES Wp IS ADVECTED WITH ---------------------
-    if
-    (
-        phasePlateletFluxBasis_ != "legacy"
-     && phasePlateletFluxBasis_ != "content"
-    )
-    {
-        FatalErrorInFunction
-            << "phasePlateletFluxBasis must be 'legacy' or 'content'; found '"
-            << phasePlateletFluxBasis_ << "'"
-            << exit(FatalError);
-    }
-
-    if (phasePlateletFluxBasis_ == "content")
-    {
-        // Each refusal names the field that would not exist, not a policy.
-        if (!contentModel_)
-        {
-            FatalErrorInFunction
-                << "phasePlateletFluxBasis 'content' requires contentModel"
-                << " true: without it solveContentComponents() returns early"
-                << " and contentFaceWeights_ is never set, so there are no"
-                << " face values for Wp to inherit."
-                << exit(FatalError);
-        }
-
-        if (!plateletContentFormulation_)
-        {
-            FatalErrorInFunction
-                << "phasePlateletFluxBasis 'content' requires"
-                << " plateletContentFormulation true: Wp is solved only on"
-                << " that path, so the key would be inert -- and inert config"
-                << " that looks live gets tuned by someone expecting an"
-                << " effect."
-                << exit(FatalError);
-        }
-
-        // THE IDENTITY BEING REPAIRED IS Wp == q, so it is only a repair when
-        // q is the thing theta defines. Against q = 0.5*(1 + c) this key
-        // would hand Wp the weights of a field q does not come from.
-        if (phaseFluidFractionBasis_ != "content")
-        {
-            FatalErrorInFunction
-                << "phasePlateletFluxBasis 'content' requires"
-                << " phaseFluidFractionBasis 'content' (found '"
-                << phaseFluidFractionBasis_ << "'). Wp inherits theta's face"
-                << " values so that Wp = q survives; with q defined by c that"
-                << " is the opposite of consistency."
-                << exit(FatalError);
-        }
     }
 
     // ---- THE INDICATOR BASIS ---------------------------------------------
-    //
-    // Validated unconditionally, for the same reason phaseWeightBasis is: a
-    // misspelling must fail on every path, and checkPlateletConfiguration()
-    // returns early when the content model is off.
-    if (phaseIndicatorBasis_ != "legacy" && phaseIndicatorBasis_ != "content")
     {
-        FatalErrorInFunction
-            << "phaseIndicatorBasis must be 'legacy' or 'content'; found '"
-            << phaseIndicatorBasis_ << "'"
-            << exit(FatalError);
-    }
-
-    if (phaseIndicatorBasis_ == "content")
-    {
-        if (!plateletContentModel_)
-        {
-            FatalErrorInFunction
-                << "phaseIndicatorBasis 'content' requires"
-                << " plateletContentModel true: without it nothing solves"
-                << " thetaC/thetaH and the indicator would be frozen at its"
-                << " initialisation."
-                << exit(FatalError);
-        }
-
         // THE DIVISOR. theta/theta_ref is the whole substitution and
         // theta_ref is a case parameter, so a case that sets it to zero would
         // divide by zero in seven places rather than in one obvious one.
@@ -4354,85 +2457,9 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
                 << " theta/theta_ref and has no meaning at theta_ref <= 0."
                 << exit(FatalError);
         }
-
-        // THE ORDERING CONSTRAINT, AND IT IS A DIFFERENT ONE FROM THE
-        // WEIGHTS'. Do not read this as the weight refusal copied across --
-        // the mechanism is a THRESHOLD CROSSING, not a force divided by a
-        // small diagonal, and the margin is 100x rather than 2.4x.
-        //
-        // Kres and isSkel both key off residualChi_ (0.01 on the main case).
-        // Above that threshold Kres is exactly zero and isSkel is exactly
-        // one: BOTH lumen safety nets switch off. Run 20260906-101812 is what
-        // that looks like -- every one of the top 100 cells by |Vs| sat in
-        // deep lumen with Kres = 0.
-        //
-        // On the unlocalised path run 20260915-073208 measured theta =
-        // 4.18e-05 in all 19119 lumen cells, i.e. an indicator of 9.29e-05,
-        // which is 108x UNDER the 0.01 threshold -- so at 0.4 ms the nets
-        // still fire. But that lumen theta grows LINEARLY with time, and the
-        // main case runs 30 ms, 75x longer. Linear extrapolation lands at
-        // 3.1e-03, an indicator of 7.0e-03 against a threshold of 1.0e-02:
-        // a factor of 1.4. That is an extrapolation, stated as one, and a
-        // factor of 1.4 is not a margin to run a 30 ms case on.
-        //
-        // With the interface localiser the same cells carry 2.66e-13, an
-        // indicator of 5.9e-13 -- ten decades under the threshold, and no
-        // extrapolation can reach it.
-        //
-        // Reuses unlocalisedPhaseWeightsAccepted_ deliberately: it is an
-        // escape hatch for "I accept unlocalised deposition feeding a
-        // phase-derived quantity", not an experiment key, and two switches
-        // for one decision is how one of them gets set alone.
-        if (plateletBindLocalisation_ != "interface"
-         && !plateletTransportOnly_
-         && plateletBindRate_ > 0
-         && !unlocalisedPhaseWeightsAccepted_)
-        {
-            FatalErrorInFunction
-                << "phaseIndicatorBasis 'content' with an UNLOCALISED"
-                << " accepted transfer (plateletBindLocalisation '"
-                << plateletBindLocalisation_ << "', lambda "
-                << plateletBindRate_ << ") grows lumen content linearly"
-                << " toward the residualChi threshold (" << residualChi_
-                << "), above which Kres and the isSkel clamp both switch"
-                << " off in the lumen. Run 20260906-101812 died with both"
-                << " safety nets dead. Set plateletBindLocalisation"
-                << " 'interface', or set unlocalisedPhaseWeightsAccepted"
-                << " true with a recorded reason."
-                << exit(FatalError);
-        }
     }
 
-    // THE SURFACE-DELTA BASIS. Validated unconditionally, like the three
-    // above: a misspelling must fail on every path, not only on the one that
-    // happens to consume it.
-    if (phaseDeltaBasis_ != "legacy" && phaseDeltaBasis_ != "content")
     {
-        FatalErrorInFunction
-            << "phaseDeltaBasis must be 'legacy' or 'content'; found '"
-            << phaseDeltaBasis_ << "'"
-            << exit(FatalError);
-    }
-
-    if (phaseDeltaBasis_ == "content")
-    {
-        // NO SILENT FALLBACK. deltaTheta_ is zero when there is no content
-        // model, and a zero surface delta is not a degraded localiser -- it
-        // switches the accepted transfer and the bound-platelet uptake off
-        // entirely while every dimension check still passes and every
-        // conservation identity still closes on nothing. That is the failure
-        // mode this project keeps being caught by, so it aborts here.
-        if (!plateletContentModel_)
-        {
-            FatalErrorInFunction
-                << "phaseDeltaBasis 'content' requires plateletContentModel"
-                << " true: without it nothing solves thetaC/thetaH, so"
-                << " |grad(thetaC + thetaH)| is frozen at its initialisation"
-                << " and the binding source would be localised on an"
-                << " interface that never moves."
-                << exit(FatalError);
-        }
-
         // The same divisor guard the indicator carries, for the same reason:
         // theta_ref is a case parameter and dividing by zero in the delta
         // would surface as an infinite bindRate inside the transfer kernel
@@ -4449,34 +2476,7 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
         }
     }
 
-    // THE INTERFACE-NORMAL BASIS, S6c-1. Validated unconditionally, like the
-    // keys above: a misspelling must fail on every path, not only on the one
-    // that happens to consume it.
-    if (phaseNormalBasis_ != "legacy" && phaseNormalBasis_ != "content")
     {
-        FatalErrorInFunction
-            << "phaseNormalBasis must be 'legacy' or 'content'; found '"
-            << phaseNormalBasis_ << "'"
-            << exit(FatalError);
-    }
-
-    if (phaseNormalBasis_ == "content")
-    {
-        // NO SILENT FALLBACK, for the reason phaseDeltaBasis gives. Without
-        // the content model thetaC_/thetaH_ never move, so the content
-        // normal is frozen at its initialisation and shearPa_ would be
-        // projected onto an interface that does not follow the clot. Every
-        // dimension check would still pass.
-        if (!plateletContentModel_)
-        {
-            FatalErrorInFunction
-                << "phaseNormalBasis 'content' requires plateletContentModel"
-                << " true: without it nothing solves thetaC/thetaH, so"
-                << " grad(thetaC + thetaH) is frozen at its initialisation"
-                << " and normal_ would stop following the interface."
-                << exit(FatalError);
-        }
-
         if (skeletonVolumeFraction_ <= 0)
         {
             FatalErrorInFunction
@@ -4489,36 +2489,7 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
         }
     }
 
-    // THE GROWTH DRIVER. Validated unconditionally, for the same reason as
-    // the four basis keys: a misspelling must fail on every path.
-    if (phaseGrowthDriver_ != "front" && phaseGrowthDriver_ != "transfer")
     {
-        FatalErrorInFunction
-            << "phaseGrowthDriver must be 'front' or 'transfer'; found '"
-            << phaseGrowthDriver_ << "'"
-            << exit(FatalError);
-    }
-
-    if (phaseGrowthDriver_ == "transfer")
-    {
-        // NO SILENT FALLBACK, and this one is sharper than the delta's.
-        // Without the content model nothing computes a transfer, so
-        // 'transfer' would delete the Stefan front and put NOTHING in its
-        // place: c would be advected and never grow, every dimension check
-        // would pass, every balance would close on zero, and the run would
-        // look like a clot that simply does not form.
-        if (!plateletContentModel_)
-        {
-            FatalErrorInFunction
-                << "phaseGrowthDriver 'transfer' requires"
-                << " plateletContentModel true: it removes the Stefan front"
-                << " from the c equation and replaces it with the accepted"
-                << " platelet transfer, which nothing computes without the"
-                << " content model. The clot would never grow and every"
-                << " conservation identity would still close."
-                << exit(FatalError);
-        }
-
         // The conversion is dc = -(2/theta_ref)*dtheta and theta_ref is the
         // divisor. Caught here rather than as an infinite increment applied
         // to c inside solvePlateletContent().
@@ -4533,150 +2504,19 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
                 << " theta_ref <= 0."
                 << exit(FatalError);
         }
-
-        // The transfer localises on interfaceDelta_. Under 'legacy' that is
-        // 0.5*|grad c|, so the growth of the theta clot would be driven by
-        // the geometry of the c clot it is supposed to replace -- S1b's
-        // ordering requirement, enforced rather than written down.
-        if (phaseDeltaBasis_ != "content")
-        {
-            FatalErrorInFunction
-                << "phaseGrowthDriver 'transfer' requires phaseDeltaBasis"
-                << " 'content'; found '" << phaseDeltaBasis_ << "'. S3 must"
-                << " precede S4: the transfer must already localise on"
-                << " |grad theta| before it becomes the only growth, or the"
-                << " theta clot grows on the geometry of the c clot it"
-                << " replaces."
-                << exit(FatalError);
-        }
-
-        // contentOperator 'matched' maps the c equation's OWN source into
-        // theta: solveContentComponents() builds
-        // chiSource = 0.5*Vn*phaseGradient - 0.5*laplacian(mobility, muC)
-        // and hands theta_ref*chiSource to the two content equations. With
-        // the front removed that mapping carries a term the c equation no
-        // longer has, AND theta would then receive both it and the transfer
-        // -- growing twice. The operator is 'content' on every main-case
-        // child on record; this refuses the combination rather than silently
-        // rewriting a branch nothing takes.
-        // The 'matched' incompatibility that stood here is subsumed: S6c-2
-        // refuses contentOperator 'matched' outright, so the combination
-        // cannot be reached from any dictionary.
     }
 
     Info<< "PHASE_CLOT_GROWTH_DRIVER"
-        << " driver=" << phaseGrowthDriver_
-        << " frontTerm="
-        << (phaseGrowthDriver_ == "transfer" ? "removed" : "-Vn*phaseGradient")
-        << " cIncrement="
-        << (
-               phaseGrowthDriver_ == "transfer"
-             ? "-(2/theta_ref)*(thetaNew-thetaStar)"
-             : "none"
-           )
+        << " driver=transfer"
+        << " frontTerm=removed"
+        << " cIncrement=-(2/theta_ref)*(thetaNew-thetaStar)"
         << " thetaRef=" << skeletonVolumeFraction_
         << " VnStaysLiveIn=surfaceLossCoeff"
         << " phaseGradientMigrated=yes(rebuilt-on-theta-in-S6c-2)"
         << endl;
 
-    Info<< "PHASE_CLOT_PHASE_DELTA_CONFIG"
-        << " basis=" << phaseDeltaBasis_
-        << " legacyForm=DELETED-IN-S6c-2(was-0.5*|grad(c)|)"
-        << " contentForm=|grad(thetaC+thetaH)|/" << skeletonVolumeFraction_
-        << " appliesTo=bindRate+WpUptake+surfaceLossCoeff"
-        << " notAppliedTo=none"
-        << " instrumentComparesDeltaCAgainstDeltaTheta=retired-in-S6c-2"
-        << endl;
 
-    // S6c-2. c is DELETED. This line is kept, with its legacy form marked
-    // dead, because a case naming phaseNormalBasis 'legacy' is refused at
-    // construction and the log should say what the refused value WAS.
-    //
-    // The path that made c live was shearPa_ -> shearRate_ ->
-    // adhesionEnhancement_ -> adhesionSpeed_ -> Vn_, clamped to exactly 1
-    // while shearRate < gammaLow. Run 20260920-060033 measured a 3.8x
-    // margin there -- peak 795.2 1/s against gammaLow 3000 -- and
-    // dAdhesionSpeedMax = 0 at all 272 steps, which is what authorised the
-    // deletion. That margin is a property of THIS CONFIGURATION, not of the
-    // algebra.
-    Info<< "PHASE_CLOT_NORMAL_BASIS_CONFIG"
-        << " basis=" << phaseNormalBasis_
-        << " legacyForm=DELETED-IN-S6c-2(was-grad(c)/max(|grad c|,gradFloor))"
-        << " contentForm=-2*grad((thetaC+thetaH)/" << skeletonVolumeFraction_
-        << ")/max(|.|,gradFloor)"
-        << " factorTwoFrom=c=1-2*ind"
-        << " gradFloor=" << gradFloor_.value()
-        << " appliesTo=normal(shearPa+surfaceLossCoeff+VnGradientClosure)"
-        << " notAppliedTo=none"
-        << " instrumentComparesBothNormals=retired-in-S6c-2"
-        << endl;
 
-    Info<< "PHASE_CLOT_PHASE_INDICATOR_CONFIG"
-        << " basis=" << phaseIndicatorBasis_
-        << " ratio=theta/" << skeletonVolumeFraction_
-        << " clampAbove=none"
-        << " lowerGuard=0"
-        << " appliesTo=deviatoricElastic+damage+carrierBlend+Kres+isSkel"
-           "+bondHold"
-        << " notAppliedTo=solveSkeleton(unreachable)"
-           "+legacyDrag(LIVE-not-superseded-see-OI-1)"
-           "+skelPressForceDiagnostic"
-        << endl;
-
-    Info<< "PHASE_CLOT_PHASE_FORCE_CONFIG"
-        << " basis=" << phaseForceBasis_
-        << " appliesTo=networkPressure+isotropicElastic"
-        << " deviatoricWeight=chi-floored-unchanged"
-        << endl;
-
-    Info<< "PHASE_CLOT_PHASE_MOMENTUM_FLUX_CONFIG"
-        << " basis=" << phaseMomentumFluxBasis_
-        << " appliesTo=phiSkelFlux"
-        << " notAppliedTo=phiSf+phiFf(partition-of-unity)"
-           "+phiFluidFlux(eps-is-algebraic)"
-        << endl;
-
-    Info<< "PHASE_CLOT_PHASE_FLUID_FRACTION_CONFIG"
-        << " basis=" << phaseFluidFractionBasis_
-        << " thetaRef=" << skeletonVolumeFraction_
-        << " clamped=no"
-        << " consumers=53-sites-17-functions"
-        << endl;
-
-    Info<< "PHASE_CLOT_PHASE_LIMITER_CONFIG"
-        << " basis=" << phaseLimiterBasis_
-        << " appliesTo=phaseWeights(c+shell+Wp)"
-        << " field=" << (phaseLimiterBasis_ == "content"
-                       ? "(thetaC+thetaH)/thetaRef" : "c")
-        << " clamped=no"
-        << endl;
-
-    Info<< "PHASE_CLOT_PLATELET_FLUX_CONFIG"
-        << " basis=" << phasePlateletFluxBasis_
-        << " appliesTo=Wp"
-        << " notAppliedTo=shell(label-not-content)"
-        << " identity=Wp-equals-q-at-w-1"
-        << endl;
-
-    Info<< "PHASE_CLOT_PHASE_WEIGHT_CONFIG"
-        << " basis=" << phaseWeightBasis_
-        << " bindLocalisation=" << plateletBindLocalisation_
-        << " contentModel=" << plateletContentModel_
-        << " unlocalisedAccepted=" << unlocalisedPhaseWeightsAccepted_
-        << endl;
-
-    if (operatorLocalisationAudit_ && !operatorAudit_)
-    {
-        FatalErrorInFunction
-            << "operatorLocalisationAudit requires operatorAudit true"
-            << exit(FatalError);
-    }
-
-    // The consistent platelet branch omits the (Vn - U.n) counter-terms
-    // because fvm::ddt(q,w) and the BOUNDED convection scheme already supply
-    // them. With an unbounded div(qPhi,w) the (U.n)*delta contribution would
-    // never be subtracted and the branch would silently solve the wrong
-    // equation. Refuse that combination rather than discover it in the fields.
     // W IS CARRIED BY THE PHASE FIELD'S FLUX AND MUST USE THE PHASE FIELD'S
     // OPERATOR. Run 20260819-231939 established the failure this prevents: c
     // rode phiReleased (the rigid-body flux inside the clot) while W rode phi_
@@ -4691,16 +2531,7 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
     // entry knows what that is. Checking against a hardcoded string would go
     // stale the first time the c scheme is retuned, silently, which is the
     // class of defect this project keeps being caught by.
-    if (plateletContentFormulation_)
     {
-        if (plateletFluxConsistent_)
-        {
-            FatalErrorInFunction
-                << "plateletContentFormulation and plateletFluxConsistent are "
-                << "alternative formulations of the same equation and must not "
-                << "both be true." << exit(FatalError);
-        }
-
         // THE Wp EQUATION NO LONGER HAS A SCHEME OF ITS OWN, and that is the
         // fix rather than an omission. It reuses the face weights captured
         // from div(phiReleased,c) (see phaseFieldFaceWeights), so there is
@@ -4753,24 +2584,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
                 << "`bounded` is not decorative here: phiReleased jumps from "
                 << "zero to Ubody across the mask boundary and is deliberately "
                 << "not solenoidal."
-                << exit(FatalError);
-        }
-    }
-
-    if (plateletFluxConsistent_)
-    {
-        ITstream& divStream = mesh_.schemes().div("div(qPhi,w)");
-        const word firstToken(divStream);
-        divStream.rewind();
-
-        if (firstToken != "bounded")
-        {
-            FatalErrorInFunction
-                << "plateletFluxConsistent true requires the bounded "
-                << "convection scheme for div(qPhi,w)." << nl
-                << "Found: " << firstToken << nl
-                << "See research/designs/"
-                << "AM2020_platelet_flux_consistency_derivation.md"
                 << exit(FatalError);
         }
     }
@@ -4840,32 +2653,14 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
     // run would look normal while answering a different question -- the same
     // silent-wrong-answer class as the permeability floor and the missing
     // linear solver. Only the two known names are accepted.
-    if
-    (
-        constitutiveModel_ != "stVenantKirchhoff"
-     && constitutiveModel_ != "neoHookean"
-    )
-    {
-        FatalErrorInFunction
-            << "constitutiveModel " << constitutiveModel_ << " is not known. "
-            << "Valid values are stVenantKirchhoff and neoHookean."
-            << exit(FatalError);
-    }
 
     // Neo-Hookean IS a finite-strain law: its stress is built from C, J and
     // C^-1, which are identities at zero displacement and meaningless as a
     // small-strain approximation. Silently ignoring it under finiteStrain
     // false would run St Venant-Kirchhoff while the dictionary said otherwise.
-    if (neoHookean_ && !finiteStrain_)
-    {
-        FatalErrorInFunction
-            << "constitutiveModel neoHookean requires finiteStrain yes; "
-            << "finiteStrain is currently no."
-            << exit(FatalError);
-    }
 
-    Info<< "PHASE_CLOT_CONSTITUTIVE model=" << constitutiveModel_
-        << " finiteStrain=" << Switch(finiteStrain_) << endl;
+    Info<< "PHASE_CLOT_CONSTITUTIVE model=" << "neoHookean"
+        << " finiteStrain=" << "true" << endl;
 
     Info<< "PHASE_CLOT_MATERIAL coreShell=" << Switch(coreShell_)
         << " Gshell=" << G_.value() << " Gcore=" << Gcore_.value()
@@ -4876,7 +2671,7 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
         << " GcfieldMin=" << gMin(GcField_.primitiveField())
         << " GcfieldMax=" << gMax(GcField_.primitiveField())
         << " coreCells=" << returnReduce(coreCells, sumOp<label>())
-        << " diffuseDomain=" << Switch(skeletonDiffuseDomain_)
+        << " diffuseDomain=" << "true"
         << " solidFloor=" << skeletonSolidFloor_
         << " pinExponent=" << skeletonPinExponent_
         << " permeabilityFloor=" << permeabilityFloor_
@@ -5009,7 +2804,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::networkPressureArgument() const
     // Linearised, p_n ~ K_n*p_n'(phi_s0)*thetaNetRef*(1/J - 1): the bulk
     // stiffness of a partly filled cell scales with the network it holds,
     // the same diffuse-domain weighting the deviatoric stress already has.
-    if (networkPressureReference_ == "deposited")
     {
         return volScalarField::New
         (
@@ -5019,8 +2813,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::networkPressureArgument() const
           - thetaNetRef_
         );
     }
-
-    return forceFraction();
 }
 
 
@@ -5061,177 +2853,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::networkPressure() const
 
     const dimensionedScalar phiS0("phiS0", dimless, skeletonVolumeFraction_);
     const dimensionedScalar phiSMax("phiSMax", dimless, phiSMax_);
-    const dimensionedScalar cap("cap", dimless, 0.99*phiSMax_);
-
-    const volScalarField phiSc("phiSc", min(phiS, cap));
-
-    // THE CUBIC, AND WHY THE POLE FORM ABOVE IS NOT THE ONE TO KEEP.
-    //
-    // Run 20260905-223740 measured what the pole form does at the DIFFUSE
-    // INTERFACE, which is the one place nobody had looked. As phi_s -> 0 the
-    // pole law does NOT go to zero:
-    //
-    //     p_n(0) = -K_n*phi_s0/phi_s_max
-    //
-    // -- a finite suction wherever there is a trace of network. The term that
-    // enters the stress, phi_s*p_n, is then LINEAR in phi_s near zero, and the
-    // force it produces across the interface goes as p_n*grad(phi_s), i.e. as
-    // phi_s0^2, while the momentum equation's diagonal there goes only as
-    // phi_s0. So the spurious velocity scales as phi_s0 -- which is exactly
-    // what the paired run measured: at phi_s0 = 0.01 the field was clean
-    // (max|Vs| = max|U| to t = 8.3e-04, zero cells above max|U|), and at
-    // phi_s0 = 0.10 there were 88 cells above max|U|, ALL in the diffuse edge,
-    // chi from 5.9e-04 to 0.118, one of them at |Vs|/|U| = 646. Same defect
-    // class as the 20260905-191135 lumen bug, one band further out.
-    //
-    // Cogan & Guy 2010 Eq. 27 and Fig. 4 prescribe a CUBIC with "a local
-    // maximum and root at phi_n = 0 and a minimum at a nonzero reference
-    // value" -- a DOUBLE root at zero. That double root is not decoration:
-    // it is the property that removes the fringe force. Taking a simple root
-    // at phi_s0 as well, so the nominal density is the equilibrium:
-    //
-    //     p_n(phi_s) = C * phi_s^2 * (phi_s - phi_s0),   C = K_n/(4*phi_s0^3)
-    //
-    // which has p_n(0) = 0, p_n'(0) = 0, p_n(phi_s0) = 0, a minimum at
-    // 2*phi_s0/3 (Fig. 4's nonzero reference), is NEGATIVE below nominal so it
-    // still resists dilation, and rises cubically above it. The normalisation
-    // is stated rather than fitted: C is set so that p_n = K_n at TWICE the
-    // nominal density, which makes networkPressureCoeff readable as "the
-    // network pressure at 2x nominal, in units of gD*G".
-    //
-    // WHAT IT BUYS AT THE FRINGE: the stress term goes as phi_s^3 instead of
-    // phi_s. At chi = 1e-03 that is a factor of 1e-06.
-    //
-    // WHAT IT COSTS: no pole. Close packing is no longer unreachable by force
-    // balance -- but it was never the pole that stopped it (STAGE 6.77: the
-    // 0.6 anchor is Du & Fogelson's DRAG coefficient, Eq. 2.25, not a
-    // pressure), and the cubic still reaches 45*K_n at phi_s = 0.6 with
-    // phi_s0 = 0.1. The close-packing backstop belongs to kozenyCarmanSolid.
-    if (networkPressureModel_ == "cubic")
-    {
-        const dimensionedScalar cubicNorm
-        (
-            "cubicNorm", dimless, 4.0*pow3(max(skeletonVolumeFraction_, small))
-        );
-
-        return volScalarField::New
-        (
-            "networkPressure",
-            networkPressureCoeff_*gD*GField_
-           *sqr(phiSc)*(phiSc - phiS0)/cubicNorm
-        );
-    }
-
-    // THE POLE-CUBIC: THE DOUBLE ROOT AND THE POLE, BECAUSE THE MEASUREMENTS
-    // DEMAND BOTH AND EACH SHIPPED LAW HAS ONLY ONE.
-    //
-    // Neither existing law survives the case this solver now runs, and both
-    // failures are measured rather than argued:
-    //
-    //   poleAtMax  -- run 20260906-210336 (`em_2vel_ps45_rchi`) died SIGFPE at
-    //                 t = 9.71e-05 s. p_n(0) = -K_n*phi_s0/phi_s_max is a
-    //                 finite SUCTION wherever there is a trace of network, so
-    //                 the stress term is LINEAR in phi_s at the diffuse fringe
-    //                 while the momentum diagonal there is ~0. The paired
-    //                 anchor sweep 20260905-223740 measured the scaling.
-    //
-    //   cubic      -- the same batch's `em_2vel_ps45_cub_rchi` reached endTime
-    //                 0.03 s with phiSOverNominal 1.0524: the cubic was
-    //                 ADEQUATE at that time. It is not adequate now. Run
-    //                 20260921-072935 (`em47_horizon_probe`) reached
-    //                 phiSOverNominal 1.1913 in 4e-03 s -- 3.6x the compaction
-    //                 in 1/7.5 the time -- and was still accelerating.
-    //
-    // WHAT CHANGED BETWEEN THEM, AND WHY IT IS THIS TERM'S PROBLEM. k0p moved
-    // to Xu's literature values, 1e-11 -> 1e-13 (shell) and 1e-14 -> 1e-15
-    // (core). The Darcy load a mural clot has to carry scales as 1/k: at
-    // 1e-13 the shell passes 6.1e-06 m/s of a 8.33e-03 m/s stream, i.e. it is
-    // effectively impermeable, and the pressure difference it must sustain
-    // instead of leaking is MEASURED at 12.1 Pa across the clot in that run
-    // (0.01151 m^2/s^2 x rho, written p field at t = 4e-03 s). The cubic's
-    // reply at the worst cell was 2.59 Pa. The law was never re-derived
-    // against the load, and 21.5% of all solid deposited in the run ended up
-    // as density above nominal rather than as clot.
-    //
-    // NOT DEPOSITION, CHECKED. The over-dense cells are ANTI-correlated with
-    // the interface where binding happens: excess-weighted mean
-    // interfaceDelta / clot mean = 0.781, and the worst three cells
-    // (ix 99/98/97, iy 0) read interfaceDelta/max = 0.00, 0.027, 0.31. Nor is
-    // it the Kres/isSkel regularisation, whose band is chi < 5e-03 while these
-    // cells sit at chi = 1.19.
-    //
-    // THE FORM. This is the cubic multiplied by (phi_s_max - phi_s0)/
-    // (phi_s_max - phi_s), a dimensionless factor that is exactly 1 at
-    // nominal and diverges at close packing:
-    //
-    //   p_n = K_n * (phi_s_max - phi_s0)/(4*phi_s0^3)
-    //             * phi_s^2 * (phi_s - phi_s0) / (phi_s_max - phi_s)
-    //
-    // so it inherits every property the cubic was adopted for and adds the one
-    // it gave up:
-    //
-    //  1. DOUBLE ROOT AT ZERO, so the fringe term is O(phi_s^3), Cogan & Guy
-    //     2010 Eq. 27 / Fig. 4. Near phi_s = 0 the new factor is
-    //     (phi_s_max - phi_s0)/phi_s_max = 0.25 here, so the fringe force is
-    //     FOUR TIMES SMALLER than the cubic's -- strictly better at the one
-    //     place the cubic exists to protect.
-    //  2. ZERO AT phi_s0, the nominal density is still the equilibrium.
-    //  3. NEGATIVE BELOW phi_s0, so it still resists dilation.
-    //  4. DIVERGES AS phi_s -> phi_s_max, so close packing is unreachable by
-    //     FORCE BALANCE rather than by clamping a field afterwards. This is
-    //     the standard closure for a compacting network -- Johnson & Jackson
-    //     1987's frictional solids pressure, Buscall & White 1987's
-    //     compressive yield stress -- and it is what kozenyCarmanSolid's own
-    //     comment says the drag cannot supply: K multiplies (u_f - v_s), so a
-    //     network compacting WITH the fluid feels none of it however large xi
-    //     becomes. Run 20260921-072935 measured meanVsOverU = 0.9956: the
-    //     skeleton was moving with the fluid while it compacted, so the drag
-    //     had no purchase on it at all.
-    //
-    // THE NORMALISATION IS DERIVED, NOT FITTED. (phi_s_max - phi_s0) is
-    // exactly the factor that makes dp_n/dphi_s at phi_s0 IDENTICAL to the
-    // cubic's, K_n/(4*phi_s0). So near equilibrium this law and the cubic are
-    // the same law, which is what keeps run 20260906-210336's 30 ms behaviour
-    // rather than replacing it with something untested.
-    //
-    // WHAT IT DOES NOT BUY, PRICED AGAINST THE MEASURED 12.1 Pa LOAD. With
-    // K_n = gD*G and G = 40 Pa the core settles near phi_s = 0.555; with
-    // G = 4 Pa the SHELL needs phi_s = 0.592 to reply with 12 Pa, which is
-    // against the 0.99*phi_s_max = 0.594 clamp. A 4 Pa network under a 12 Pa
-    // load SHOULD very nearly close-pack -- that is the material, not the law
-    // -- and the pole makes the result bounded and physical rather than
-    // unbounded. Whether the clamp actually engages is not predicted here: it
-    // is MEASURED, by pnCapCells in PHASE_CLOT_NETWORK, which is the failable
-    // gate this change ships with.
-    if (networkPressureModel_ == "poleCubic")
-    {
-        const dimensionedScalar cubicNorm
-        (
-            "cubicNorm", dimless, 4.0*pow3(max(skeletonVolumeFraction_, small))
-        );
-
-        // phi_s_max - phi_s0, the factor that matches the cubic's slope at
-        // nominal. Guarded at construction (phiSMax must exceed
-        // skeletonVolumeFraction), so this max() is a belt, not the guard.
-        const dimensionedScalar poleNorm
-        (
-            "poleNorm",
-            dimless,
-            max(phiSMax_ - skeletonVolumeFraction_, small)
-        );
-
-        // phiSc is already capped at 0.99*phiSMax above, so the denominator
-        // cannot fall below 0.01*phiSMax. The cap is a numerical backstop on
-        // a term whose whole purpose is the divide; it is INSTRUMENTED rather
-        // than trusted -- see pnCapCells.
-        return volScalarField::New
-        (
-            "networkPressure",
-            networkPressureCoeff_*gD*GField_
-           *sqr(phiSc)*(phiSc - phiS0)*poleNorm
-           /(cubicNorm*(phiSMax - phiSc))
-        );
-    }
 
     // S11 FIX 5: A LAW DERIVED FROM A CONVEX VOLUMETRIC ENERGY.
     //
@@ -5260,14 +2881,7 @@ Foam::solvers::phaseClotAxisymmetricFluid::networkPressure() const
     // each end is infinite, so a cell outside that interval has already
     // crossed an infinite energy -- a defect upstream, reported with its
     // location, not a value to bound.
-    if (networkPressureModel_ == "convexExcess")
     {
-        if (networkPressureReference_ != "deposited")
-        {
-            FatalErrorInFunction
-                << "convexExcess needs networkPressureReference deposited."
-                << exit(FatalError);
-        }
         checkNetworkArgument(phiS, "convexExcess network pressure");
 
         return volScalarField::New
@@ -5277,21 +2891,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::networkPressure() const
            *(phiSMax - phiS0)*(phiS - phiS0)/(phiS*(phiSMax - phiS))
         );
     }
-
-    if (networkPressureModel_ != "poleAtMax")
-    {
-        FatalErrorInFunction
-            << "networkPressureModel = " << networkPressureModel_
-            << " is not recognised. Use poleAtMax, cubic, poleCubic or "
-            << "convexExcess."
-            << exit(FatalError);
-    }
-
-    return volScalarField::New
-    (
-        "networkPressure",
-        networkPressureCoeff_*gD*GField_*(phiSc - phiS0)/(phiSMax - phiSc)
-    );
 }
 
 
@@ -5439,12 +3038,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::reportFringe() const
 
     // K_int needs a inside (0, phiSMax); outside the deposited/convexExcess
     // pair it is not defined, and the ratio is reported as -1.
-    const bool haveIntrinsic =
-        networkPressureReference_ == "deposited"
-     && networkPressureModel_ == "convexExcess"
-     && permeabilityModel_ == "kozenyCarmanSolid";
     tmp<volScalarField> tKint;
-    if (haveIntrinsic)
     {
         tKint = intrinsicDragRate();
     }
@@ -5462,7 +3056,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::reportFringe() const
             fS += w*s2;
             fMax = max(fMax, s2);
             ++fN;
-            if (haveIntrinsic)
             {
                 fKd += vol[celli]*kd[celli];
                 fKint += vol[celli]*tKint()[celli];
@@ -5489,7 +3082,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::reportFringe() const
     const scalar bRms = bW > 0 ? sqrt(bS/bW) : 0;
 
     Info<< "PHASE_CLOT_FRINGE time=" << runTime.userTimeValue()
-        << " basis=" << dragOccupancyBasis_
+        << " basis=" << "intrinsic"
         << " fringeCells=" << fN
         << " bodyCells=" << bN
         << " fringeSlipRms=" << fRms
@@ -5497,7 +3090,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::reportFringe() const
         << " fringeOverBodySlipRms=" << (bRms > 0 ? fRms/bRms : -1.0)
         << " fringeSlipMax=" << sqrt(fMax)
         << " fringeDragOverIntrinsic="
-        << (haveIntrinsic && fKint > 0 ? fKd/fKint : -1.0)
+        << (fKint > 0 ? fKd/fKint : -1.0)
         << endl;
 }
 
@@ -5534,93 +3127,7 @@ Foam::solvers::phaseClotAxisymmetricFluid::intactFraction() const
     // resistance (the network pressure) and its drag, and loses only the
     // deviatoric load path and the elastic memory. Identically 1 when the
     // rupture model is off, so every earlier child is unchanged.
-    if (networkRupture_ == "off")
-    {
-        return volScalarField::New
-        (
-            "intactFraction",
-            mesh,
-            dimensionedScalar("one", dimless, 1)
-        );
-    }
     return volScalarField::New("intactFraction", 1.0 - ruptured_);
-}
-
-
-void Foam::solvers::phaseClotAxisymmetricFluid::advectRuptureLabel
-(
-    const surfaceScalarField& carrier
-)
-{
-    // THE CONTENT'S TRANSPORT, BOUNDED BY CONSTRUCTION -- NOT shell_'s.
-    //
-    // Batch 54 (run 20260924-014332) carried this label with
-    // phaseSharedConvection(), shell_'s operator. Its face weights are vanLeer
-    // evaluated on the CONTENT, near-central inside the clot where the content
-    // is smooth, and central weights put positive off-diagonals in the
-    // implicit matrix: no maximum principle for a label whose steps are not
-    // the content's. The first fresh rupture undershot to -1.2e-04 on the
-    // very next step; the label reached -0.085 and 1.023, 1 - ruptured went
-    // negative and both children stopped in seriesFaceWeights(). shell_ hides
-    // the same defect by clipping to [0, 1] after its solve -- a clamp this
-    // label must not have, because 1 - ruptured weights the stress, the BSD
-    // coefficient and the dt bound.
-    //
-    // What the content does instead (S10 FIX 3): an implicit UPWIND
-    // predictor -- with the -Sp(surfaceIntegrate(carrier)) term the matrix is
-    // diag = V/dt + sum|F_in|, off-diagonal -|F_in|, an M-matrix whose
-    // solution is a convex combination of the old value and the upwind
-    // neighbours, so [0, 1] holds for any dt -- then the antidiffusive
-    // (linear - upwind) flux, limited per Zalesak 1979 to keep every cell
-    // within its neighbours' range. The limiter is the MINIMUM of the
-    // content's (so the label is corrected exactly where, and as far as, the
-    // content it labels was) and the label's own (so its bound holds). The
-    // same construction Wp uses. With no content FCT this step (a non-fct
-    // content scheme) the label stays at the upwind predictor: bounded,
-    // first order.
-    //
-    // Called AFTER solveContentComponents() so contentFctLambda_ is this
-    // corrector's. fvm::ddt reads ruptured_.oldTime(), and the correction is
-    // limited against it, so repeating this in each phase corrector restarts
-    // from the start-of-step state and does not advect twice.
-    // S16 C: under contentPartition d is not a transported label at all --
-    // it is D/theta of the partition solveContentComponents() just carried
-    // and synced.
-    if (networkRupture_ == "off" || damageTransport_ == "contentPartition")
-    {
-        return;
-    }
-    fvScalarMatrix rupturedEqn
-    (
-        fvm::ddt(ruptured_)
-      + fv::gaussConvectionScheme<scalar>
-        (
-            mesh_,
-            carrier,
-            tmp<surfaceInterpolationScheme<scalar>>
-            (
-                new upwind<scalar>(mesh_, carrier)
-            )
-        ).fvmDiv(carrier, ruptured_)
-      - fvm::Sp(fvc::surfaceIntegrate(carrier), ruptured_)
-    );
-    rupturedEqn.solve();
-    ruptured_.correctBoundaryConditions();
-
-    if (contentFctLambda_.valid())
-    {
-        const surfaceScalarField AR(fctAntidiffusiveFlux(carrier, ruptured_));
-        const surfaceScalarField lambdaR
-        (
-            "rupturedFctLambda",
-            min
-            (
-                contentFctLambda_(),
-                fctLimiter(ruptured_, ruptured_.oldTime(), AR)
-            )
-        );
-        fctApply(ruptured_, lambdaR, AR);
-    }
 }
 
 
@@ -5675,10 +3182,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::syncMaterialLabelFromContent()
 
 void Foam::solvers::phaseClotAxisymmetricFluid::ruptureOverstretchedNetwork()
 {
-    if (networkRupture_ == "off")
-    {
-        return;
-    }
 
     // S15 progressiveDamage: Kliuchnikov et al. 2025 (source 32) Eq. 6 --
     // "we assume that the stress decreases linearly as damage increases,
@@ -5697,7 +3200,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::ruptureOverstretchedNetwork()
     // neo-Hookean stress peaks there), so the stretch range where S14 fired
     // stays well-posed. Its tangent (1 - d)(8/9)b1 is at most 5.51 for every
     // stretch -- the tail that killed em58 is bounded without a cap.
-    const bool progressive = networkRupture_ == "progressiveDamage";
     const scalar lf = networkDamageOnsetStretch_;
     const scalar dlf = networkDamageStretchScale_;
     scalar damageStepMax = 0;
@@ -5714,7 +3216,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::ruptureOverstretchedNetwork()
     // intactFraction() removes it from the deviatoric load path and the
     // relaxation keeps its be at I. The content is NOT removed: debris stays,
     // with its packing resistance and its drag.
-    const scalar b1c = sqr(networkCriticalStretch_);
     const scalar residualContent = residualChi_*skeletonVolumeFraction_;
     const scalarField& refI = thetaNetRef_.primitiveField();
     const volScalarField indR(phaseIndicator());
@@ -5733,7 +3234,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::ruptureOverstretchedNetwork()
     // 2.6 -> 5 -> 164 in consecutive steps.
     scalar b1RupturedMax = 1;
     scalar rupContent = 0, allContent = 0;
-    if (damageTransport_ == "contentPartition")
     {
         // S16 C: THE LAW ACTS ON THE PARTITION, and d (ruptured_) is derived
         // from it afterwards. Per cell, with s = P1 + (P2 + P3) the content,
@@ -5760,14 +3260,9 @@ void Foam::solvers::phaseClotAxisymmetricFluid::ruptureOverstretchedNetwork()
         // so the release is applied once per dt, never once per corrector.
         // S17 A: fibreRelease is this event and this release; what it adds
         // is the pending share's fibre (below, "S17 A").
-        const bool fibre = fibreRelease();
-        const bool terminal =
-            networkRupture_ == "terminalRelease" || fibre;
-        const bool lawProgressive =
-            terminal ? bool(networkDamageProgressive_) : progressive;
         const scalar lc = networkCriticalStretch_;
         const scalar r =
-            terminal ? runTime.deltaTValue()/networkReleaseTime_ : 0.0;
+            runTime.deltaTValue()/networkReleaseTime_;
         const scalarField& oI = thetaIntact_.oldTime().primitiveField();
         const scalarField& oP = thetaPending_.oldTime().primitiveField();
         const scalarField& oB = thetaBroken_.oldTime().primitiveField();
@@ -5781,12 +3276,10 @@ void Foam::solvers::phaseClotAxisymmetricFluid::ruptureOverstretchedNetwork()
         vectorField& nP = pendingAxis_.primitiveFieldRef();
         scalarField& lP = pendingStretch_.primitiveFieldRef();
         // S17b: the taut share (V1) and the fibre read minimum (A2)
-        const bool v1 = fibreSlack_ == "v1";
         scalarField& tTL = thetaTaut_.primitiveFieldRef();
         const scalar readMinL = fibreReadMin();
         label nRaisedPresentL = 0, nRaisedAbsentL = 0;
         tmp<volScalarField> tPn;
-        if (fibre)
         {
             tPn = networkPartialPressureUndamaged();
         }
@@ -5817,27 +3310,15 @@ void Foam::solvers::phaseClotAxisymmetricFluid::ruptureOverstretchedNetwork()
             {
                 b1 = cmptMax(eigenValues(bI[celli]));
                 const scalar l1 = sqrt(b1);
-                if (terminal)
                 {
                     if (l1 >= lc)
                     {
                         dsLaw = 1.0;
                     }
-                    else if (lawProgressive && l1 > lf)
+                    else if (l1 > lf)
                     {
                         dsLaw = 1.0 - exp(-(l1 - lf)/(2.0*dlf));
                     }
-                }
-                else if (progressive)
-                {
-                    if (l1 > lf)
-                    {
-                        dsLaw = 1.0 - exp(-(l1 - lf)/(2.0*dlf));
-                    }
-                }
-                else if (b1 >= b1c)
-                {
-                    dsLaw = 1.0;
                 }
             }
 
@@ -5847,7 +3328,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::ruptureOverstretchedNetwork()
             const scalar dsNew = max(ds, dsLaw);
             // maxIntactStretch as S15 (every cell with network) and S14
             // (cells not ruptured) define it.
-            if (present && (terminal || progressive || dsNew < 1.0))
+            if (present)
             {
                 b1IntactMax = max(b1IntactMax, b1);
             }
@@ -5865,7 +3346,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::ruptureOverstretchedNetwork()
                     // sqrt(b1) (isochoric, the law's), and source 32's TOTAL
                     // stretch (ref/theta)^(1/3) lambda1 (04's convention; -1
                     // where theta <= 0). For the REV first-damage reading.
-                    if (fibre && !(ds > 0))
+                    if (!(ds > 0))
                     {
                         const scalar phi0 = skeletonVolumeFraction_;
                         Info<< "PHASE_CLOT_S18_DAMAGE time="
@@ -5886,7 +3367,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::ruptureOverstretchedNetwork()
                     }
                 }
 
-                if (terminal)
                 {
                     const scalar pend = dsNew - d;
                     if (pend > 0)
@@ -5905,7 +3385,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::ruptureOverstretchedNetwork()
                         // tension p_P is frozen at the event's min(p_n, 0),
                         // and the release scales C_B and q_P with thP, so
                         // B_P and p_P are unchanged by it.
-                        if (fibre)
                         {
                             const scalar thOld = pP[celli];
                             const scalar thPost = sC*pendNew;
@@ -5919,8 +3398,8 @@ void Foam::solvers::phaseClotAxisymmetricFluid::ruptureOverstretchedNetwork()
                             // carrier's fraction of P2, so theta_T <= P2
                             // exactly (a quotient <= 1 times thPost).
                             // Without V1 the carrier is P2 itself (S17).
-                            const scalar cOld = v1 ? tTL[celli] : thOld;
-                            const scalar cMix = v1 ? cOld + dTh : thMix;
+                            const scalar cOld = tTL[celli];
+                            const scalar cMix = cOld + dTh;
                             scalar cPost = thPost;
                             if (dTh > 0 && cMix > 0)
                             {
@@ -6055,7 +3534,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::ruptureOverstretchedNetwork()
                                 const scalar pMix =
                                     (qP[celli]
                                    + dTh*min(tPn()[celli], scalar(0)))/cMix;
-                                if (v1)
                                 {
                                     cPost = thPost*(cMix/thMix);
                                 }
@@ -6066,7 +3544,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::ruptureOverstretchedNetwork()
                             else if (cOld > 0)
                             {
                                 // the release alone: p_P = q_P/carrier kept
-                                if (v1)
                                 {
                                     cPost = thPost*(cOld/thOld);
                                 }
@@ -6075,12 +3552,10 @@ void Foam::solvers::phaseClotAxisymmetricFluid::ruptureOverstretchedNetwork()
                             else
                             {
                                 qP[celli] = 0.0;
-                                if (v1)
                                 {
                                     cPost = 0.0;
                                 }
                             }
-                            if (v1)
                             {
                                 tTL[celli] = cPost;
                             }
@@ -6114,24 +3589,10 @@ void Foam::solvers::phaseClotAxisymmetricFluid::ruptureOverstretchedNetwork()
                     // cell holds network content: an empty cell (S = 0)
                     // keeps the shipped relaxation, so em68 stays identical
                     // to em63 until the first damage (G-id).
-                    if (fibre && pI[celli] == 0)
+                    if (pI[celli] == 0)
                     {
                         bI[celli] = symmTensor::I;
                         ++nReset;
-                    }
-                }
-                else if (dsNew > d)
-                {
-                    // S15 / S14 on the partition: d = d* at once.
-                    lawRelease = max(lawRelease, dsNew - d);
-                    pI[celli] = sC*(1.0 - dsNew);
-                    pP[celli] = 0.0;
-                    pB[celli] = sC*dsNew;
-                    dAfter = dsNew;
-                    if (!progressive)
-                    {
-                        // S14: broken network carries no elastic state.
-                        bI[celli] = symmTensor::I;
                     }
                 }
             }
@@ -6146,13 +3607,11 @@ void Foam::solvers::phaseClotAxisymmetricFluid::ruptureOverstretchedNetwork()
         thetaPending_.correctBoundaryConditions();
         thetaBroken_.correctBoundaryConditions();
         syncDamageFromPartition("rupture law");
-        if (fibre)
         {
             thetaPendingB_.correctBoundaryConditions();
             thetaPendingP_.correctBoundaryConditions();
             pendingAxis_.correctBoundaryConditions();
             pendingStretch_.correctBoundaryConditions();
-            if (v1)
             {
                 thetaTaut_.correctBoundaryConditions();
             }
@@ -6207,49 +3666,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::ruptureOverstretchedNetwork()
         s16LawRate_ = r;
         s16DeltaDMax_ = max(s16DeltaDMax_, deltaD);
     }
-    else
-    {
-    forAll(bI, celli)
-    {
-        const scalar theta = thetaC_[celli] + thetaH_[celli];
-        allContent += theta*vol[celli];
-        if (refI[celli] <= residualContent)
-        {
-            continue;
-        }
-        const scalar b1 = cmptMax(eigenValues(bI[celli]));
-        if (progressive)
-        {
-            const scalar l1 = sqrt(b1);
-            if (l1 > lf)
-            {
-                const scalar d = 1.0 - exp(-(l1 - lf)/(2.0*dlf));
-                if (d > rI[celli])
-                {
-                    damageStepMax = max(damageStepMax, d - rI[celli]);
-                    b1RupturedMax = max(b1RupturedMax, b1);
-                    rI[celli] = d;
-                    ++nNew;
-                    if (indI[celli] >= 0.5) { ++nNewBulk; }
-                }
-            }
-            b1IntactMax = max(b1IntactMax, b1);
-        }
-        else if (b1 >= b1c && rI[celli] < 1.0)
-        {
-            b1RupturedMax = max(b1RupturedMax, b1);
-            rI[celli] = 1.0;
-            bI[celli] = symmTensor::I;
-            ++nNew;
-            if (indI[celli] >= 0.5) { ++nNewBulk; }
-        }
-        else if (rI[celli] < 1.0)
-        {
-            b1IntactMax = max(b1IntactMax, b1);
-        }
-        rupContent += rI[celli]*theta*vol[celli];
-    }
-    }
     ruptured_.correctBoundaryConditions();
     be_.correctBoundaryConditions();
 
@@ -6284,17 +3700,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::ruptureOverstretchedNetwork()
 }
 
 
-bool Foam::solvers::phaseClotAxisymmetricFluid::s16Active() const
-{
-    return
-        networkRupture_ == "terminalRelease"
-     || networkRupture_ == "fibreRelease"
-     || skeletonFloorBasis_ != "intactWeight"
-     || damageTransport_ != "volumeFlux"
-     || networkPressureDamage_ != "off";
-}
-
-
 void Foam::solvers::phaseClotAxisymmetricFluid::syncDamageFromPartition
 (
     const char* site
@@ -6306,10 +3711,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::syncDamageFromPartition
     // Where the partition is empty the cell holds no network, and d is 0 by
     // definition (red-team Change 4): no 0/0 reaches intactFraction(), the
     // noMemory relaxation, the BSD or the tangent bound.
-    if (damageTransport_ != "contentPartition")
-    {
-        return;
-    }
     const scalarField& pI = thetaIntact_.primitiveField();
     const scalarField& pP = thetaPending_.primitiveField();
     const scalarField& pB = thetaBroken_.primitiveField();
@@ -6366,10 +3767,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::restoreDamagePartition
     const char* site
 )
 {
-    if (damageTransport_ != "contentPartition")
-    {
-        return;
-    }
     if
     (
         !thetaIntactStepAccepted_.valid()
@@ -6391,7 +3788,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::restoreDamagePartition
     syncDamageFromPartition(site);
     // S17 A: the pending fibre rolls back with the partition that weights
     // it (design section 5), at both roll-back sites that call this.
-    if (fibreRelease())
     {
         if
         (
@@ -6411,7 +3807,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::restoreDamagePartition
         pendingAxis_ = pendingAxisStepAccepted_();
         pendingStretch_ = pendingStretchStepAccepted_();
         // S17b A1: the taut share with its fibre (V1).
-        if (fibreSlack_ == "v1")
         {
             if (!thetaTautStepAccepted_.valid())
             {
@@ -6466,19 +3861,14 @@ void Foam::solvers::phaseClotAxisymmetricFluid::recordStressWeight(
     // floor-bound damaged cell when it over-weights (the intactWeight form);
     // 1e-4*(1 - d) in a lumen cell when it drops the floor. site is 0, 1, 2
     // for skeletonFaceStress, elasticStress, the tangent bound.
-    if (!s16Active())
-    {
-        return;
-    }
     const volScalarField indW(phaseIndicator());
     const scalarField& indI = indW.primitiveField();
     const scalarField& dI = ruptured_.primitiveField();
-    const bool diffuse = skeletonDiffuseDomain_;
     const scalar floorW = skeletonSolidFloor_;
     scalar absDev = 0;
     forAll(wUsed, celli)
     {
-        const scalar occ = diffuse ? max(indI[celli], floorW) : indI[celli];
+        const scalar occ = max(indI[celli], floorW);
         absDev = max(absDev, mag(wUsed[celli] - occ*(1.0 - dI[celli])));
     }
     reduce(absDev, maxOp<scalar>());
@@ -6498,13 +3888,8 @@ Foam::solvers::phaseClotAxisymmetricFluid::networkPressureDamaged
     // cannot resist dilation, its debris still resists packing. With d = 0
     // this is p_n exactly (p + 1*0 and 0 + 1*p), so an undamaged cell is
     // unchanged bit for bit.
-    if (networkPressureDamage_ != "tensile")
-    {
-        return tp;
-    }
     const volScalarField& p = tp();
     const dimensionedScalar zero("zero", p.dimensions(), 0);
-    if (fibreRelease())
     {
         // S17 A (design 2A "Stress"): p_used = max(p_n, 0) + (thI/S)
         // min(p_n, 0) + (thP/S) p_P. The intact share resists dilation at
@@ -6532,13 +3917,12 @@ Foam::solvers::phaseClotAxisymmetricFluid::networkPressureDamaged
             // S18 A (R1): under frozenPendingPressure none the frozen
             // tension enters no force (fibreReleaseKernel::
             // frozenPressureShare, the expression frozenPower reads too).
-            const bool frozenApplied = frozenPendingPressure_ == "shipped";
             forAll(qS, celli)
             {
                 const scalar S = pI[celli] + (pP[celli] + pB[celli]);
                 qS[celli] = fibreReleaseKernel::frozenPressureShare
                 (
-                    qP[celli], S, frozenApplied
+                    qP[celli], S, false
                 );
             }
             qByS.correctBoundaryConditions();
@@ -6549,11 +3933,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::networkPressureDamaged
             max(p, zero) + intactShare()*min(p, zero) + qByS
         );
     }
-    return volScalarField::New
-    (
-        p.name(),
-        max(p, zero) + (1.0 - ruptured_)*min(p, zero)
-    );
 }
 
 
@@ -6577,7 +3956,6 @@ const
     // numerical tails move -- which is why the argument stays the S10 excess
     // and not the ratio thetaNetRef/theta (AMENDMENT S10: the ratio is
     // singular where there is no network).
-    if (networkPressureModel_ == "convexExcess")
     {
         // S13 FIX A: THE EXCESS IS ALREADY PARTIAL. A partial cell of
         // occupancy occ whose network is compacted by intrinsic strain eps
@@ -6630,13 +4008,6 @@ const
            *networkPressure()
         );
     }
-
-    // Every legacy law: the expression elasticStress() has always used.
-    return volScalarField::New
-    (
-        "networkPartialPressure",
-        forceFraction()*networkPressure()
-    );
 }
 
 
@@ -6682,18 +4053,12 @@ Foam::solvers::phaseClotAxisymmetricFluid::networkContentRatio() const
 // section 2A; the arithmetic is fibreReleaseKernel.H, tested by
 // scripts/s17_fibre_kernel_test.cpp.
 
-bool Foam::solvers::phaseClotAxisymmetricFluid::fibreRelease() const
-{
-    return networkRupture_ == "fibreRelease";
-}
-
-
 const Foam::volScalarField&
 Foam::solvers::phaseClotAxisymmetricFluid::fibreCarrier() const
 {
     // S17b A1 (V1): the fibre's tensor, tension and stress weight belong to
     // the TAUT content; slack content (theta_P - theta_T) carries none.
-    return fibreSlack_ == "v1" ? thetaTaut_ : thetaPending_;
+    return thetaTaut_;
 }
 
 
@@ -6703,9 +4068,7 @@ Foam::scalar Foam::solvers::phaseClotAxisymmetricFluid::fibreReadMin() const
     // C_B/theta is not a blend of fibres (05 D2). A representability limit,
     // not a presence rule or a tolerance: the stress it skips is <= ~6e-252 G
     // (12). Under "shipped", S17's "> 0" (the smallest positive double).
-    return fibreArithmetic_ == "fieldUnits"
-        ? std::numeric_limits<scalar>::min()
-        : std::numeric_limits<scalar>::denorm_min();
+    return std::numeric_limits<scalar>::min();
 }
 
 
@@ -6767,7 +4130,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::s17bForceParts
     // The frozen part is fibreReleaseKernel::frozenPressureShare, the
     // applied expression (0 under frozenPendingPressure none).
     for (int k = 0; k < 4; ++k) { parts[k] = 0; }
-    if (!fibreRelease() || w < 0)
+    if (w < 0)
     {
         return;
     }
@@ -6807,7 +4170,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::s17bForceParts
             pi[celli] = max(pn, scalar(0)) + aI*min(pn, scalar(0));
             pf[celli] = fibreReleaseKernel::frozenPressureShare
             (
-                qP[celli], S, frozenPendingPressure_ == "shipped"
+                qP[celli], S, false
             );
         }
         MI.correctBoundaryConditions();
@@ -6815,7 +4178,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::s17bForceParts
         pInt.correctBoundaryConditions();
         pFro.correctBoundaryConditions();
         // the applied force's wall patches (S18 F, H11)
-        const bool splitWall = wallPatchSplit_ == "split";
         forAll(mesh.boundary(), patchi)
         {
             if (!isA<wallFvPatch>(mesh.boundary()[patchi]))
@@ -6826,7 +4188,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::s17bForceParts
                 pInt.boundaryField()[patchi].patchInternalField();
             pFro.boundaryFieldRef()[patchi] =
                 pFro.boundaryField()[patchi].patchInternalField();
-            if (splitWall)
             {
                 MI.boundaryFieldRef()[patchi] =
                     MI.boundaryField()[patchi].patchInternalField();
@@ -6837,18 +4198,15 @@ void Foam::solvers::phaseClotAxisymmetricFluid::s17bForceParts
     }
     const volScalarField wS(skeletonStressWeight());
     const volScalarField gD(sqr(1.0 - Dg_) + etaRes_);
-    const bool series = stressFaceTransmission_ == "series";
     auto devFlux = [&](const volSymmTensorField& M)
     {
         const volSymmTensorField Sd("Sd", gD*GField_*M);
         const surfaceSymmTensorField sf
         (
-            series
-          ? surfaceSymmTensorField::New
+          surfaceSymmTensorField::New
             (
                 "sfPart", seriesFaceWeights(wS)*fvc::interpolate(Sd)
             )
-          : surfaceSymmTensorField::New("sfPart", fvc::interpolate(wS*Sd))
         );
         return surfaceScalarField::New
         (
@@ -6861,40 +4219,18 @@ void Foam::solvers::phaseClotAxisymmetricFluid::s17bForceParts
     };
     auto presFlux = [&](const volScalarField& pp)
     {
-        if (networkPressureForce_ == "faceGradient")
         {
             return surfaceScalarField::New
             (
                 "fPart", -fvc::snGrad(pp)*mesh.magSf()/rho_
             );
         }
-        const surfaceSymmTensorField sf
-        (
-            "sfPart", -fvc::interpolate(pp)*symmTensor::I
-        );
-        return surfaceScalarField::New
-        (
-            "fPart",
-            fvc::interpolate
-            (
-                fvc::surfaceIntegrateExtrapolate(mesh.Sf() & sf)/rho_
-            ) & mesh.Sf()
-        );
     };
     const vector dHat(dir/max(mag(dir), vSmall));
     parts[0] = fvc::reconstruct(iAD11f*devFlux(MI)())()[w] & dHat;
     parts[1] = fvc::reconstruct(iAD11f*devFlux(MP)())()[w] & dHat;
     parts[2] = fvc::reconstruct(iAD11f*presFlux(pInt)())()[w] & dHat;
     parts[3] = fvc::reconstruct(iAD11f*presFlux(pFro)())()[w] & dHat;
-}
-
-
-bool Foam::solvers::phaseClotAxisymmetricFluid::s17Active() const
-{
-    return
-        fibreRelease() || elasticCoupling_ != "explicit"
-     || fibreSlack_ != "off" || fibreArithmetic_ != "shipped"
-     || skeletonWallFace_ != "shipped";
 }
 
 
@@ -6942,10 +4278,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::syncPendingFibres
     // The derived, written fields from the carried state: B_P = fibre(n, lf)
     // and p_P = q_P/thP (0 where thP = 0). Every value finite, lf >= 1, n
     // unit: a violation is a defect at the named site, not a value to bound.
-    if (!fibreRelease())
-    {
-        return;
-    }
     const scalarField& pP = thetaPending_.primitiveField();
     // S17b A1: the fibre's carrier (theta_T under V1, P2 otherwise)
     const scalarField& pC = fibreCarrier().primitiveField();
@@ -7040,10 +4372,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::projectPendingFibres
     // least-squares tension, lf from lf^2 - 1/lf = T, ties to the previous
     // axis; C_B <- thP fibre(n, lf). G-proj: the energy never rises against
     // the blend (fibreReleaseKernel::dissipative), counted every call.
-    if (!fibreRelease())
-    {
-        return;
-    }
     // S17b: the CARRIER (theta_T under V1: slack content is never blended
     // into a taut fibre, 07), read only where it is >= fibreReadMin() (A2).
     const scalarField& pP = fibreCarrier().primitiveField();
@@ -7207,13 +4535,8 @@ void Foam::solvers::phaseClotAxisymmetricFluid::rotatePendingFibres
     // release and stress). L = grad(U)^T: OpenFOAM's gradient is
     // (grad U)_ij = d_i U_j. G-rot, G-eig and G-uni are measured HERE,
     // across this kernel only (12).
-    if (!fibreRelease())
-    {
-        return;
-    }
     const scalar dt = runTime.deltaTValue();
     // S17b A1: the taut content carries the fibre under V1.
-    const bool v1 = fibreSlack_ == "v1";
     const scalarField& pP = fibreCarrier().primitiveField();
     const tensorField& gI = gradU.primitiveField();
     symmTensorField& cB = thetaPendingB_.primitiveFieldRef();
@@ -7282,7 +4605,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::rotatePendingFibres
         nI[celli] = vector(n[0], n[1], n[2]);
         s17bSumLnMu_[celli] += std::log(r.mu);
         s17bSumMinLnMu_[celli] += min(scalar(0), std::log(r.mu));
-        if (v1)
         {
             // S17b A1, V1 (07 section 2): the slack rule and the q_P clause,
             // fibreReleaseKernel::slackStep. lfOut equals the kernel's UNI
@@ -7384,7 +4706,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::rotatePendingFibres
     s17bSlackPreTRatioMax_ = max(s17bSlackPreTRatioMax_, slackPreTRatio);
     s17bSlackPreQpMax_ = max(s17bSlackPreQpMax_, slackPreQp);
     s17bSlackPreQpRatioMax_ = max(s17bSlackPreQpRatioMax_, slackPreQpRatio);
-    if (v1)
     {
         thetaTaut_.correctBoundaryConditions();
         thetaPendingP_.correctBoundaryConditions();
@@ -7488,7 +4809,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::splitDeviatoricStress() const
     // (S = 0 gives M = dev(be) bit for bit there). The departure of each
     // wall face from its cell is recorded (0 under split, by construction;
     // the stale deviatoric under shipped).
-    const bool split = wallPatchSplit_ == "split";
     scalar wallDev = 0;
     forAll(tM().boundaryField(), patchi)
     {
@@ -7500,7 +4820,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::splitDeviatoricStress() const
         (
             tM().boundaryField()[patchi].patchInternalField()
         );
-        if (split)
         {
             tM.ref().boundaryFieldRef()[patchi] = inner;
         }
@@ -7544,12 +4863,10 @@ Foam::solvers::phaseClotAxisymmetricFluid::mixedTangentStiffness() const
     const scalarField& pB = thetaBroken_.primitiveField();
     const scalarField& lI = pendingStretch_.primitiveField();
     const symmTensorField& beI = be_.primitiveField();
-    const bool tangent = elasticStabilityStiffness_ == "tangent";
     scalarField& k = tK.ref().primitiveFieldRef();
     forAll(k, celli)
     {
         scalar stiff = 1.0;
-        if (tangent)
         {
             const vector ev(eigenValues(beI[celli]));
             const scalar b1 = cmptMax(ev);
@@ -7578,10 +4895,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::recordStressSplit(
     // used the split; a site that keeps S16's dev(be) reads (thP/S)|T
     // dev(n n) - dev(be)|/(1 - d) in every pending cell. S16w reads the
     // weight; this reads the tensor it multiplies.
-    if (!fibreRelease())
-    {
-        return;
-    }
     const scalarField& pI = thetaIntact_.primitiveField();
     const scalarField& pP = thetaPending_.primitiveField();
     // S17b A1: the fibre's carrier (theta_T under V1, P2 otherwise)
@@ -7615,10 +4928,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::recordStiffnessSplit(
 {
     // S17split, site 2 (the tangent bound): the stiffness per unit weight,
     // rebuilt HERE with the kernel's mixedStiffness.
-    if (!fibreRelease())
-    {
-        return;
-    }
     const scalarField& pI = thetaIntact_.primitiveField();
     const scalarField& pP = thetaPending_.primitiveField();
     // S17b A1: the fibre's carrier (theta_T under V1, P2 otherwise)
@@ -7626,12 +4935,10 @@ void Foam::solvers::phaseClotAxisymmetricFluid::recordStiffnessSplit(
     const scalarField& pB = thetaBroken_.primitiveField();
     const scalarField& lI = pendingStretch_.primitiveField();
     const symmTensorField& beI = be_.primitiveField();
-    const bool tangent = elasticStabilityStiffness_ == "tangent";
     scalar devMax = 0;
     forAll(kUsed, celli)
     {
         scalar stiff = 1.0;
-        if (tangent)
         {
             const vector ev(eigenValues(beI[celli]));
             const scalar b1 = cmptMax(ev);
@@ -7867,23 +5174,13 @@ Foam::solvers::phaseClotAxisymmetricFluid::skeletonFaceStress() const
     // traction (the series weight of a zero side is zero). intactFraction()
     // is 1 with the rupture model off, so the shipped weight is unchanged.
     volScalarField w("elasticSolidWeight", phaseIndicator()*intactFraction());
-    if (skeletonFloorBasis_ == "occupancy")
     {
         // S16 B: max(ind, floor)*(1 - d) -- the floor guards occupancy only.
         w = skeletonStressWeight();
     }
-    else if (skeletonDiffuseDomain_)
-    {
-        w = max
-        (
-            w,
-            dimensionedScalar("solidFloor", dimless, skeletonSolidFloor_)
-        );
-    }
     recordStressWeight(w.primitiveField(), 0);
     const volScalarField gD(sqr(1.0 - Dg_) + etaRes_);
     volSymmTensorField S("sigmaDevIntrinsic", gD*GField_*dev(be_));
-    if (fibreRelease())
     {
         // S17 A: the split per unit weight (S17split, site 0).
         const volSymmTensorField M(splitDeviatoricStress());
@@ -7893,24 +5190,12 @@ Foam::solvers::phaseClotAxisymmetricFluid::skeletonFaceStress() const
 
     tmp<surfaceSymmTensorField> tSigf
     (
-        stressFaceTransmission_ == "series"
-      ? surfaceSymmTensorField::New
+        surfaceSymmTensorField::New
         (
             "sigmaElasticFace",
             seriesFaceWeights(w)*fvc::interpolate(S)
         )
-      : surfaceSymmTensorField::New
-        (
-            "sigmaElasticFace",
-            fvc::interpolate(w*S)
-        )
     );
-
-    if (networkPressureForce_ == "stressDivergence")
-    {
-        tSigf.ref() -=
-            fvc::interpolate(networkPartialPressure())*symmTensor::I;
-    }
 
     return tSigf;
 }
@@ -7919,24 +5204,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::skeletonFaceStress() const
 Foam::tmp<Foam::surfaceScalarField>
 Foam::solvers::phaseClotAxisymmetricFluid::skeletonElasticForceFlux() const
 {
-    // THE SHIPPED EXPRESSION, unchanged, when both S11 force switches are at
-    // their defaults -- so every earlier child reproduces bit for bit.
-    if
-    (
-        stressFaceTransmission_ == "linear"
-     && networkPressureForce_ == "stressDivergence"
-    )
-    {
-        return surfaceScalarField::New
-        (
-            "fSigmaE",
-            fvc::interpolate
-            (
-                fvc::div(elasticStress(), "div(sigmaElastic)")/rho_
-            ) & mesh.Sf()
-        );
-    }
-
     // The face-stress divergence goes to faces the way the shipped force
     // does (cell divergence, then interpolated), so the Rhie-Chow pairing
     // with the pressure is unchanged; only the stress that crosses each face
@@ -7962,7 +5229,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::skeletonElasticForceFlux() const
     // pPrimef*snGrad(alpha)*magSf). The interpolated cell divergence it
     // replaces is exactly blind to a 2-cell mode and 4x weak at 3 cells;
     // run 20260923-031942's compaction stripes sat at 2.2-3.9 cells.
-    if (networkPressureForce_ == "faceGradient")
     {
         tf.ref() -= fvc::snGrad(networkPartialPressure())*mesh.magSf()/rho_;
     }
@@ -7974,19 +5240,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::skeletonElasticForceFlux() const
 Foam::tmp<Foam::volVectorField>
 Foam::solvers::phaseClotAxisymmetricFluid::skeletonElasticForceCell() const
 {
-    if
-    (
-        stressFaceTransmission_ == "linear"
-     && networkPressureForce_ == "stressDivergence"
-    )
-    {
-        return volVectorField::New
-        (
-            "skeletonElasticForce",
-            fvc::div(elasticStress(), "div(sigmaElastic)")/rho_
-        );
-    }
-
     tmp<volVectorField> tc
     (
         volVectorField::New
@@ -8001,7 +5254,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::skeletonElasticForceCell() const
 
     // The compact face force's cell counterpart, reconstructed from the SAME
     // face values, as Vs_ is reconstructed from its face fluxes.
-    if (networkPressureForce_ == "faceGradient")
     {
         tc.ref() -=
             fvc::reconstruct
@@ -8011,39 +5263,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::skeletonElasticForceCell() const
     }
 
     return tc;
-}
-
-
-Foam::tmp<Foam::fvScalarMatrix>
-Foam::solvers::phaseClotAxisymmetricFluid::phaseConservativeConvection
-(
-    const surfaceScalarField& carrier,
-    const volScalarField& f
-) const
-{
-    if (!phaseWeights_.valid())
-    {
-        FatalErrorInFunction
-            << "phaseConservativeConvection called before phaseWeights_ was"
-            << " set. The phase field and the platelet content must be"
-            << " advected by the SAME weights."
-            << exit(FatalError);
-    }
-
-    // THE CONSERVATIVE OPERATOR: div(carrier*f), WITHOUT the bounded
-    // scheme's -Sp(surfaceIntegrate(carrier), f).
-    //
-    // phaseSharedConvection() subtracts that Sp deliberately, which converts
-    // div(carrier f) into the material derivative carrier.grad(f). That is
-    // correct for a LABEL carried along pathlines -- shell_, and w = Wp/q --
-    // and it is what solvePlatelets() still uses. It is WRONG for a VOLUME
-    // FRACTION: it conserves int f only when the carrier is solenoidal.
-    //
-    // Same weights, same mesh, same interpolation as phaseSharedConvection.
-    // The ONLY difference is the missing Sp, so the two cannot disagree about
-    // face values -- which is the property phaseWeights_ exists to guarantee
-    // and which a second, independently built scheme would destroy.
-    return phaseConservativeConvectionWith(carrier, f, phaseWeights_());
 }
 
 
@@ -8300,13 +5519,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::plateletContentConvection
     const volScalarField& f
 ) const
 {
-    // S6b-2. 'legacy' is the previous call, reached through the same
-    // function, so that path is unchanged rather than re-implemented.
-    if (phasePlateletFluxBasis_ != "content")
-    {
-        return phaseConservativeConvection(carrier, f);
-    }
-
     if (!contentFaceWeights_.valid())
     {
         FatalErrorInFunction
@@ -8572,7 +5784,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::updateDerivedFields()
     // deltaTheta_ is zero. Nothing between there and the first
     // prePredictor() -- which calls this again, after the seed -- reads
     // interfaceDelta_.
-    if (plateletContentModel_ && skeletonVolumeFraction_ > 0)
+    if (skeletonVolumeFraction_ > 0)
     {
         deltaTheta_ =
             mag(fvc::grad(thetaC_ + thetaH_))
@@ -8612,7 +5824,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::updateDerivedFields()
     const dimensionedScalar zeroDimless("zero", dimless, 0);
     const dimensionedScalar oneDimless("one", dimless, 1);
 
-    if (shearEnhancementModel_ == "thresholdSaturating")
     {
         // Shankar, Zhang, Sinno & Diamond (2022), PLoS Comput Biol 18,
         // e1009850, eq. (9). The enhancement is identically one below
@@ -8637,23 +5848,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::updateDerivedFields()
             k0_*adhesionEnhancement_,
             dimensionedScalar("zero", dimVelocity, 0)
         );
-    }
-    else if (shearEnhancementModel_ == "linear")
-    {
-        adhesionEnhancement_ = oneDimless;
-
-        adhesionSpeed_ = max
-        (
-            k0_ + k1_*shearPa_,
-            dimensionedScalar("zero", dimVelocity, 0)
-        );
-    }
-    else
-    {
-        FatalErrorInFunction
-            << "Unknown shearEnhancementModel " << shearEnhancementModel_
-            << nl << "Valid options are: linear, thresholdSaturating"
-            << exit(FatalError);
     }
 
     // ---- THE S6c-1 INSTRUMENT WAS RETIRED WITH c IN S6c-2 ---------------
@@ -8687,41 +5881,8 @@ void Foam::solvers::phaseClotAxisymmetricFluid::updateDerivedFields()
     // exactly alpha/D -- a constant with a physical meaning, not a number
     // that drifts with the mesh. Any depletion model has to enter here, once,
     // or it would silently break that identity.
-    if (interfaceDepletionModel_ == "none")
     {
         adhesionSpeedEff_ = adhesionSpeed_;
-    }
-    else if (interfaceDepletionModel_ == "seriesResistance")
-    {
-        // Reaction and diffusion resistances in series, 1/kEff = 1/k + h_n/(2D).
-        //
-        // The cell-average w over-reads the concentration AT the surface once
-        // the depletion layer D/k drops below the cell, i.e. once the cell
-        // Damkohler number Da = k h_n / D exceeds one. This restores the
-        // diffusion-limited branch with NO fitted constant, and converges to
-        // kEff -> k as h -> 0, so it is a consistent discretisation rather
-        // than a tuning knob.
-        //
-        // DEFAULT OFF, and deliberately not enabled in the same run that
-        // first tests the reaction closure -- one mechanism at a time. The
-        // Damkohler number printed every step is what decides whether it is
-        // needed, and at k0 on this mesh it is 0.33, i.e. not yet.
-        const volScalarField hNormal(normalCellSize());
-
-        adhesionSpeedEff_ =
-            adhesionSpeed_
-           /(
-                dimensionedScalar("one", dimless, 1)
-              + adhesionSpeed_*hNormal
-               /(2.0*max(D_, dimensionedScalar("Dfloor", D_.dimensions(), vSmall)))
-            );
-    }
-    else
-    {
-        FatalErrorInFunction
-            << "Unknown interfaceDepletionModel " << interfaceDepletionModel_
-            << nl << "Valid options are: none, seriesResistance"
-            << exit(FatalError);
     }
     adhesionSpeedEff_.correctBoundaryConditions();
 
@@ -8776,7 +5937,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::updateDerivedFields()
     // and printed every step (PHASE_CLOT_DAMKOHLER), and
     // interfaceDepletionModel seriesResistance restores the other branch
     // through kEff above, for both the sink and the growth at once.
-    if (growthClosure_ == "reaction")
     {
         // The same operand the sink uses, built the same way, so the two
         // cannot disagree about what w is. NOT a gradient of it.
@@ -8789,7 +5949,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::updateDerivedFields()
             ),
             w_
         );
-        if (plateletContentFormulation_)
         {
             // mag(q_), NOT q_. THE FLOOR WAS AMPLIFYING BY EXACTLY 1e+06.
             //
@@ -8876,41 +6035,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::updateDerivedFields()
 
         Vn_ = stoichRatio*adhesionSpeedEff_*wGrowth;
     }
-    else if (growthClosure_ == "gradient")
-    {
-        // LEGACY, retained so every gate passed before 2026-09-02 reproduces.
-        //
-        // Alireza, 2026-08-19: growth must be driven by the platelet content
-        // present in the cell, not the bare concentration -- a cell that is
-        // 99% clot holds almost no blood and must deposit almost nothing
-        // however concentrated its remaining sliver is.
-        //
-        // NOT alpha*(n & grad(W)). Since q = 0.5(c+1) and n = grad(c)/|grad c|,
-        // grad(q) is exactly PARALLEL to n, so
-        //     n & grad(W) = q(n & grad w) + w*|grad q|
-        // and the second piece never changes sign. Under uniform blood it
-        // gives Vn = alpha*|grad q| = 1.5e-4 m/s out of a quiescent field,
-        // growing under refinement because |grad q| ~ 1/epsilonC.
-        if (plateletContentFormulation_)
-        {
-            // mag(q_): see wGrowth above. This is the site that produced
-            // VnMagMax = 1.15 m/s -- qEffVn*grad(Wp/qEffVn) expands to
-            // grad(Wp) - w*grad(qEffVn), and w was the 1e+06-amplified one.
-            const volScalarField qEffVn(max(mag(q_), qFloor_));
-            Vn_ = alpha_*(normal_ & (qEffVn*fvc::grad(Wp_/qEffVn)));
-        }
-        else
-        {
-            Vn_ = alpha_*(normal_ & fvc::grad(w_));
-        }
-    }
-    else
-    {
-        FatalErrorInFunction
-            << "Unknown growthClosure " << growthClosure_
-            << nl << "Valid options are: reaction, gradient"
-            << exit(FatalError);
-    }
 
     // ---- SURFACE EROSION: THE ONLY ROUTE BY WHICH THIS CLOT CAN LET GO ----
     //
@@ -8981,8 +6105,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::updateDerivedFields()
            /(dtVnG*pgSafeG)
         );
 
-        const bool scaleUptake = (growthClosure_ == "reaction");
-        const bool capOn = vnCapEnabled_;
 
         // MEASUREMENT IS NOT GATED ON APPLICATION. Until 2026-09-08 both the
         // counter and the scaling sat inside `if (capOn && ...)`, so with the
@@ -9025,7 +6147,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::updateDerivedFields()
             wouldWorstFactor = min(wouldWorstFactor, f);
             wouldMaxExcess = max(wouldMaxExcess, VnIn[celli] - gMaxIn[celli]);
 
-            if (!capOn)
             {
                 continue;
             }
@@ -9034,7 +6155,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::updateDerivedFields()
             worstFactor = min(worstFactor, f);
 
             VnIn[celli] *= f;
-            if (scaleUptake)
             {
                 aseIn[celli] *= f;
             }
@@ -9065,13 +6185,13 @@ void Foam::solvers::phaseClotAxisymmetricFluid::updateDerivedFields()
         // stride, emit an actual step/corrector/stage identifier per record
         // rather than trusting this number.
         Info<< "PHASE_CLOT_VN_BOUND_GROWTH time=" << runTime.userTimeValue()
-            << " capOn=" << Switch(capOn)
+            << " capOn=" << Switch(false)
             << " growthLimited=" << growthLimited
             << " worstFactor=" << worstFactor
             << " growthWouldLimit=" << growthWouldLimit
             << " wouldWorstFactor=" << wouldWorstFactor
             << " wouldMaxExcessMps=" << wouldMaxExcess
-            << " uptakeScaled=" << Switch(scaleUptake)
+            << " uptakeScaled=" << Switch(true)
             << " perStepEvaluationsAssumed=4"
             << endl;
     }
@@ -9272,14 +6392,10 @@ void Foam::solvers::phaseClotAxisymmetricFluid::updateDerivedFields()
             wouldWorstExcess =
                 max(wouldWorstExcess, -eMaxIn[celli] - VnIn[celli]);
 
-            if (!vnCapEnabled_)
             {
                 continue;
             }
 
-            ++erodeLimited;
-            worstExcess = max(worstExcess, -eMaxIn[celli] - VnIn[celli]);
-            VnIn[celli] = -eMaxIn[celli];
         }
 
         Vn_.correctBoundaryConditions();
@@ -9290,7 +6406,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::updateDerivedFields()
         reduce(wouldWorstExcess, maxOp<scalar>());
 
         Info<< "PHASE_CLOT_VN_BOUND time=" << runTime.userTimeValue()
-            << " capOn=" << Switch(vnCapEnabled_)
+            << " capOn=" << "no"
             << " erodeLimited=" << erodeLimited
             << " worstExcessMps=" << worstExcess
             << " erodeWouldLimit=" << erodeWouldLimit
@@ -9323,88 +6439,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::updateDerivedFields()
 }
 
 
-void Foam::solvers::phaseClotAxisymmetricFluid::updateContentDrag()
-{
-    // Fill contentDragK_ and contentInvPermKC_ from the CONSERVED content.
-    // The arithmetic is contentDragKernel.H, checked against
-    // scripts/check_content_drag_driver.py at 1e-14 relative by
-    // scripts/check_content_drag_kernel.py. Nothing is recomputed here.
-    //
-    // k0p_/k0pcore_ are passed as the two ENDPOINTS, not k0pField_: the
-    // kernel does its own log interpolation from s = thetaH/theta, and that
-    // is the whole point. k0pField_ is built from the legacy `shell_` field,
-    // so reusing it would leave the composition legacy-driven while the
-    // density was content-driven -- which measures, at archive cell 3233,
-    // +0.0119% instead of -17.43%.
-    const contentDragKernel::Parameters<scalar> params =
-    {
-        skeletonVolumeFraction_,      // theta_ref
-        phiSMax_,                     // theta_max, INCLUSIVE
-        k0p_.value(),                 // shell endpoint
-        k0pcore_.value(),             // core endpoint
-        nu_.value(),
-        skeletonDiluteDragRate_,      // the named dilute continuation, k1
-        0.0,                          // trace allowance: NONE is declared
-        permeabilityFloor_            // spec 6: the SAME floor poroPerm_ is
-                                      // clipped to, retained as a bound on K
-    };
-
-    label nKC = 0, nDilute = 0;
-    scalar discrepancySum = 0;
-    contentDrag::Refusal refusal = {-1, nullptr};
-
-    const bool ok = contentDrag::evaluate
-    (
-        thetaC_, thetaH_, params,
-        contentDragK_, contentInvPermKC_,
-        nKC, nDilute, discrepancySum, refusal
-    );
-
-    if (!ok)
-    {
-        // THE STRUCTURED REFUSAL COMES BEFORE THE FAILURE.
-        //
-        // A bare fatal error with the usual diagnostics missing is
-        // indistinguishable from an infrastructure failure, and the runner
-        // would have to guess. This record is what lets it classify the stop
-        // as a model-validity rejection (spec section 4).
-        const volScalarField theta(thetaC_ + thetaH_);
-        Info<< "PHASE_CLOT_CONTENT_DRAG_REFUSAL"
-            << " time=" << runTime.userTimeValue()
-            << " step=" << runTime.timeIndex()
-            << " reason=" << refusal.reason
-            << " cell=" << refusal.celli
-            << " thetaMax=" << gMax(theta.primitiveField())
-            << " thetaMin=" << gMin(theta.primitiveField())
-            << " thetaCMin=" << gMin(thetaC_.primitiveField())
-            << " thetaHMin=" << gMin(thetaH_.primitiveField())
-            << " declaredThetaMax=" << phiSMax_
-            << endl;
-
-        FatalErrorInFunction
-            << "content drag refused: " << refusal.reason
-            << " in cell " << refusal.celli
-            << ". No field was clipped and no state was promoted."
-            << exit(FatalError);
-    }
-
-    Info<< "PHASE_CLOT_CONTENT_DRAG"
-        << " time=" << runTime.userTimeValue()
-        << " step=" << runTime.timeIndex()
-        << " KMin=" << gMin(contentDragK_.primitiveField())
-        << " KMax=" << gMax(contentDragK_.primitiveField())
-        << " invPermMax=" << gMax(contentInvPermKC_.primitiveField())
-        << " nKC=" << nKC
-        << " nDilute=" << nDilute
-        << " discrepancySum=" << discrepancySum
-        << " thetaRef=" << skeletonVolumeFraction_
-        << " thetaMax=" << phiSMax_
-        << " k1=" << skeletonDiluteDragRate_
-        << " driver=" << dragDriver_
-        << endl;
-}
-
-
 void Foam::solvers::phaseClotAxisymmetricFluid::updatePermeability()
 {
     const phaseClotScopeTimer costGuard_(tPermeability_);
@@ -9418,127 +6452,8 @@ void Foam::solvers::phaseClotAxisymmetricFluid::updatePermeability()
     // cell average, with no floor and no cap. momentumPredictor() assigns
     // the same field again at the drag site, from the state the drag is
     // built from, so the written poroPerm is the permeability that was used.
-    if (dragOccupancyBasis_ == "intrinsic")
     {
         poroPerm_ = intrinsicPermeability();
-    }
-    else if (permeabilityModel_ == "constant")
-    {
-        // Uniform permeability. With penaltyExponent 1 this makes the
-        // poroelastic drag chi*nu/k coincide exactly with the v2 penalty
-        // lambda = (1-q)/etaP when k = nu*etaP, which is what makes the
-        // rigid-limit gate an exact comparison rather than an approximate one.
-        //
-        // IT IS ALSO THE ONLY MODEL IN WHICH k0p MEANS WHAT IT SAYS INSIDE THE
-        // CLOT -- see the measurement recorded against kozenyCarman below.
-        poroPerm_ = k0pField_;
-    }
-    else if (permeabilityModel_ == "kozenyCarman")
-    {
-        // Kozeny-Carman in the local porosity, normalised so k = k0p at phi0.
-        // Outside the clot the value is irrelevant: the drag is gated by chi_c.
-        //
-        // MEASURED DEFECT, run 20260814-055141. This form uses the PHASE
-        // FRACTION q as the porosity, and inside a clot q is ~0 by
-        // construction (c = -0.9967 gives q = 1.65e-3), so
-        // k = k0p*q^3/(1-q)^2/ref is about 9e-9*k0p -- 3.2e-22 m2 at
-        // k0p = 3.5e-14. That is far below the floor, and the floor is
-        // therefore what the clot actually ran with: all 168 bulk-clot cells
-        // of that run held poroPerm = 2.22e-16 m2 EXACTLY, the value of
-        // Foam::small. k0p had no effect on the clot in any case that used
-        // this model, which means the porosity axis 3.5e-15 / 3.5e-14 /
-        // 3.5e-13 was three runs of the same permeability.
-        //
-        // The physics error underneath is that q is the clot/blood phase
-        // indicator, not the clot's internal porosity: a fibrin-platelet
-        // network is 50-99% liquid, and the model reads it as solid. Left in
-        // place because several returned results used it and it is not this
-        // change's job to move them; the floor is now a dictionary entry and
-        // the realised value is reported every step, so it can no longer be
-        // invisible. Cases that want k0p to mean the clot permeability should
-        // use `constant`.
-        const dimensionedScalar tiny("tiny", dimless, small);
-        const volScalarField phi(max(q_, tiny));        // porosity ~ fluid fraction
-        const volScalarField num(pow3(phi)/max(sqr(1.0 - phi), tiny));
-        const scalar ref = pow3(phi0_)/max(sqr(1.0 - phi0_), small);
-
-        poroPerm_ = max
-        (
-            k0pField_*num/dimensionedScalar("ref", dimless, ref),
-            dimensionedScalar("kFloor", dimArea, permeabilityFloor_)
-        );
-    }
-    else if (permeabilityModel_ == "kozenyCarmanSolid")
-    {
-        // KOZENY-CARMAN ON THE REAL POROSITY. This is the model `kozenyCarman`
-        // above was trying to be, with the quantity it should have used.
-        //
-        // That branch feeds it q, the clot/blood phase INDICATOR, which is
-        // ~0 inside a clot -- so k collapsed to Foam::small and all 168
-        // bulk-clot cells of run 20260814-055141 ran at the floor, making a
-        // three-value k0p sweep three runs of the same permeability. Its own
-        // comment names the physics error: "a fibrin-platelet network is
-        // 50-99% liquid, and the model reads it as solid."
-        //
-        // The porosity is phi_f = 1 - phi_s. At the nominal phi_s = 0.01 that
-        // is 0.99 -- a 99%-liquid network, which is what the comment says it
-        // should be. Normalised at phi_f0 = 1 - skeletonVolumeFraction so
-        // k = k0p AT NOMINAL DENSITY, which keeps k0p meaning what every case
-        // file already assumes it means.
-        //
-        //   phi_s  phi_f   k/k0p
-        //   0.01   0.99    1.0
-        //   0.02   0.98    0.24        <- what run 20260905-113709 reached
-        //   0.22   0.78    1.0e-03     <- reproduces the core/shell contrast
-        //   0.60   0.40    1.8e-05
-        //
-        // THIS IS ALSO Du & Fogelson's xi(theta_b). Our drag is
-        // K = nu*phi_f^2/k, so a Kozeny-Carman k(phi_s) and their Eq. 2.25
-        // sigmoid rising to 1e+07 at theta_b_max are the same knob; this is
-        // the derived form rather than a fitted one, and Wufsus et al. 2013 --
-        // the paper skeletonVolumeFraction_ is already anchored to -- measured
-        // exactly this dependence.
-        //
-        // IT IS NOT A SUBSTITUTE FOR networkPressure(). K multiplies
-        // (u_f - v_s), so a uniformly compacting network with u_f = v_s feels
-        // none of it however large xi becomes. This damps the DRIVER of
-        // compaction; p_n is what sets an equilibrium.
-        //
-        // ADDED AS A NEW NAME, leaving `kozenyCarman` untouched: several
-        // returned results used that branch and it is not this change's job
-        // to move them.
-        const dimensionedScalar tiny("tiny", dimless, small);
-        const volScalarField phiF(max(1.0 - solidFraction(), tiny));
-        const volScalarField num(pow3(phiF)/max(sqr(1.0 - phiF), tiny));
-
-        const scalar phiF0 = 1.0 - skeletonVolumeFraction_;
-        const scalar ref = pow3(phiF0)/max(sqr(1.0 - phiF0), small);
-
-        // CAPPED ABOVE AS WELL AS BELOW. In the lumen chi = 0, so phi_s = 0,
-        // phi_f = 1 and the Kozeny-Carman factor is 1/max(0, small) = 1e+11
-        // times k0p. That is harmless to the PHYSICS -- dragCoeff carries an
-        // explicit chi, so a huge permeability outside the clot simply means
-        // no drag, which is correct -- but PHASE_CLOT_PERMEABILITY reports
-        // kClotMax over the field and would read 1e+11*k0p every step,
-        // burying the number the diagnostic exists to show. Capped at 1e+04
-        // k0p, which is four decades above nominal and still far outside
-        // anything the clot can reach (phi_s = 1e-04 gives 1.03e+04).
-        poroPerm_ = min
-        (
-            max
-            (
-                k0pField_*num/dimensionedScalar("ref", dimless, ref),
-                dimensionedScalar("kFloor", dimArea, permeabilityFloor_)
-            ),
-            k0pField_*dimensionedScalar("kCap", dimless, 1.0e4)
-        );
-    }
-    else
-    {
-        FatalErrorInFunction
-            << "Unknown permeabilityModel " << permeabilityModel_ << nl
-            << "Valid options are: kozenyCarman, kozenyCarmanSolid, constant"
-            << exit(FatalError);
     }
 
     poroPerm_.correctBoundaryConditions();
@@ -9546,10 +6461,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::updatePermeability()
     // The Stage 3 coefficient, when it is selected. poroPerm_ above is left
     // exactly as it was: it keeps its name, its units and its consumers, and
     // the content branch does not read it.
-    if (dragDriver_ == "content")
-    {
-        updateContentDrag();
-    }
 
     // WHAT PERMEABILITY THE CLOT ACTUALLY GOT, and how much of it is the
     // floor rather than the model. One line, so the defect above can never
@@ -9620,7 +6531,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::updatePermeability()
         const label rCellsAll = returnReduce(rCells, sumOp<label>());
 
         Info<< "PHASE_CLOT_PERMEABILITY time=" << runTime.userTimeValue()
-            << " model=" << permeabilityModel_
+            << " model=" << "kozenyCarmanSolid"
             << " clotCells=" << returnReduce(clotCells, sumOp<label>())
             << " kClotMin="
             << (clotCells > 0 ? returnReduce(kMin, minOp<scalar>()) : 0.0)
@@ -9638,23 +6549,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::updatePermeability()
             << " kCellsOff10pc=" << returnReduce(nOff10, sumOp<label>())
             << " kRatioCells=" << rCellsAll
             << endl;
-    }
-}
-
-
-void Foam::solvers::phaseClotAxisymmetricFluid::restoreWallBonds()
-{
-    volVectorField::Boundary& Usbf = Us_.boundaryFieldRef();
-
-    forAll(Usbf, patchi)
-    {
-        if (isA<clotWallAdhesionFvPatchVectorField>(Usbf[patchi]))
-        {
-            refCast<clotWallAdhesionFvPatchVectorField>
-            (
-                Usbf[patchi]
-            ).restore();
-        }
     }
 }
 
@@ -9792,10 +6686,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveElasticStrain()
 {
     const phaseClotScopeTimer costGuard_(tSkeleton_);
 
-    if (!eulerianSolid_)
-    {
-        return;
-    }
 
     // Relaxation rate: ~0 in clot, beRelaxRate_ in blood.
     //
@@ -9833,7 +6723,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveElasticStrain()
     // keeps its memory -- dilation does not remove network. Newly deposited
     // content is mixed in stress-free where it is added (see the growth
     // increment of thetaNetRef_), which is what relaxation did for it.
-    if (beRelaxBasis_ == "networkAbsent")
     {
         const volScalarField absent
         (
@@ -9862,7 +6751,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveElasticStrain()
         // label's front (batch 53) -- so every smeared rupture front would
         // have erased the memory of the network behind it.
         volScalarField noMemory("noNetworkMemory", absent);
-        if (networkRupture_ != "off")
         {
             noMemory = max
             (
@@ -9883,7 +6771,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveElasticStrain()
         // thetaNetRef (1 - d*) = thetaNetRef thI/S, not thetaNetRef (1 - d):
         // pending content is broken network, whose strain is its own fibre,
         // not be's. Applied after the shipped block, which it replaces here.
-        if (fibreRelease())
         {
             noMemory = max
             (
@@ -9942,7 +6829,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveElasticStrain()
     // index convention as fvc::grad, so twoSymm(be & gradU) stays correct --
     // see the transpose note at the top of beTransport.H.
     tmp<volTensorField> tGradU;
-    if (beFluxConsistentGradU_)
     {
         const surfaceVectorField Uf(fvc::interpolate(U_));
         const surfaceVectorField UfFlux
@@ -9952,12 +6838,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveElasticStrain()
         );
         tGradU = fv::gaussGrad<vector>::gradf(UfFlux, "gradUflux");
     }
-    else
-    {
-        tGradU = fvc::grad(U_);
-    }
 
-    if (twoVelocitySkeleton_)
     {
         // be is the SKELETON's elastic strain. It is carried by the skeleton
         // and stretched by the skeleton's velocity gradient, not the fluid's;
@@ -9992,7 +6873,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveElasticStrain()
         // of the linearised skeleton row, priced on the returned fields: no
         // unstable cell in either child at any written time under this form.
         tmp<volTensorField> tGradVs;
-        if (beStretchGradient_ == "fluxConsistent")
         {
             const surfaceVectorField Vsf(fvc::interpolate(Vs_));
             const surfaceVectorField VsfFlux
@@ -10002,28 +6882,15 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveElasticStrain()
             );
             tGradVs = fv::gaussGrad<vector>::gradf(VsfFlux, "gradVsflux");
         }
-        else
-        {
-            tGradVs = fvc::grad(Vs_);
-        }
         const volTensorField& gradVs = tGradVs();
         beSweepChange_ = beTransport::solve
         (
             be_, phiS, gradVs, beRelax_, beCorrectors_, ddtName,
-            beTraceFreeSource_
+            false
         );
         // S17 A: the pending fibre's rotation and UNI, ONCE PER STEP, from
         // the SAME gradient that just stretched be (09 section 2).
         rotatePendingFibres(gradVs);
-    }
-    else
-    {
-        beSweepChange_ = beTransport::solve
-        (
-            be_, phi_, tGradU(), beRelax_, beCorrectors_, ddtName,
-            beTraceFreeSource_
-        );
-        rotatePendingFibres(tGradU());
     }
 
     be_.correctBoundaryConditions();
@@ -10068,7 +6935,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveElasticStrain()
     // The per-cell inverse is taken inside the loop rather than as a field, so
     // a cell whose det has already collapsed cannot put an inf into a
     // whole-field operation.
-    if (beTermDiagnostic_)
     {
         const volSymmTensorField tAdv
         (
@@ -10077,7 +6943,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveElasticStrain()
         const volSymmTensorField tNonCons(be_*fvc::div(phi_));
         const volSymmTensorField tStretch
         (
-            beTransport::stretch(be_, tGradU(), beTraceFreeSource_)
+            beTransport::stretch(be_, tGradU(), false)
         );
         const volSymmTensorField tRelax
         (
@@ -10191,7 +7057,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveElasticStrain()
     // NOT A DEFAULT. If it were on by default, the det gate would pass on every
     // future run while the underlying drift continued unmeasured, which is the
     // exact failure this project has been caught by twice.
-    if (beDetRenormalise_)
     {
         const volScalarField detBe(det(be_));
         be_ *= pow
@@ -10201,10 +7066,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveElasticStrain()
         );
         be_.correctBoundaryConditions();
         beDetErrorPost_ = beTransport::maxDetError(be_);
-    }
-    else
-    {
-        beDetErrorPost_ = beDetError_;
     }
 
     // S14: AFTER the rescale, so the criterion reads the isochoric be the
@@ -10221,7 +7082,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveElasticStrain()
     // the Vs predictor -- holds by construction only while be is SPD, so
     // under implicitTangent a loss of SPD is fatal here, before the stress
     // and the matrix read it, and not only the BE_SPD_LOST log line.
-    if (elasticCoupling_ == "implicitTangent" && !(beMinMinor_ > 0))
+    if (!(beMinMinor_ > 0))
     {
         FatalErrorInFunction
             << "elasticCoupling implicitTangent: be lost positive-"
@@ -10260,18 +7121,9 @@ Foam::solvers::phaseClotAxisymmetricFluid::elasticStress() const
     const volScalarField gD(sqr(1.0 - Dg_) + etaRes_);
 
     volScalarField phiS("elasticSolidWeight", chi);
-    if (skeletonFloorBasis_ == "occupancy")
     {
         // S16 B: max(ind, floor)*(1 - d), as skeletonFaceStress() builds it.
         phiS = skeletonStressWeight();
-    }
-    else if (skeletonDiffuseDomain_)
-    {
-        phiS = max
-        (
-            chi,
-            dimensionedScalar("solidFloor", dimless, skeletonSolidFloor_)
-        );
     }
     recordStressWeight(phiS.primitiveField(), 1);
 
@@ -10298,7 +7150,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::elasticStress() const
     // GATED on twoVelocitySkeleton_ so no existing one-velocity result moves:
     // on that path the original comment still holds and the term would be
     // double-counted against the mixture pressure.
-    if (twoVelocitySkeleton_)
     {
         // THE TWO WEIGHTS ARE DIFFERENT FIELDS, AND MIXING THEM COST A RUN.
         //
@@ -10338,7 +7189,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::elasticStress() const
               - networkPartialPressure()*symmTensor::I
             )
         );
-        if (fibreRelease())
         {
             // S17 A (design 2A "Stress"): the tensor the weight multiplies is
             // the split M = [(thI/S) dev(be) + (thP/S) T dev(n n)]/(1 - d),
@@ -10352,17 +7202,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::elasticStress() const
         }
         return tSigma;
     }
-
-    // NAME. Deliberately NOT "sigmaElastic": that name now belongs to the
-    // persistent member sigmaElastic_ that clotWallAdhesion reads, and two
-    // objects under one name in the registry is a hazard for no benefit. The
-    // scheme lookup is unaffected -- every caller passes the scheme name
-    // "div(sigmaElastic)" as an explicit string, not via the field's name.
-    return volSymmTensorField::New
-    (
-        "sigmaElasticInstant",
-        phiS*gD*GField_*dev(be_)
-    );
 }
 
 
@@ -10370,10 +7209,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePassiveDisplacement()
 {
     const phaseClotScopeTimer costGuard_(tSkeleton_);
 
-    if (!eulerianSolid_)
-    {
-        return;
-    }
 
     // dUs/dt + (v.grad)Us = v, written conservatively.
     //
@@ -10408,658 +7243,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePassiveDisplacement()
 }
 
 
-void Foam::solvers::phaseClotAxisymmetricFluid::solveSkeleton()
-{
-    const phaseClotScopeTimer costGuard_(tSkeleton_);
-
-    // Quasi-static poroelastic skeleton. Segregated fixed-point iteration in
-    // the standard v13 solidDisplacement form: an implicit
-    // laplacian(2G+lambda) with an explicit stress correction.
-    const dimensionedScalar mu(rho_*nu_);
-    // CLAMPED AT ZERO. q is bounded by the case at 1.01, so chi could be
-    // -0.005, and it multiplies the Darcy coefficient: run 20260814-055141
-    // wrote clotDrag with a minimum of -9.9e-21, a NEGATIVE diagonal
-    // contribution in both this equation and the momentum equation. The
-    // magnitude is nothing; a negative diagonal is not the kind of thing to
-    // leave in because it is currently small. This is the one change here
-    // that is not behind a switch, and it moves a result only in cells where
-    // q exceeded 1.
-    const volScalarField chi
-    (
-        max(1.0 - q_, dimensionedScalar("zero", dimless, 0))
-    );
-    const volScalarField gD(sqr(1.0 - Dg_) + etaRes_);     // degradation
-    const volScalarField twoGplusLambda(2.0*GField_ + lambdaField_);
-
-    // OVER-STIFFENED DEFERRED CORRECTION.
-    //
-    // The loop below is fvm::laplacian(K,Us) + [div(sigma) - fvc::laplacian(K,Us)].
-    // The two laplacians cancel identically at convergence, so the CONVERGED
-    // solution is independent of K: raising it changes only the iteration, not
-    // the answer. That is what makes this a safe stabiliser rather than a
-    // fudge.
-    //
-    // It is needed because run 20260810-035337 diverged: fs_on_large (4000 Pa,
-    // about 18% strain) grew monotonically over successive skeleton correctors
-    // and overflowed inside `sigmaD_ & (I + gradUs)` at step 2. The
-    // finite-strain correction carries a geometric term of order |grad Us|,
-    // which at that strain is no longer a contraction against an implicit
-    // operator sized for the material stiffness alone.
-    //
-    // The same run also showed the loop TRUNCATING rather than converging on
-    // every child including the legacy ones: 20 correctors, residual 1e-5
-    // against a 1e-7 tolerance. Both symptoms are the contraction rate of this
-    // splitting, and this is the lever on it.
-    //
-    // Defaults to 1, and multiplying by exactly 1.0 is bit-exact, so every
-    // result established so far still reproduces byte-identically.
-    // NOT const: the neo-Hookean branch re-sizes it from the current
-    // deformation each corrector. See the note where it is reassigned.
-    volScalarField Kimplicit
-    (
-        "Kimplicit",
-        skeletonImplicitFactor_*twoGplusLambda
-    );
-
-    // THE DIFFUSE-DOMAIN SOLID WEIGHT. See the long note on
-    // skeletonDiffuseDomain_ in the header for why this exists; in one line,
-    // the body force in this equation was already weighted by chi and the
-    // stress was not, and that inconsistency clamps the clot's outer surface
-    // instead of leaving it free.
-    //
-    // OFF: identically 1, so every product below is a multiply by exactly 1.0
-    // and the assembled matrix is bit-for-bit the previous one.
-    // ON:  chi with a floor, so the elastic operator fades out with the
-    //      material and the surface becomes traction-free.
-    volScalarField phiS("skeletonSolidWeight", chi);
-    if (skeletonDiffuseDomain_)
-    {
-        phiS = max
-        (
-            chi,
-            dimensionedScalar("solidFloor", dimless, skeletonSolidFloor_)
-        );
-    }
-    else
-    {
-        phiS = dimensionedScalar("one", dimless, 1);
-    }
-
-    // THE PIN THAT ANCHORS Us OUTSIDE THE CLOT.
-    //
-    // The skeleton exists only inside the clot. Outside it there is nothing to
-    // anchor the displacement, and with zeroGradient patches everywhere the
-    // elliptic operator would be a pure Neumann problem and singular. The pin
-    // makes the system well posed. Its coefficient scales with the elastic
-    // modulus over the regularisation length squared, so it stays a fixed
-    // multiple of the laplacian diagonal at any G.
-    //
-    // WHERE IT ACTS IS THE OTHER HALF OF THE DIFFUSE-DOMAIN FIX. Weighted by
-    // q, it acts through the whole four-cell phase interface, and since that
-    // interface is partly clot it is a CLAMP on the clot's own surface: Us is
-    // dragged to zero over about two cells while the bulk varies over
-    // seventeen, so grad(Us) there is roughly eight times the bulk value and
-    // psi+ ~ G|dev eps|^2 about sixty. Measured interface-to-bulk H on run
-    // 20260814-055141: 13.5.
-    //
-    // The pin cannot simply be removed. Without it the fluid-region skeleton
-    // has no anchor at all -- the drag terms alone give Us -> UsPrev + U*dt
-    // every step, so it drifts downstream with the flow without bound and
-    // grad(Us) at the clot's edge grows for ever.
-    //
-    // So it is CONFINED instead, to fluid pure enough that no clot material is
-    // being clamped. Below skeletonPinStart the weight is exactly zero. At
-    // 0.998 that is chi = 1e-3, roughly fourteen cells beyond the c = 0
-    // contour at epsilonC = 3 um -- deep in blood, where the solid weight is a
-    // thousandth of the bulk and any strain the pin does induce carries a
-    // thousandth of the energy.
-    //
-    // Squared rather than linear so the weight and its first derivative are
-    // both continuous at the switch-on point; a kink in a matrix coefficient
-    // is a needless obstacle for the fixed point.
-    //
-    // Hoisted out of the corrector loop: it depends on q and the mesh, neither
-    // of which moves inside this solve.
-    volScalarField pinWeight("pinWeight", q_);
-    if (skeletonDiffuseDomain_)
-    {
-        // THE PIN MUST BE COMPLEMENTARY TO THE SOLID WEIGHT, WITH NO GAP.
-        //
-        // This was a smoothstep switching on only above q = 0.998, which left
-        // a DEAD BAND: the elastic operator is weighted by phiS = chi, so
-        // between chi = 0.002 and 0.05 a cell had 0.2-5% of the material
-        // stiffness and no pin at all. Nothing determined its displacement.
-        //
-        // Measured on run 20260815-201949 at t = 5e-4, mean |Us| by band:
-        //
-        //     clot        chi > 0.5     3.08e-6 m
-        //     interface   0.05-0.5      5.63e-6 m
-        //     DEAD BAND   0.002-0.05    4.82e-6 m   <- 99.5-99.8% fluid
-        //     pinned      chi < 0.002   1.15e-8 m
-        //
-        // Cells that are almost entirely blood carried 420x the displacement
-        // of the pinned region and more than the clot itself. That is where
-        // Hblood = 9.3e4 came from, where the element inversions came from,
-        // and what tipped the skeleton over at t = 6.2e-4 after the exchange
-        // had been converging in 11 iterations.
-        //
-        // q^n has no gap: it falls smoothly to zero through the clot and rises
-        // smoothly to one in blood. With n = 8 the pin is 0.2% of the local
-        // stiffness at chi = 0.5, crosses unity near chi = 0.1, and is 123x by
-        // chi = 0.002 -- so the clot's outer surface stays traction-free, which
-        // is what the diffuse-domain fix was for, while nothing is left
-        // unconstrained.
-        pinWeight = pow(q_, skeletonPinExponent_);
-    }
-    const volScalarField outsidePin(pinWeight*twoGplusLambda/sqr(ell_));
-
-    // Drag coefficient mu/k, active only inside the clot.
-    //
-    // FLOORED AT rho*skeletonDiluteDragRate*chi WHEN THAT KEY IS SET. This is
-    // the DYNAMIC form, so the kinematic rate is multiplied by rho here and
-    // NOT at the kinematic site below; the two must impose the same physical
-    // drag or the skeleton and fluid equations disagree about the exchange
-    // term, which is the defect the "Same expression, no recomputation"
-    // comment below exists to prevent. Reasoning and the measured table are
-    // on skeletonDiluteDragRate_ in the header.
-    // BUILT, THEN OVERWRITTEN when the Stage 3 driver is selected -- the
-    // same shape as poroFactor at the kinematic site, and for the same
-    // reason: a ?: between a tmp<> and a field has already failed to compile
-    // in this file twice.
-    //
-    // THE LEGACY EXPRESSION IS UNTOUCHED. It is the default, every returned
-    // child reproduces against it, and this change does not move them.
-    volScalarField dragCoeff
-    (
-        skeletonDiluteDragRate_ > 0
-      ? max
-        (
-            chi*mu
-           /max(poroPerm_, dimensionedScalar("kf", dimArea, permeabilityFloor_)),
-            rho_*dimensionedScalar
-            (
-                "k1", dimless/dimTime, skeletonDiluteDragRate_
-            )*chi
-        )()
-      : (
-            chi*mu
-           /max(poroPerm_, dimensionedScalar("kf", dimArea, permeabilityFloor_))
-        )()
-    );
-    if (dragDriver_ == "content")
-    {
-        // DYNAMIC form, so rho multiplies the kinematic coefficient HERE and
-        // not at the kinematic site -- exactly the convention the legacy
-        // branch above uses for its floor. The two sites must impose the same
-        // physical drag, and on this path they impose the SAME FIELD.
-        dragCoeff = rho_*contentDragK_;
-    }
-    // S12: the same field as the kinematic site, times rho. Unreachable today
-    // -- the constructor requires eulerianSolid for this basis and the
-    // Eulerian path never calls solveSkeleton() -- and written anyway so the
-    // two sites cannot disagree if that ever changes.
-    if (dragOccupancyBasis_ == "intrinsic")
-    {
-        dragCoeff = rho_*intrinsicDragRate();
-    }
-
-    // Published for ParaView. Same expression, no recomputation, so it cannot
-    // drift from the term the momentum equation actually uses.
-    //
-    // DIVIDED BY rho, AND THAT IS THE FIX NOT A CONVERSION. This dragCoeff
-    // is chi*mu/k because it belongs to the SKELETON equation, which is
-    // written in stress. The FLUID equation on this same path adds its own
-    // chi*nu/k in momentumPredictor(), and writeBalanceDiagnostic() reads
-    // clotDrag_ as the coefficient of THAT term. Publishing the dynamic one
-    // made accDrag rho = 1050x too large wherever it was summed. The two are
-    // the same drag; the published field is now the kinematic form so that
-    // accPenalty, accDrag and accViscous are commensurable.
-    clotDrag_ = dragCoeff/rho_;
-
-    const dimensionedScalar dt(runTime.deltaT());
-
-    // Per-call state for the divergence guard below. Reset here, not at
-    // construction: each skeleton solve is judged on its own residual history,
-    // and carrying a growth run across timesteps would trip the guard on a
-    // step that was converging perfectly well.
-    skeletonDiverged_ = false;
-    skeletonGrowthRun_ = 0;
-    skeletonPrevResidual_ = great;
-    skeletonBestResidual_ = great;
-
-    for (label corr = 0; corr < nSkeletonCorrectors_; ++corr)
-    {
-        const volTensorField gradUs(fvc::grad(Us_));
-
-        if (finiteStrain_)
-        {
-            // TOTAL-LAGRANGIAN ST VENANT-KIRCHHOFF.
-            //
-            // Three independent findings say small strain is the binding
-            // limitation on the deformation half of this problem:
-            //   - run 20260809-113416 measured |Us| at 375% strain while the
-            //     AT2 criterion needed about 2900%;
-            //   - Ramanujam et al. (2024), source 24, state that predicting
-            //     embolisation "requires a large-deformation, three-
-            //     dimensional FE calculation";
-            //   - Storti and van de Vosse (2014), source 22, model the growing
-            //     platelet plug as a neo-Hookean solid at finite strain and
-            //     conclude its deformability is essential to the result.
-            //
-            // Green-Lagrange strain, with OpenFOAM's convention
-            // fvc::grad(U)_ij = dU_j/dX_i:
-            //     E_IJ = 1/2 (du_I/dX_J + du_J/dX_I + du_K/dX_I du_K/dX_J)
-            //          = symm(gradUs) + 1/2 symm(gradUs & gradUs.T())
-            const volSymmTensorField E
-            (
-                symm(gradUs) + 0.5*symm(gradUs & gradUs.T())
-            );
-
-            if (neoHookean_)
-            {
-                // DECOUPLED COMPRESSIBLE NEO-HOOKEAN.
-                //
-                //     W = G/2 (I1bar - 3) + K/2 (ln J)^2,  K = lambda + 2G/3
-                //     S = 2 dW/dC
-                //       = G J^(-2/3) (I - I1 C^-1 / 3) + K ln(J) C^-1
-                //
-                // Why this form and not Simo-Pister or an incompressible one:
-                //
-                //  1. It reduces EXACTLY to 2G eps + lambda tr(eps) I at small
-                //     strain (verified symbolically: J^(-2/3) -> 1 - 2/3 tr e,
-                //     I1 -> 3 + 2 tr e, C^-1 -> I - 2e gives 2G dev(e) +
-                //     K tr(e) I = 2G e + lambda tr(e) I). So the neo-Hookean
-                //     and St Venant-Kirchhoff paths agree wherever both are
-                //     valid, which is what the verification gate tests and
-                //     what lets the existing venous results stand unchanged.
-                //  2. Its volumetric and deviatoric parts separate cleanly, so
-                //     solveDamage() can take the Amor tension/compression split
-                //     on the SAME energy rather than on a small-strain proxy.
-                //     The split in the literature is written for the quadratic
-                //     energy and does not carry over unchanged; deriving both
-                //     the stress and psi+ from one W is the only way the
-                //     driving energy and the stress stay thermodynamically
-                //     consistent.
-                //  3. Storti and van de Vosse (2014), source 22, model the
-                //     growing platelet plug as a neo-Hookean solid, so this is
-                //     the constitutive law the closest prior work uses.
-                //
-                // OpenFOAM's gradUs_ij = du_j/dX_i, so F = I + gradUs.T() and
-                // F^T = I + gradUs. Hence C = F^T F = (I + gradUs) & F.
-                const volTensorField Ft(I + gradUs);
-                const volScalarField J(det(Ft));
-                const volSymmTensorField C(symm(Ft & Ft.T()));
-                const volSymmTensorField Cinv(inv(C));
-                const volScalarField I1(tr(C));
-
-                // ELEMENT INVERSION, JUDGED ONLY WHERE THERE IS MATERIAL.
-                //
-                // Run 20260815-182036 ended at t = 3.1e-4 s on Jmin = -0.196
-                // while the clot itself was healthy: H in the bulk 1.91 against
-                // 0.158 in the interface (ratio 0.083, material-driven),
-                // maxDg 6.2e-7, permeability realised, and the shell already
-                // moving 8.6x the core. The fold was NOT in the clot.
-                //
-                // Us outside the clot is a numerical construct. The pin holds
-                // it near zero but not at zero, and the measured field had
-                // |Us| reaching 5.46 CELLS in the interface and 4.19e-6 m in
-                // deep blood (c > 0.99) -- so grad(Us) there is O(1) and
-                // det(I + grad Us) can pass through zero without anything
-                // physical having happened. St Venant-Kirchhoff never noticed
-                // because it never forms J; neo-Hookean does, and this guard
-                // was the first thing in the project ever to look at it.
-                //
-                // So the guard is restricted to cells that are actually solid.
-                // A fold there IS a physics failure and must stop the run. A
-                // fold in blood is a property of the pin and must not.
-                scalar Jmin = great;
-                forAll(J, celli)
-                {
-                    if (chi[celli] > 0.5)
-                    {
-                        Jmin = min(Jmin, J[celli]);
-                    }
-                }
-                reduce(Jmin, minOp<scalar>());
-
-                // Reported alongside, because a domain-wide fold is still
-                // worth seeing even when it does not stop the run: it is the
-                // measure of how hard the pin is being driven.
-                const scalar JminAll = gMin(J.primitiveField());
-
-                if (Jmin <= small)
-                {
-                    Info<< "PHASE_CLOT_SKELETON_DIVERGED time="
-                        << runTime.userTimeValue()
-                        << " corrector=" << corr + 1
-                        << " reason=elementInversion Jmin=" << Jmin
-                        << " JminAllCells=" << JminAll << endl;
-                    skeletonDiverged_ = true;
-                    skeletonHardFailure_ = true;
-                    break;
-                }
-
-                const volScalarField bulkKField
-                (
-                    lambdaField_ + (2.0/3.0)*GField_
-                );
-
-                // J IS FLOORED FOR THE STRESS, and only for the stress.
-                //
-                // log(J) and J^(-2/3) are undefined at J <= 0, and the cells
-                // that reach it are blood cells where phiS is the diffuse-
-                // domain floor (1e-4) and the stress is discarded anyway. A
-                // single NaN there propagates through the whole linear solve,
-                // so the guard above cannot be the only defence -- it stops
-                // the run, but the run would already have been poisoned within
-                // the same corrector.
-                //
-                // The floor does NOT hide a folded clot: the guard above tests
-                // the unfloored J over material cells and stops there. This is
-                // only so that a fold in a region carrying no material cannot
-                // take the arithmetic with it.
-                const volScalarField Jsafe
-                (
-                    max(J, dimensionedScalar("Jfloor", dimless, 1e-3))
-                );
-
-                // THE IMPLICIT STABILISER MUST TRACK THE TANGENT, NOT THE
-                // SMALL-STRAIN MODULI.
-                //
-                // This splitting solves fvm::laplacian(K, Us) implicitly and
-                // subtracts fvc::laplacian(K, Us) from the explicit side, so K
-                // cancels exactly at convergence and the converged answer does
-                // not depend on it. What it does control is whether the
-                // iteration CONTRACTS, and for that K has to dominate the
-                // stiffness the explicit stress actually has.
-                //
-                // Run 20260815-184117 diverged at t = 3.5e-4 s with K sized on
-                // 2G + lambda: inside one corrector loop |Us| grew from ~5e-6
-                // to 6.7e-2 m, a factor of about 1.8 per corrector, while the
-                // outer FSI loop was still contracting at 0.75 and the wall
-                // bonds were at 1.4e-9 of their strength. Nothing physical had
-                // happened; the fixed point had simply stopped being a
-                // contraction.
-                //
-                // A neo-Hookean solid stiffens as it stretches -- its tangent
-                // carries J^(-2/3) and I1 -- so a K frozen at the undeformed
-                // moduli falls behind exactly when the deformation gets
-                // interesting. This proxy rises with the same two invariants
-                // the stress does. At F = I it gives 2G + lambda + 2G/3,
-                // within a small factor of the old value.
-                //
-                // The St Venant-Kirchhoff and small-strain paths keep the old
-                // expression untouched, so every result established with them
-                // still reproduces bit-identically.
-                Kimplicit =
-                    skeletonImplicitFactor_
-                   *(
-                        2.0*GField_*pow(Jsafe, -2.0/3.0)
-                       *max(I1/3.0, dimensionedScalar("one", dimless, 1))
-                      + bulkKField
-                    );
-
-                sigmaD_ =
-                    phiS*gD
-                   *(
-                        GField_*pow(Jsafe, -2.0/3.0)
-                       *(I - (1.0/3.0)*I1*Cinv)
-                      + bulkKField*log(Jsafe)*Cinv
-                    );
-
-                divSigmaExp_ =
-                    fvc::div(sigmaD_ & Ft, "div(sigmaD)")
-                  - fvc::laplacian
-                    (
-                        phiS*gD*Kimplicit, Us_, "laplacian(DUs,Us)"
-                    );
-            }
-            else
-            {
-
-            // Second Piola-Kirchhoff stress. Reduces to the small-strain
-            // Cauchy stress below EXACTLY, which is what keeps
-            // finiteStrain=false byte-identical.
-            // phiS is the diffuse-domain solid weight and is identically 1
-            // unless skeletonDiffuseDomain is on. It multiplies the STRESS,
-            // not just the implicit operator, because it is the stress that
-            // has to vanish at the clot's free surface.
-            sigmaD_ = phiS*gD*(2.0*GField_*E + lambdaField_*(I*tr(E)));
-
-            // Momentum on the FIXED reference mesh is d(P_iJ)/dX_J with
-            // P = F & S the first Piola-Kirchhoff stress and F = I + gradUs.T().
-            // fvc::div contracts the FIRST index, (div T)_j = dT_ij/dX_i, so it
-            // must be handed P^T, and P^T = S & (I + gradUs). The index algebra
-            // was verified symbolically before this was written; getting it
-            // wrong would produce a plausible but silently wrong stress
-            // divergence, which is not a failure mode this project can afford
-            // to discover from a picture.
-            // The scheme is looked up by the EXPRESSION's name, so an unnamed
-            // fvc::div here asks fvSchemes for
-            // "div((sigmaD&((1)+grad(Us))))", which no case defines and
-            // "default none" then makes a fatal error at the first step. This
-            // killed all six finiteStrain children of run 20260810-032625.
-            // Naming it "div(sigmaD)" makes the finite-strain path reuse the
-            // entry every case already carries, so no case file has to change
-            // and both strain paths are discretised identically.
-            divSigmaExp_ =
-                fvc::div(sigmaD_ & (I + gradUs), "div(sigmaD)")
-              - fvc::laplacian(phiS*gD*Kimplicit, Us_, "laplacian(DUs,Us)");
-            }
-        }
-        else
-        {
-            sigmaD_ =
-                phiS*gD
-               *(GField_*twoSymm(gradUs) + lambdaField_*(I*tr(gradUs)));
-
-            divSigmaExp_ =
-                fvc::div(sigmaD_)
-              - fvc::laplacian(phiS*gD*Kimplicit, Us_, "laplacian(DUs,Us)");
-        }
-
-        // Skeleton velocity is (Us - Us.oldTime())/dt, so the drag term is
-        // implicit in Us through fvm::Sp with coefficient dragCoeff/dt.
-        // outsidePin is built above the loop.
-
-        // THE PRESSURE-GRADIENT BODY FORCE ON THE SKELETON.
-        //
-        // Until run 20260811-051109 this equation carried only the VISCOUS
-        // (Darcy) part of the fluid-solid interaction, dragCoeff*(U - v_s).
-        // The other half of the interaction was missing: in Biot
-        // poroelasticity the effective-stress balance on the solid is
-        //
-        //     div(sigma_effective) - chi*grad(p) + dragCoeff*(U - v_s) = 0
-        //
-        // and the -chi*grad(p) term is the pressure the fluid exerts on the
-        // solid fraction. For a low-permeability obstacle in a channel that
-        // is the DOMINANT streamwise force, not a correction: the measured
-        // drop across the clot in that run was 14.67 Pa over 91.5 um, a
-        // gradient of 1.6e5 Pa/m, and the skeleton felt none of it.
-        //
-        // Its absence is why the peel is symmetric about the clot rather than
-        // being driven downstream, and it is the force the physical argument
-        // for embolisation actually rests on -- drag AND pressure.
-        //
-        // p_ is KINEMATIC here (dimensions m2/s2, verified from the written
-        // field header), so it is multiplied by rho_ to give a true stress
-        // gradient. Getting that wrong would scale the new force by 1050.
-        //
-        // Gated on a switch defaulting to OFF, so every result established so
-        // far still reproduces byte-identically.
-        // A dimensionless 0/1 multiplier rather than a branch, so the term is
-        // one expression the compiler can check and, when off, adds exactly
-        // 0.0 -- which keeps every earlier result bit-identical.
-        //
-        // Dimensions: rho_ [kg/m3] * grad(p_kinematic) [m/s2] = Pa/m, matching
-        // fvc::div(sigma) and dragCoeff*U in the same equation.
-        const dimensionedScalar pForceOn
-        (
-            "pForceOn", dimless, skeletonPressureForce_ ? 1.0 : 0.0
-        );
-
-        // laplacian + divSigma + drag*U + drag*UsPrev/dt - chi*grad(p)
-        //                                  == (drag/dt + pin)*Us
-        fvVectorMatrix UsEqn
-        (
-            fvm::laplacian(phiS*gD*Kimplicit, Us_, "laplacian(DUs,Us)")
-          + divSigmaExp_
-          + dragCoeff*U_
-          + dragCoeff*UsPrev_/dt
-          - pForceOn*chi*rho_*fvc::grad(p_)
-         ==
-            fvm::Sp(dragCoeff/dt + outsidePin, Us_)
-        );
-
-        fvConstraints().constrain(UsEqn);
-        const scalar residual = UsEqn.solve().max().initialResidual();
-        Us_.correctBoundaryConditions();
-
-        // Recorded so the OUTER exchange can report how exactly this inner
-        // solve was performed. Run 20260805-071815 measured an exchange floor
-        // 38-71x above fsiTolerance that the linear solver cannot explain (its
-        // final residuals reach 5e-13 against a 1e-12 tolerance), and an outer
-        // fixed-point iteration built on an INEXACT map has a floor at the
-        // level of that inexactness. Whether this loop CONVERGES or TRUNCATES
-        // is therefore direct evidence, and it was previously invisible.
-        skeletonIters_ = corr + 1;
-        skeletonResidual_ = residual;
-
-        // DIVERGENCE GUARD.
-        //
-        // Run 20260811-051109 lost three of four arterial children to SIGFPE
-        // raised INSIDE this loop: at 1000-8000/s the finite-strain geometric
-        // term is no longer a contraction, |grad Us| runs away, and the next
-        // pass through `sigmaD_ & (I + gradUs)` overflows. The children died
-        // with no written output at all, so the run returned nothing about the
-        // regime it was built to probe.
-        //
-        // Detecting it one corrector earlier turns a crash into a measurement:
-        // the loop stops, the last finite state stands, and the child still
-        // writes its fields and reports why it stopped. A reported divergence
-        // is a result; a SIGFPE is a lost child.
-        //
-        // Two independent triggers, because they catch different failures. A
-        // non-finite residual is the overflow already in progress. A residual
-        // growing over consecutive correctors is the divergence before it
-        // overflows, which is the one worth catching.
-        const scalar UsPeak = gMax(mag(Us_.primitiveField()));
-
-        if (!std::isfinite(residual) || !std::isfinite(UsPeak))
-        {
-            Info<< "PHASE_CLOT_SKELETON_DIVERGED time="
-                << runTime.userTimeValue() << " corrector=" << corr + 1
-                << " reason=nonFinite residual=" << residual
-                << " UsPeak=" << UsPeak << endl;
-            skeletonDiverged_ = true;
-            skeletonHardFailure_ = true;
-            break;
-        }
-
-        // A magnitude bound as well as a residual-history one. Run
-        // 20260814-224138 reached UsPeak = 84952 m on a 150 um domain: the
-        // residual history caught it, but only after the state was already
-        // meaningless, and a displacement 1e9 times the geometry is not a
-        // solve that any later corrector can recover. Default 1e-3 m is far
-        // above any physical clot displacement and far below overflow.
-        if (UsPeak > skeletonUsBound_)
-        {
-            Info<< "PHASE_CLOT_SKELETON_DIVERGED time="
-                << runTime.userTimeValue() << " corrector=" << corr + 1
-                << " reason=UsBound residual=" << residual
-                << " UsPeak=" << UsPeak
-                << " bound=" << skeletonUsBound_ << endl;
-            skeletonDiverged_ = true;
-            skeletonHardFailure_ = true;
-            break;
-        }
-
-        if (corr > 0 && residual > skeletonPrevResidual_)
-        {
-            ++skeletonGrowthRun_;
-        }
-        else
-        {
-            skeletonGrowthRun_ = 0;
-        }
-        skeletonPrevResidual_ = residual;
-        skeletonBestResidual_ = min(skeletonBestResidual_, residual);
-
-        // CONSECUTIVE INCREASES ARE NOT A DIVERGENCE DETECTOR. That was the
-        // criterion until run 20260815-005321, which ended SEVEN healthy
-        // elastic-slab children at t ~ 0.03 s of 0.6 s, each reporting
-        // "residualGrowing" at corrector 19-20 of 20 with residual ~9.9e-5 --
-        // the documented truncation plateau of this fixed point. UsPeak was
-        // climbing monotonically toward its steady state the whole time.
-        //
-        // The criterion was not merely too sensitive, it was measuring the
-        // wrong thing. Replaying both recorded histories
-        // (scripts/check_divergence_criterion.py), the growth over the best
-        // residual AT the five-increase trigger is:
-        //
-        //     healthy elastic slab   2.37, 2.35, 2.36, 2.37
-        //     diverged run 224138    1.09, 1.11
-        //
-        // The HEALTHY run scores higher. No threshold on that quantity can
-        // separate them, so the increase count is not used as a trigger.
-        //
-        // What does separate them is the worst excursion above the best
-        // residual anywhere in the solve. Measured over the nine converged
-        // children of run 20260815-072849 and the diverged run:
-        //
-        //     healthy, all nine       277 .. 1058   (neo-Hookean the highest)
-        //     diverged run 224138     6.8e6
-        //
-        // The threshold is 1e5, near the geometric mean: about 95x above the
-        // worst healthy excursion and 68x below the diverged one.
-        //
-        // The first version of this used 1e3, from a healthy maximum of 31.5.
-        // That figure came from a child THIS GUARD HAD TRUNCATED at t = 0.034
-        // of 0.6 s, so it never saw the excursions a converged run produces --
-        // the estimate was built on data the bug itself had corrupted, and the
-        // neo-Hookean child then landed at 1058 against it. A nonlinear
-        // constitutive law makes the fixed-point residual spikier, so the
-        // margin has to be measured on the nonlinear case, not the linear one.
-        //
-        // The increase count is still REPORTED, because it is informative
-        // about the plateau even though it cannot gate on it.
-        if (residual > skeletonDivergenceGrowth_*skeletonBestResidual_)
-        {
-            Info<< "PHASE_CLOT_SKELETON_DIVERGED time="
-                << runTime.userTimeValue() << " corrector=" << corr + 1
-                << " reason=residualExcursion residual=" << residual
-                << " best=" << skeletonBestResidual_
-                << " growthOverBest=" << residual/skeletonBestResidual_
-                << " consecutiveIncreases=" << skeletonGrowthRun_
-                << " UsPeak=" << UsPeak << endl;
-            skeletonDiverged_ = true;
-            break;
-        }
-
-        // Early exit for the SEGREGATED fixed-point loop above - not the linear
-        // solver's own tolerance, which the cases set to 1e-12 in fvSolution.
-        // Named rather than left as a bare literal because the two are easily
-        // confused and they mean different things: this one says "the explicit
-        // stress correction has stopped moving", that one says "the linear
-        // system is solved".
-        //
-        // NOW A DICTIONARY ENTRY, DEFAULTING TO THE VALUE IT ALWAYS HAD. The
-        // 2026-08-04 audit deliberately left it hard-coded, reasoning that it
-        // sits three decades above the linear tolerance and so "cannot become
-        // the binding constraint". That reasoning compared it against the wrong
-        // thing: the constraint that matters is not the linear solve beneath it
-        // but the OUTER exchange above it, and run 20260805-071815 found that
-        // exchange stalling. Sweeping this is the cheapest way to find out
-        // whether this loop is what stalls it. The default is unchanged, so
-        // every gate that has passed still reproduces byte-identically.
-        if (residual < skeletonFixedPointTolerance_)
-        {
-            break;
-        }
-    }
-}
-
-
 void Foam::solvers::phaseClotAxisymmetricFluid::solveDamage()
 {
     const phaseClotScopeTimer costGuard_(tDamage_);
@@ -11087,9 +7270,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveDamage()
     // different kinematics than the stress that produced it.
     const volSymmTensorField eps
     (
-        finiteStrain_
-      ? symm(gradUs) + 0.5*symm(gradUs & gradUs.T())
-      : symm(gradUs)
+      symm(gradUs) + 0.5*symm(gradUs & gradUs.T())
     );
     const volScalarField trEps(tr(eps));
     const volScalarField bulkK(lambdaField_ + (2.0/3.0)*GField_);
@@ -11121,7 +7302,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveDamage()
         0.5*bulkK*sqr(trPos) + GField_*magSqr(devEps)
     );
 
-    if (eulerianSolid_)
     {
         // THE SAME ENERGY, REACHED WITHOUT A DISPLACEMENT FIELD.
         //
@@ -11155,36 +7335,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveDamage()
             max(log(J), dimensionedScalar("zero", dimless, 0))
         );
         const volScalarField I1bar(pow(J, -2.0/3.0)*tr(be_));
-
-        psiPlusRaw =
-            0.5*bulkK*sqr(lnJPos)
-          + 0.5*GField_*(I1bar - dimensionedScalar("three", dimless, 3));
-    }
-    else if (neoHookean_)
-    {
-        const volTensorField Ft(I + gradUs);
-        // THE SAME 1e-3 FLOOR AS solveSkeleton(), and it matters here more.
-        //
-        // This was `small` (2.2e-16). I1bar carries J^(-2/3), which at that
-        // floor is 2.8e10, so a single folded blood cell produced a psi+ of
-        // order 1e11. Run 20260815-182036 measured Hblood = 6.3e8 against a
-        // bulk-clot H of 1.91 -- eight orders of spurious driving energy in a
-        // region containing no solid -- and the domain-wide Dg_max came back
-        // 0.977, which reads as a clot that has failed when the clot's own
-        // damage was 6.2e-7.
-        //
-        // The floor has to bound J^(-2/3), not merely keep the logarithm
-        // finite. At 1e-3 it is 100.
-        const volScalarField J
-        (
-            max(det(Ft), dimensionedScalar("Jfloor", dimless, 1e-3))
-        );
-        const volSymmTensorField C(symm(Ft & Ft.T()));
-        const volScalarField lnJPos
-        (
-            max(log(J), dimensionedScalar("zero", dimless, 0))
-        );
-        const volScalarField I1bar(pow(J, -2.0/3.0)*tr(C));
 
         psiPlusRaw =
             0.5*bulkK*sqr(lnJPos)
@@ -11244,7 +7394,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveDamage()
     // easier -- and the phase-binned diagnostic below reports whether it was
     // needed at all.
     volScalarField psiPlus("psiPlus", sqr(chiDamage)*psiPlusRaw);
-    if (skeletonDiffuseDomain_)
     {
         psiPlus = chiDamage*psiPlusRaw;
     }
@@ -11404,14 +7553,12 @@ void Foam::solvers::phaseClotAxisymmetricFluid::releaseDetachedMaterial()
             ruptured_[celli] = 0.0;
             // S16 C: and its damage partition, in the same statement as
             // theta (Change 4): an empty cell has theta = 0 and d = d* = 0.
-            if (damageTransport_ == "contentPartition")
             {
                 thetaIntact_[celli] = 0.0;
                 thetaPending_[celli] = 0.0;
                 thetaBroken_[celli] = 0.0;
             }
             // S17 A: and its pending fibre -- no pending content, no fibre.
-            if (fibreRelease())
             {
                 thetaPendingB_[celli] = Zero;
                 thetaPendingP_[celli] = 0.0;
@@ -11433,14 +7580,12 @@ void Foam::solvers::phaseClotAxisymmetricFluid::releaseDetachedMaterial()
         thetaH_.correctBoundaryConditions();
         thetaNetRef_.correctBoundaryConditions();
         ruptured_.correctBoundaryConditions();
-        if (damageTransport_ == "contentPartition")
         {
             thetaIntact_.correctBoundaryConditions();
             thetaPending_.correctBoundaryConditions();
             thetaBroken_.correctBoundaryConditions();
             syncDamageFromPartition("detachment");
         }
-        if (fibreRelease())
         {
             thetaPendingB_.correctBoundaryConditions();
             thetaPendingP_.correctBoundaryConditions();
@@ -11488,11 +7633,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::updateReleasedIndicator()
     // geometry, and the next case would silently get a wrong answer instead
     // of an obviously wrong one.
     released_ = dimensionedScalar("zero", dimless, 0.0);
-
-    if (!advectReleased_)
-    {
-        return;
-    }
 
     const labelUList& owner = mesh.owner();
     const labelUList& neighbour = mesh.neighbour();
@@ -11694,7 +7834,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::updateReleasedIndicator()
         << " coreExempted=" << coreExempted
         << " supportLimit=" << supportLimit
         << " indSupportLimit=" << indSupportLimit
-        << " indBasis=" << phaseIndicatorBasis_
+        << " indBasis=content"
         << endl;
 }
 
@@ -11767,11 +7907,10 @@ void Foam::solvers::phaseClotAxisymmetricFluid::updateBondHold()
     // the outermost sweep reaches 0. There is no cell boundary across which
     // the hold jumps, which is the whole point: the severed core Li rejected
     // was material shearing along exactly such a jump.
-    const scalar D = scalar(max(bondHoldDilation_, 1));
     for (label sweep = 0; sweep < bondHoldDilation_; ++sweep)
     {
         const scalar w =
-            bondHoldTaper_ ? (D - scalar(sweep) - 1.0)/D : 1.0;
+            1.0;
         const scalarField prev(h);
         forAll(owner, facei)
         {
@@ -11811,10 +7950,10 @@ void Foam::solvers::phaseClotAxisymmetricFluid::updateBondHold()
         << " seeds=" << seeds
         << " heldCells=" << held
         << " heldWeight=" << heldWeight
-        << " taper=" << (bondHoldTaper_ ? 1 : 0)
+        << " taper=" << 0
         << " dilation=" << bondHoldDilation_
         << " penalty=" << bondHoldPenalty_
-        << " carrier=" << (bondHoldCarrier_ ? 1 : 0)
+        << " carrier=" << 0
         << endl;
 }
 
@@ -12023,222 +8162,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::reportWoundState()
 }
 
 
-Foam::vector
-Foam::solvers::phaseClotAxisymmetricFluid::releasedBodyVelocity() const
-{
-    // The translation velocity of the freed clot: the UNDISTURBED flow that
-    // occupies the band of the channel the body sits in.
-    //
-    // THE FIRST VERSION OF THIS WAS WRONG BY 300x, and wrong in an instructive
-    // way. It averaged over blood cells IMMEDIATELY ADJACENT to released ones,
-    // which sounds like "the surrounding flow" and is not. The phase interface
-    // is diffuse over epsilonC = 4 cells, so the first ring of c > 0 cells sits
-    // at q = 0.538 -- the middle of the interface, where the Brinkman drag is
-    // still half active. Run 20260811-100050 measured that ring at 4.04e-6 m/s
-    // against a free stream of 2.46e-3: a factor of 600. The clot travelled
-    // 0.05 of a cell and the report said, correctly, that it had not moved.
-    //
-    // Measured profile from that run, mean Ux by ring distance from the clot:
-    //     ring 1  4.04e-06  (q 0.54)      ring 6  1.38e-03  (q 0.92)
-    //     ring 2  3.41e-05  (q 0.66)      ring 8  2.17e-03  (q 0.97)
-    //     ring 4  5.13e-04  (q 0.83)      ring 12 3.21e-03  (q 0.99)
-    // Adjacency is the wrong selector at every distance: near the body it
-    // measures the penalty, far from it the centreline.
-    //
-    // WHAT IS SELECTED NOW: genuinely fluid cells (q > releasedAmbientQ) lying
-    // within the body's own extent PERPENDICULAR to the flow -- upstream and
-    // downstream of it, at its own heights. That is the flow the body
-    // displaces. On the same run it gives 1.21e-3 m/s, against 1.54e-3 for the
-    // analytic undisturbed Poiseuille mean over the clot's height band; the
-    // difference is the blockage the clot itself causes, which is real and
-    // should be there.
-    //
-    // The flow direction is GEOMETRIC -- the inlet patch normal -- not the
-    // measured mean free-stream direction. Run 20260813-084207 shows why: the
-    // free stream over a wall-mounted obstacle has a net upward component, so
-    // a direction measured from it is tilted by 1-5%, and projecting onto a
-    // tilted axis RETAINS the very cross-stream drift the projection exists to
-    // remove. Uy survived at 1.2 -> 5% of Ux and lifted the phase field ~3 um
-    // into the wall over the transit. The inlet normal cannot tilt.
-    //
-    // Returns zero when nothing is released, which makes this a no-op for
-    // every bonded child and keeps the growth and required-strength series
-    // bit-for-bit unchanged.
-    const scalarField& rel = released_.primitiveField();
-    const scalarField& qIn = q_.primitiveField();
-    const vectorField& Uin = U_.primitiveField();
-    const scalarField& vol = mesh.V();
-    const vectorField& cc = mesh.C();
-
-    // 1. Flow direction, from the free stream itself.
-    vector sumFree = Zero;
-    scalar volFree = 0.0;
-    forAll(qIn, celli)
-    {
-        if (qIn[celli] > 0.99)
-        {
-            sumFree += Uin[celli]*vol[celli];
-            volFree += vol[celli];
-        }
-    }
-    reduce(sumFree, sumOp<vector>());
-    reduce(volFree, sumOp<scalar>());
-    const vector freeStream(volFree > 0 ? sumFree/volFree : Zero);
-    const scalar freeMag = mag(freeStream);
-    if (freeMag < vSmall)
-    {
-        return Zero;
-    }
-    // The geometric axis: the inlet patch normal, pointing INTO the domain.
-    // Sf points outward, so the inflow direction is -Sf/|Sf|.
-    vector axis(Zero);
-    const label inletPatchi = mesh.boundaryMesh().findIndex("inlet");
-    if (inletPatchi >= 0)
-    {
-        axis = -gSum(mesh.Sf().boundaryField()[inletPatchi]);
-    }
-    reduce(axis, sumOp<vector>());
-
-    vector flowDir(Zero);
-    if (mag(axis) > vSmall)
-    {
-        flowDir = axis/mag(axis);
-
-        // A flat inlet gives an exact axis, but guard against a patch whose
-        // normal opposes the flow (a reversed or misnamed boundary): fall
-        // back rather than advect the body upstream.
-        if ((freeStream & flowDir) <= 0)
-        {
-            flowDir = freeStream/freeMag;
-            Info<< "PHASE_CLOT_FLOW_AXIS_FALLBACK inlet normal opposes the "
-                << "free stream; using the measured direction" << endl;
-        }
-    }
-    else
-    {
-        flowDir = freeStream/freeMag;
-    }
-
-    // How far the measured free stream tilts off the geometric axis. This is
-    // the quantity that was silently absorbed into flowDir before; keep it
-    // visible so a genuinely oblique geometry is distinguishable from the
-    // obstacle-induced tilt.
-    const scalar axisTilt =
-        mag(freeStream - (freeStream & flowDir)*flowDir)/freeMag;
-
-    // 2. Centroid and perpendicular half-extent of the released body.
-    vector sumRC = Zero;
-    scalar volRel = 0.0;
-    forAll(rel, celli)
-    {
-        if (rel[celli] > 0.5)
-        {
-            sumRC += cc[celli]*vol[celli];
-            volRel += vol[celli];
-        }
-    }
-    reduce(sumRC, sumOp<vector>());
-    reduce(volRel, sumOp<scalar>());
-    if (volRel <= 0.0)
-    {
-        return Zero;
-    }
-    const vector centre(sumRC/volRel);
-
-    scalar halfExtent = 0.0;
-    forAll(rel, celli)
-    {
-        if (rel[celli] > 0.5)
-        {
-            const vector r(cc[celli] - centre);
-            halfExtent = max(halfExtent, mag(r - (r & flowDir)*flowDir));
-        }
-    }
-    reduce(halfExtent, maxOp<scalar>());
-
-    // 3. Average the undisturbed flow over that band.
-    vector sumUV = Zero;
-    scalar sumV = 0.0;
-    label bandCells = 0;
-    forAll(qIn, celli)
-    {
-        if (qIn[celli] <= releasedAmbientQ_)
-        {
-            continue;
-        }
-        const vector r(cc[celli] - centre);
-        if (mag(r - (r & flowDir)*flowDir) <= halfExtent)
-        {
-            sumUV += Uin[celli]*vol[celli];
-            sumV += vol[celli];
-            ++bandCells;
-        }
-    }
-    reduce(sumUV, sumOp<vector>());
-    reduce(sumV, sumOp<scalar>());
-
-    // Falling back to the free stream would OVERSTATE the speed of a clot that
-    // sits in the slow near-wall band, so an empty selection returns zero and
-    // says so. A clot that does not move is a reportable result; one that
-    // moves at a speed nothing measured is not.
-    if (sumV <= 0.0)
-    {
-        Info<< "PHASE_CLOT_BODY_VELOCITY time=" << runTime.userTimeValue()
-            << " Ux=0 Uy=0 bandCells=0 freeStreamUx=" << freeStream.x()
-            << " ratioToFreeStream=0" << endl;
-        return Zero;
-    }
-
-    const vector UbodyRaw(sumUV/sumV);
-
-    // STREAMWISE COMPONENT ONLY. The cross-stream part of this average is a
-    // sampling artefact, and acting on it stretches the clot instead of
-    // moving it.
-    //
-    // The band is a slab of height 2*halfExtent about the body centroid that
-    // spans the WHOLE domain length. Flow over a wall-mounted obstacle rises
-    // on the upstream side and falls on the downstream side, and those should
-    // cancel in the average -- but the clot is not centred in the domain
-    // (x = 75-165 um of 240 um) and moves towards the outlet, so the sample
-    // becomes progressively upstream-weighted and the up-flow wins.
-    //
-    // Run 20260812-200349 measured exactly that signature: Uy/Ux climbing
-    // monotonically from 0.072 at t = 0.043 to 0.171 at t = 0.102 as the body
-    // approached the exit, integrating to 22.7 um of upward advection. The
-    // clot's underside is against the no-slip wall and cannot translate
-    // through it, so the phase field STRETCHED instead: ymax 20 -> 34 um, core
-    // height 11 -> 26 um, core cells 336 -> 557, material +46%. It reads as
-    // the clot inflating as it travels.
-    //
-    // Deformability-induced migration away from a wall is real in Stokes flow,
-    // so a freed clot rising is not unphysical in principle -- but this
-    // estimator does not compute lift, it averages ambient flow over an
-    // asymmetric window, and 17% of the streamwise speed is orders of
-    // magnitude too large for migration at the 0.65% strain measured here.
-    // Reporting the cross-stream component and not acting on it is the honest
-    // treatment: the estimator can defend a translation speed ALONG the
-    // channel and cannot defend one across it.
-    const vector Ubody((UbodyRaw & flowDir)*flowDir);
-    const vector Ucross(UbodyRaw - Ubody);
-
-    // The free stream is reported alongside, so the ratio is auditable from
-    // the log. The first version's 0.0016 would have been visible immediately.
-    // UyDiscarded is reported for the same reason: a growing value means the
-    // band has gone asymmetric, and that is worth seeing even though it no
-    // longer moves anything.
-    Info<< "PHASE_CLOT_BODY_VELOCITY time=" << runTime.userTimeValue()
-        << " Ux=" << Ubody.x() << " Uy=" << Ubody.y()
-        << " UyDiscarded=" << Ucross.y()
-        << " crossFraction=" << mag(Ucross)/max(mag(UbodyRaw), vSmall)
-        << " axisTilt=" << axisTilt
-        << " bandCells=" << returnReduce(bandCells, sumOp<label>())
-        << " freeStreamUx=" << freeStream.x()
-        << " ratioToFreeStream=" << mag(Ubody)/freeMag
-        << endl;
-    return Ubody;
-}
-
-
 // Capture the face weights the c equation is about to use, so the Wp equation
 // can assemble the SAME matrix. Derived from the div(phiReleased,c) entry
 // itself rather than from a second scheme string: a duplicate string is the
@@ -12288,7 +8211,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseFieldFaceWeights
     // is true on every admissible dictionary. Kept as a named constant
     // rather than folded away so the interface band below still reads as
     // the indicator's band and not as a pair of magic numbers.
-    const bool contentLimiter = true;
 
     // S6c-2: ONE BRANCH LEFT. The legacy branch bound c_ ITSELF, not a
     // renamed copy, and that was deliberate: the vanLeer limiter computes
@@ -12313,12 +8235,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseFieldFaceWeights
             tinterp().weights(limiterField)
         )
     );
-
-    if (!plateletContentFormulation_)
-    {
-        // The old w branch never used these weights. Byte-for-byte unchanged.
-        return tw;
-    }
 
     // THE MORE UPWIND OF THE TWO LIMITERS.
     //
@@ -12392,8 +8308,8 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseFieldFaceWeights
     // THE SAME BIN IN BOTH SPELLINGS. The legacy test is |c| < 0.9; with
     // c = 2q - 1 that is 0.05 < q < 0.95, and after S6a q = 1 - ind, so the
     // content spelling of the identical bin is 0.05 < ind < 0.95.
-    const scalar interfaceLo = contentLimiter ? 0.05 : -0.9;
-    const scalar interfaceHi = contentLimiter ? 0.95 :  0.9;
+    const scalar interfaceLo = 0.05;
+    const scalar interfaceHi = 0.95;
     const labelUList& limOwn = mesh_.owner();
     const labelUList& limNei = mesh_.neighbour();
     forAll(wcIn, facei)
@@ -12453,7 +8369,7 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseFieldFaceWeights
         << " facesUpwinded=" << overridden
         << " facesUpwindedAtInterface=" << overriddenAtInterface
         << " tol=" << limiterAgreementTol
-        << " limiterBasis=" << phaseLimiterBasis_
+        << " limiterBasis=content"
         << endl;
 
     return tw;
@@ -12462,28 +8378,8 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseFieldFaceWeights
 
 void Foam::solvers::phaseClotAxisymmetricFluid::beginPlateletOuterTransaction()
 {
-    plateletOuter_ = 0;
-
-    if (!plateletContentModel_)
-    {
-        thetaCStepAccepted_.clear();
-        thetaHStepAccepted_.clear();
-        thetaNetRefStepAccepted_.clear();
-        nPStepAccepted_.clear();
-        thetaIntactStepAccepted_.clear();
-        thetaPendingStepAccepted_.clear();
-        thetaBrokenStepAccepted_.clear();
-        thetaPendingBStepAccepted_.clear();
-        thetaPendingPStepAccepted_.clear();
-        pendingAxisStepAccepted_.clear();
-        pendingStretchStepAccepted_.clear();
-        thetaTautStepAccepted_.clear();
-        return;
-    }
-
     // S16 C: the partition is checkpointed beside the content it partitions
     // (red-team Change 4), and restored at both roll-backs below.
-    if (damageTransport_ == "contentPartition")
     {
         thetaIntactStepAccepted_ = tmp<volScalarField>
         (
@@ -12499,7 +8395,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::beginPlateletOuterTransaction()
         );
     }
     // S17 A: and the pending fibre beside it (design section 5).
-    if (fibreRelease())
     {
         thetaPendingBStepAccepted_ = tmp<volSymmTensorField>
         (
@@ -12519,7 +8414,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::beginPlateletOuterTransaction()
         );
     }
     // S17b A1: and the taut share (V1).
-    if (fibreSlack_ == "v1")
     {
         thetaTautStepAccepted_ = tmp<volScalarField>
         (
@@ -12592,36 +8486,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePhaseField()
     // v_s is the same skeleton velocity the momentum equation uses for the
     // Darcy exchange, so the phase field and the flow cannot disagree about
     // how fast the solid is moving.
-    // THE ANCHOR, AS THE CARRIER SEES IT.
-    //
-    // 1 outside the anchored layer, 0 inside it, so multiplying any carrier by
-    // this pins the material the bond is holding. It acts on the FLUX because
-    // that is what moves c: once the release mask covers the body, c is
-    // carried at Ubody, which is computed from the free stream and does not
-    // depend on U at all, so no momentum-equation term can reach it. That is
-    // why bondHoldPenalty is not sufficient on its own and why this switch
-    // exists separately from it.
-    //
-    // The factor is built from the CELL field and interpolated, so a face
-    // between a held and a free cell is half held rather than a step -- the
-    // boundary of the anchored layer sits in clot bulk where grad(c) is
-    // negligible, but there is no reason to make it sharper than it needs to
-    // be.
-    tmp<surfaceScalarField> tHoldFactor;
-    if (bondHoldCarrier_ && bondHoldDilation_ >= 0)
-    {
-        tHoldFactor = tmp<surfaceScalarField>
-        (
-            new surfaceScalarField
-            (
-                "bondHoldFactor",
-                1.0 - fvc::interpolate(bondHold_)
-            )
-        );
-    }
-
     tmp<surfaceScalarField> tphiMaterial;
-    if (twoVelocitySkeleton_)
     {
         // THE CLOT RIDES ITS OWN SKELETON. This is the change the whole
         // two-velocity path exists for. Previously the material flux WAS the
@@ -12637,122 +8502,12 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePhaseField()
         // header for the full 23-run table and the two failure modes.
         const surfaceScalarField phiS(skeletonFlux());
 
-        if (materialCarrierBlend_)
-        {
-            // Clamped, ON EITHER BASIS, AND THIS IS THE ONE SITE THAT MUST
-            // BE. chi overshoots 1 whenever c undershoots -1 (1.0021786
-            // measured) and theta/theta_ref overshoots it under compression
-            // (1.0021686), and an unclamped (1 - chif) would SUBTRACT the
-            // blood flux. phaseIndicatorBasis_ leaves the ratio unclamped
-            // above by decision; this min() is the consumer's own bound and
-            // is not that decision's to remove.
-            const volScalarField chiC
-            (
-                min
-                (
-                    phaseIndicator(),
-                    dimensionedScalar("one", dimless, 1)
-                )
-            );
-            const surfaceScalarField chif(fvc::interpolate(chiC));
-
-            tphiMaterial = tmp<surfaceScalarField>
-            (
-                new surfaceScalarField
-                (
-                    "phiMaterial",
-                    chif*phiS + (1.0 - chif)*phi_
-                )
-            );
-        }
-        else
         {
             tphiMaterial = tmp<surfaceScalarField>
             (
                 new surfaceScalarField("phiMaterial", phiS)
             );
         }
-    }
-    else if (phaseFieldMaterialVelocity_ && eulerianSolid_ && eulerianMaterialFluxIsPhi_)
-    {
-        // ONE VELOCITY MEANS ONE FLUX. Everything in the comment above
-        // describes the PARTITIONED formulation, where the skeleton genuinely
-        // moves at a different velocity from the fluid and the chi-blend is how
-        // the two are reconciled. Under eulerianSolid there is no relative
-        // motion by construction, so the material flux IS the fluid flux, and
-        // building a second one is not a refinement -- it is two defects:
-        //
-        // (1) NOT DIVERGENCE-FREE. phi_ is the pressure-corrected flux and the
-        //     pressure solve makes it solenoidal to machine precision (run
-        //     20260818-125909 measured |div phi| <= 8e-6 1/s against a 1000 1/s
-        //     shear rate). `fvc::interpolate(vs) & mesh.Sf()` is a cell-centred
-        //     field pushed to faces and has NO such guarantee: on a Cartesian
-        //     mesh its divergence is exactly V*tr(fvc::grad(vs)), which that
-        //     same run measured at 527 1/s in the clot bulk. Advecting a
-        //     BOUNDED scalar with a flux carrying a 53%-of-shear-rate
-        //     divergence error does not conserve it and does not keep it in
-        //     bounds -- which is the c overshoot to -1.029 and the clot losing
-        //     a third of its cells (824 -> 526), both previously unexplained.
-        //
-        // (2) vs IS NOT THE MATERIAL VELOCITY ON THIS PATH. Under eulerianSolid
-        //     Us_ is passive and solves D(Us)/Dt = U, so
-        //         d(Us)/dt = D(Us)/Dt - (U.grad)Us = U - (U.grad)Us
-        //     and vs = (Us_ - UsPrev_)/dt is that EULERIAN derivative, short of
-        //     U by an advective term. The falsifiable consequence is that vs
-        //     can exceed max|U|, which no material velocity can; run
-        //     20260818-125909 measured exactly that in three of four children
-        //     (vsMax/max|U| = 1.20, 1.02, 1.02).
-        //
-        // Both vanish if the flux is simply phi_. This is a switch only so the
-        // A/B is measured rather than asserted -- the last "obviously correct"
-        // change made things 16x worse -- but it defaults ON, because shipping
-        // a known-inapplicable construction behind an off-by-default flag is
-        // how the defect survives.
-        tphiMaterial = tmp<surfaceScalarField>
-        (
-            new surfaceScalarField("phiMaterial", phi_)
-        );
-    }
-    else if (phaseFieldMaterialVelocity_)
-    {
-        const volScalarField chi
-        (
-            phaseIndicator()
-        );
-        // deltaTIncrement_, NOT runTime.deltaT(). This runs before
-        // prePredictor() refreshes UsPrev_, so the numerator is the previous
-        // step's increment and must be divided by the previous step's dt.
-        // See the note on deltaTIncrement_ in the header: mixing the two is
-        // what collapsed dt by 229x in a single step in run 20260815-191231.
-        const volVectorField vs
-        (
-            (Us_ - UsPrev_)
-           /dimensionedScalar("dtIncrement", dimTime, deltaTIncrement_)
-        );
-        const surfaceScalarField chif(fvc::interpolate(chi));
-        tphiMaterial = tmp<surfaceScalarField>
-        (
-            new surfaceScalarField
-            (
-                "phiMaterial",
-                chif*(fvc::interpolate(vs) & mesh.Sf())
-              + (1.0 - chif)*phi_
-            )
-        );
-
-        // The material speed, reported every step. A phase field that is
-        // being carried by a velocity nothing measured is exactly the class
-        // of silent failure this project keeps being caught by, and the
-        // Courant number of THIS flux -- not the fluid one that maxCo bounds
-        // -- is what limits the accuracy of the clot's motion.
-        const scalar vsPeak = gMax(mag(vs.primitiveField()));
-        Info<< "PHASE_CLOT_MATERIAL_VELOCITY time=" << runTime.userTimeValue()
-            << " vsMax=" << vsPeak
-            << " dtIncrement=" << deltaTIncrement_
-            << " vsCourant="
-            << vsPeak*deltaTIncrement_
-              /max(Foam::pow(gMin(mesh.V()), 1.0/3.0), vSmall)
-            << endl;
     }
 
     // IMMUTABLE ACCEPTED START-OF-STEP STATE FOR EVERY PHASE TRIAL.
@@ -12780,7 +8535,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePhaseField()
 
     for (label corr = 0; corr < nPhaseCorrectors_; ++corr)
     {
-        if (plateletContentModel_)
         {
             if
             (
@@ -12828,289 +8582,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePhaseField()
         // is. Run 20260922-104613 measured Ubody at 13.7-14.8 mm/s (a band
         // average 58-71% throat by volume) while the solved Vs said the freed
         // clot was ROLLING at ~6 mm/s.
-        if (advectReleased_ && releasedCarrier_ == "rigidBody")
-        {
-            // Only RELEASED material is carried, at the RIGID-BODY velocity
-            // of the freed clot rather than at the local fluid flux.
-            //
-            // WHY NOT THE FLUID FLUX. That is what this term used to be, and
-            // run 20260811-051109 released all 60 faces, flagged all 789 clot
-            // cells, and moved the clot exactly 0.0 m. The reason is
-            // structural: the Brinkman penalty makes the clot an obstacle by
-            // holding the fluid still INSIDE it. Measured in that run, mean Ux
-            // was 2.18e-7 m/s in the clot against 2.28e-3 m/s in the blood, a
-            // factor of ten thousand. Masking phi by `released` multiplied 1
-            // by approximately 0. The clot cannot be carried by a flux that is
-            // zero precisely where the clot is.
-            //
-            // WHY NOT A DARCY FORCE BALANCE EITHER. The obvious repair is to
-            // balance the pressure force against dragCoeff*(U - v). That gives
-            // 1.18e-7 m/s -- also nothing -- and it is wrong physics: mu/k is
-            // 1.36e12 Pa.s/m2 and it resists RELATIVE motion between fluid and
-            // skeleton. When a freed body translates, its interstitial fluid
-            // translates with it, the relative velocity is zero, and the Darcy
-            // term exerts no force at all. Using it as the resistance to bulk
-            // translation double-counts an interaction that has vanished.
-            //
-            // WHAT IS DONE INSTEAD. A freely suspended, effectively
-            // impermeable body in Stokes flow (Re = U*H/nu = 0.036 at the
-            // venous 200/s this stage runs at) translates at
-            // approximately the ambient velocity of the flow that would occupy
-            // its place. The released region is therefore advected as a rigid
-            // body at the mean velocity of the blood immediately surrounding
-            // it. That is a SUB-MODEL with a stated assumption, not a resolved
-            // fluid-structure interaction, and it is labelled as such in the
-            // controls and in the report.
-            //
-            // The scheme is named explicitly: an unnamed fvm::div would be
-            // looked up as "div((interpolate(released)*phi),c)", which no case
-            // defines, and `default none` would make it fatal at the first
-            // step -- the failure that cost run 20260810-032625 six children.
-            // FROM THE CACHE, NOT A SECOND CALL. prePredictor() fixed this
-            // vector for the step so that the carrier flux below and the
-            // Brinkman drag in momentumPredictor() resist and advect at the
-            // SAME velocity. Calling releasedBodyVelocity() again here would
-            // sample a U the momentum solve has since changed.
-            const dimensionedVector Ubody
-            (
-                "Ubody", dimVelocity, UbodyCached_
-            );
-
-            // THE MASK MUST CONTAIN ALL CLOT-BEARING MATERIAL, AND IS SIZED
-            // BY THE FIELD RATHER THAN BY A CELL COUNT.
-            //
-            // `released` is set on cells with c < 0, so its raw boundary sits
-            // exactly ON the interface. The advecting velocity jumps across
-            // that boundary -- Ubody inside, the local fluid outside -- so
-            // wherever the boundary cuts live field, the field is sheared
-            // apart there. Two runs measured the consequences:
-            //
-            //   20260812-041322, no dilation: trailing edge +17 cells against
-            //   the 16.2 expected, leading edge +9, body 8 cells SHORTER. The
-            //   clot was eaten from behind rather than translated.
-            //
-            //   20260813-013923, dilation 6: the body travelled coherently but
-            //   left 43% of its material as a wake that blocked the downstream
-            //   half of the channel.
-            //
-            // The size needed is set by the SHEDDING RATE at the boundary,
-            // |du| * |grad c|, integrated over the travel time. Measured on
-            // 20260813-013923, with the tanh profile and the local Poiseuille
-            // speed:
-            //
-            //     boundary at   c        |grad c|    dc over 0.08 s
-            //       6 cells   0.90515     30118          15.2     torn apart
-            //      10 cells   0.98661      4432           2.2     torn
-            //      15 cells   0.99889       368           0.15    marginal
-            //      20 cells   0.99991        30           0.007   safe
-            //
-            // A cell COUNT that happens to suit this geometry is fragile, so
-            // the mask is grown through every cell still carrying clot
-            // material -- c below releasedMaskLimit -- and only then a small
-            // margin further into pure blood. That places the velocity jump
-            // where grad(c) is negligible whatever the interface width, the
-            // clot size or the shape of any wake, and it automatically
-            // re-absorbs material that has already been shed instead of
-            // abandoning it.
-            //
-            // A LARGE mask is free. The advection is the non-conservative
-            // u.grad(c) form, so where c is uniform the mask velocity has no
-            // effect at all: grad(c) is zero and advecting there does nothing.
-            volScalarField advectMask
-            (
-                IOobject
-                (
-                    "advectMask", runTime.name(), mesh,
-                    IOobject::NO_READ, IOobject::NO_WRITE
-                ),
-                released_
-            );
-            {
-                const labelUList& own = mesh.owner();
-                const labelUList& nei = mesh.neighbour();
-                // S6c-2: THE MASK READS THE PHASE INDICATOR, NOT c. The
-                // mapping is the one already documented at the release
-                // support limit: c < L <-> ind > (1 - L)/2, exactly, under
-                // c = 1 - 2*ind. releasedMaskLimit defaults to 0.9999, so
-                // the mask grows through every cell with ind > 5e-05 --
-                // the same set of cells, named in the surviving variable.
-                //
-                // INERT IN EVERY RUN TO DATE and that is not an argument for
-                // dropping it. advectMask is initialised from released_, and
-                // PHASE_CLOT_RELEASED reports cells=0 volume=0 at its maximum
-                // over all 272 steps of run 20260920-060033, so the growth
-                // test prev[n] > m[o] is 0 > 0 at every face and maskf stays
-                // zero. This is a capability of a case called
-                // mural_detachment, not a diagnostic.
-                const volScalarField indMask(phaseIndicator());
-                const scalarField& indIn = indMask.primitiveField();
-                const scalar indReleasedMaskLimit =
-                    0.5*(1.0 - releasedMaskLimit_);
-                scalarField& m = advectMask.primitiveFieldRef();
-
-                // 1. Grow through material, stopping where the clot fraction
-                //    is negligible. Terminates when nothing changes, so the
-                //    cap is a safety net rather than the working limit.
-                for (label sweep = 0; sweep < releasedMaskSweeps_; ++sweep)
-                {
-                    const scalarField prev(m);
-                    scalar changed = 0;
-                    forAll(own, facei)
-                    {
-                        const label o = own[facei];
-                        const label n = nei[facei];
-                        if (indIn[o] > indReleasedMaskLimit && prev[n] > m[o])
-                        {
-                            m[o] = prev[n];
-                            ++changed;
-                        }
-                        if (indIn[n] > indReleasedMaskLimit && prev[o] > m[n])
-                        {
-                            m[n] = prev[o];
-                            ++changed;
-                        }
-                    }
-                    if (returnReduce(changed, sumOp<scalar>()) < 0.5)
-                    {
-                        break;
-                    }
-                }
-
-                // 2. A short unconditional margin, so the boundary itself sits
-                //    in blood rather than on the threshold contour.
-                for (label sweep = 0; sweep < releasedMaskDilation_; ++sweep)
-                {
-                    const scalarField prev(m);
-                    forAll(own, facei)
-                    {
-                        const label o = own[facei];
-                        const label n = nei[facei];
-                        m[o] = max(m[o], prev[n]);
-                        m[n] = max(m[n], prev[o]);
-                    }
-                }
-                advectMask.correctBoundaryConditions();
-            }
-
-            // THE ADVECTING VELOCITY IS THE MATERIAL VELOCITY, BLENDED --
-            // NOT THE MASK TIMES Ubody AND ZERO EVERYWHERE ELSE.
-            //
-            // Run 20260812-200349 fully released for the first time, the body
-            // reached the outlet at t = 0.11 and left, and then a frozen wedge
-            // of phase field stayed behind and blocked the channel for the
-            // remaining 0.21 s. Measured: clotMass identically 689.9 at every
-            // write from t = 0.15 to 0.35, residual c from 0.84 down to 0.37,
-            // clotDrag 3e+07 to 5e+09. The fluid could not get into the space
-            // the clot had vacated.
-            //
-            // Cause: the old flux was interpolate(mask)*(Ubody & Sf), so the
-            // velocity was EXACTLY ZERO outside the mask. The interface is a
-            // tanh of width epsilonC = 6 um and does not reach c = 0.9999
-            // until 5*epsilonC = 30 um = 20 cells past the c = 0 contour,
-            // while releasedMaskDilation is 6 cells. Every step the body was
-            // torn away from its own tail: material inside the mask moved at
-            // Ubody, material just outside stood still. Over ~1300 steps the
-            // shed tail accumulated into a stationary obstruction. Nothing
-            // could then remove it -- once no cell has c < 0 the body velocity
-            // is Zero by construction, and mobility is 0 so there is no
-            // Cahn-Hilliard relaxation either.
-            //
-            // Blending to the FLUID flux instead of to zero is correct in all
-            // three regimes at once, with no extra parameter:
-            //   released clot   mask 1  -> Ubody, rigid-body translation
-            //   bonded clot     mask 0  -> phi, which the Brinkman penalty has
-            //                              already driven to ~0 there, so
-            //                              attached material still does not move
-            //   blood           mask 0  -> phi, so shed material is carried
-            //                              away by the flow instead of
-            //                              standing in the channel for ever
-            // In undisturbed blood c is uniformly 1, and the scheme is the
-            // non-conservative u.grad(c) form, so advecting there is a no-op.
-            surfaceScalarField maskf(fvc::interpolate(advectMask));
-
-            // NO RIGID-BODY FLUX THROUGH A WALL. Found by review on
-            // 2026-09-04, before the first embolus run rather than after it.
-            //
-            // The carrier below is maskf*(Ubody & Sf). On a FLAT wall that is
-            // identically zero, because Ubody is constrained to the flow
-            // direction and Sf on a flat bottom wall has no streamwise
-            // component -- which is why this has never mattered in any run to
-            // date, all of which used a uniform channel.
-            //
-            // The throat geometry breaks that. apply_throat.py leaves the
-            // bottom wall flat and brings the TOP wall down, so on the taper
-            // the outward normal carries a streamwise component of up to
-            // sin(25.2 deg) = 0.426 at the measured peak slope |dH/dx| =
-            // 0.4712. A released body advected rigidly into the narrowing
-            // would then be given a nonzero flux THROUGH the sloping wall --
-            // material pushed into a boundary it cannot enter, at roughly 2%
-            // of a cell volume per step, for twenty thousand steps.
-            //
-            // Zeroing the mask on wall patches makes the carrier fall back to
-            // phiCarrier there, and phiCarrier already satisfies
-            // no-penetration because it is the solved flux. This is a no-op
-            // on every flat-walled case, exactly and by construction.
-            forAll(maskf.boundaryFieldRef(), patchi)
-            {
-                if (isA<wallFvPatch>(mesh.boundary()[patchi]))
-                {
-                    maskf.boundaryFieldRef()[patchi] = 0.0;
-                }
-            }
-            // Outside the released region the carrier is the MATERIAL flux
-            // when the case asks for it, and the fluid flux otherwise. So a
-            // clot that is still attached is now carried by its own skeleton
-            // as it deforms, instead of standing still because the fluid
-            // inside it does.
-            const surfaceScalarField& phiCarrier =
-                tphiMaterial.valid() ? tphiMaterial() : phi_;
-            // NOT WRITTEN AS A ?: BETWEEN A tmp<> AND A FIELD. That exact
-            // construct failed to compile in this file once already and cost
-            // a VM boot; a mutable field and a guarded multiply cannot.
-            surfaceScalarField phiReleased
-            (
-                "phiReleased",
-                maskf*(Ubody & mesh.Sf()) + (1.0 - maskf)*phiCarrier
-            );
-            if (tHoldFactor.valid())
-            {
-                phiReleased *= tHoldFactor();
-            }
-
-            // NO MANUAL div(phi)*c CORRECTION HERE, DELIBERATELY.
-            //
-            // The masked flux is not divergence-free -- it jumps from zero to
-            // Ubody across the mask boundary -- so the conservative form
-            // div(phiReleased*c) would carry a spurious source and sink. The
-            // fix for that is to subtract c*div(phiReleased), leaving
-            // u.grad(c).
-            //
-            // OpenFOAM ALREADY DOES IT. The scheme is declared
-            // `div(phiReleased,c) bounded Gauss ...`, and boundedConvection
-            // Scheme::fvmDiv is exactly
-            //     scheme.fvmDiv(flux, vf) - fvm::Sp(fvc::surfaceIntegrate(flux), vf)
-            // Adding the same term by hand would apply it twice and produce a
-            // sink where there should be none. Checked before shipping: this
-            // file briefly carried that double correction.
-
-            // solvePlatelets() runs immediately after this and advects W with
-            // this same flux. Stored rather than rebuilt so the two equations
-            // cannot disagree about the carrier even by a rounding.
-            phaseCarrier_ = tmp<surfaceScalarField>
-            (
-                new surfaceScalarField("phaseCarrier", phiReleased)
-            );
-            phaseWeights_ = phaseFieldFaceWeights(phiReleased);
-
-            advectMaterialLabel(phiReleased);
-            // Same carrier as the label and the phase field, so the
-            // Stage 1 equivalence test compares like with like.
-            solveContentComponents(phiReleased);
-            advectRuptureLabel(phiReleased);
-            // AFTER the content: the rupture label is corrected with the
-            // content's FCT limiter, which solveContentComponents() sets.
-        }
-        else if (tphiMaterial.valid())
+        if (tphiMaterial.valid())
         {
             // Attached, deforming, and now able to move: the phase field is
             // carried by the material velocity even though nothing has been
@@ -13122,10 +8594,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePhaseField()
                 "phiAttached",
                 tphiMaterial()
             );
-            if (tHoldFactor.valid())
-            {
-                phiAttached *= tHoldFactor();
-            }
 
             phaseCarrier_ = tmp<surfaceScalarField>
             (
@@ -13137,9 +8605,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePhaseField()
             // Same carrier as the label and the phase field, so the
             // Stage 1 equivalence test compares like with like.
             solveContentComponents(phiAttached);
-            advectRuptureLabel(phiAttached);
-            // AFTER the content: the rupture label is corrected with the
-            // content's FCT limiter, which solveContentComponents() sets.
         }
         else
         {
@@ -13158,11 +8623,10 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePhaseField()
             // -- which is why this is a report rather than a FatalError. It
             // marks the history UNASSESSABLE instead of killing a paid
             // session over a path these children do not use.
-            if (contentModel_)
             {
                 Info<< "PHASE_CLOT_CONTENT_NOT_ADVECTED time="
                     << runTime.userTimeValue()
-                    << " operator=" << contentOperator_
+                    << " operator=content"
                     << " reason=noCarrier" << endl;
             }
         }
@@ -13195,50 +8659,13 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePhaseField()
     // A COMMIT IS EXPLICIT, NEVER INFERRED FROM THE LAST FLOATING-POINT TIME.
     // The default path still commits on its sole first-outer visit. The
     // experimental outer path commits only its final PIMPLE trial.
-    if
-    (
-        plateletContentModel_
-     && (!plateletOuterTransactions_ || pimple.finalIter())
-    )
     {
-        if (plateletOuterForceReject_)
-        {
-            thetaC_ = thetaCStepAccepted_();
-            thetaH_ = thetaHStepAccepted_();
-            nP_ = nPStepAccepted_();
-            thetaC_.correctBoundaryConditions();
-            thetaH_.correctBoundaryConditions();
-            nP_.correctBoundaryConditions();
-            // S10: the reference rolls back with the content it references.
-            if (thetaNetRefStepAccepted_.valid())
-            {
-                thetaNetRef_ = thetaNetRefStepAccepted_();
-                thetaNetRef_.correctBoundaryConditions();
-            }
-            // S16 C: and so does the damage partition (Change 4).
-            restoreDamagePartition("forced roll-back");
-            epsP_ = scalar(1) - (thetaC_ + thetaH_);
-            epsP_.correctBoundaryConditions();
-            NP_ = epsP_*nP_;
-            NP_.correctBoundaryConditions();
-
-            Info<< "PHASE_CLOT_FREEPLATELET_ROLLBACK"
-                << " time=" << runTime.userTimeValue()
-                << " step=" << runTime.timeIndex()
-                << " attempt=" << plateletAttempt_
-                << " outer=" << plateletOuter_
-                << " trials=" << (plateletOuter_ + 1)*nPhaseCorrectors_
-                << " restored=1"
-                << " reason=forcedGate"
-                << endl;
-        }
-        else
         {
             Info<< "PHASE_CLOT_FREEPLATELET_COMMIT"
             << " time=" << runTime.userTimeValue()
             << " step=" << runTime.timeIndex()
             << " attempt=" << plateletAttempt_
-            << " outer=" << plateletOuter_
+            << " outer=" << 0
             << " phase=" << (nPhaseCorrectors_ - 1)
             << " trials=" << nPhaseCorrectors_
             << " committed=1"
@@ -13254,11 +8681,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveContentComponents
     const surfaceScalarField& carrier
 )
 {
-    if (!contentModel_)
-    {
-        return;
-    }
-
     // CONSERVATIVE, NOT BOUNDED, AND NOT THE MATERIAL FORM.
     //
     // A volume fraction is content PER TOTAL VOLUME, so the balance is
@@ -13331,20 +8753,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveContentComponents
     // and the second-order part is the limited correction applied after the
     // solves below. So "upwind" and "fct" assemble identically here.
     tmp<surfaceScalarField> tContentWeights;
-    if (contentTransportScheme_ == "limitedLinear")
-    {
-        const volScalarField thetaLimiterBase
-        (
-            "thetaLimiterBase", thetaC_ + thetaH_
-        );
-        IStringStream limiterSpec("limitedLinear 1");
-        tContentWeights =
-            surfaceInterpolationScheme<scalar>::New
-            (
-                mesh, carrier, limiterSpec
-            )().weights(thetaLimiterBase);
-    }
-    else
     {
         tContentWeights = upwind<scalar>(mesh, carrier).weights();
     }
@@ -13469,7 +8877,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveContentComponents
     // identical term for term and theta - thetaNetRef_ stays exactly where
     // it started; where the network compacts theta rises and this does not.
     // Same operator spelling as phaseSharedConvection() uses for a label.
-    if (networkPressureReference_ == "deposited")
     {
         fvScalarMatrix thetaNetRefEqn
         (
@@ -13492,10 +8899,8 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveContentComponents
     // theta's limiter: the contents' transport, the block after this one,
     // is package 2dd6246c's text, unchanged, so theta is bit-identical to
     // S15 at every step, before and after the first damage.
-    const bool partition = damageTransport_ == "contentPartition";
     tmp<volScalarField> tThetaLowP;
     tmp<surfaceScalarField> tATP;
-    if (partition)
     {
         fvScalarMatrix thetaIntactEqn
         (
@@ -13505,7 +8910,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveContentComponents
                 carrier, thetaIntact_, tContentWeights()
             )
         );
-        if (fibreArithmetic_ == "fieldUnits")
         {
             scaleToFieldUnits(thetaIntactEqn);
         }
@@ -13520,7 +8924,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveContentComponents
                 carrier, thetaPending_, tContentWeights()
             )
         );
-        if (fibreArithmetic_ == "fieldUnits")
         {
             scaleToFieldUnits(thetaPendingEqn);
         }
@@ -13535,7 +8938,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveContentComponents
                 carrier, thetaBroken_, tContentWeights()
             )
         );
-        if (fibreArithmetic_ == "fieldUnits")
         {
             scaleToFieldUnits(thetaBrokenEqn);
         }
@@ -13547,7 +8949,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveContentComponents
         // weights are upwind wherever the partition is allowed: limitedLinear
         // is refused), so C_B/thP and q_P/thP are convex combinations of the
         // donors' up to the linear solver's tolerance (08: <= 7.8e-6).
-        if (fibreRelease())
         {
             fvSymmTensorMatrix thetaPendingBEqn
             (
@@ -13562,7 +8963,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveContentComponents
                     )
                 ).fvmDiv(carrier, thetaPendingB_)
             );
-            if (fibreArithmetic_ == "fieldUnits")
             {
                 scaleToFieldUnits(thetaPendingBEqn);
             }
@@ -13577,7 +8977,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveContentComponents
                     carrier, thetaPendingP_, tContentWeights()
                 )
             );
-            if (fibreArithmetic_ == "fieldUnits")
             {
                 scaleToFieldUnits(thetaPendingPEqn);
             }
@@ -13588,7 +8987,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveContentComponents
             // arithmetic (field units under A2) and, refused otherwise, P2's
             // fixed-sweep solver entry, so theta_T <= P2 holds exactly after
             // it (06: same M-matrix, b_T <= b_P, monotone Gauss-Seidel).
-            if (fibreSlack_ == "v1")
             {
                 fvScalarMatrix thetaTautEqn
                 (
@@ -13598,7 +8996,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveContentComponents
                         carrier, thetaTaut_, tContentWeights()
                     )
                 );
-                if (fibreArithmetic_ == "fieldUnits")
                 {
                     scaleToFieldUnits(thetaTautEqn);
                 }
@@ -13607,7 +9004,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveContentComponents
             }
         }
 
-        if (contentTransportScheme_ == "fct")
         {
             // theta's low-order total and total antidiffusive flux, formed
             // by the SAME expressions the block below forms thetaLow and AT
@@ -13632,7 +9028,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveContentComponents
     // the equation its parts obey, and thetaNetRef moves with them exactly
     // where the carrier is divergence-free. The total is limited in its own
     // right as well, so theta itself creates no new extremum.
-    if (contentTransportScheme_ == "fct")
     {
         const volScalarField thetaLow("thetaLow", thetaC_ + thetaH_);
         const volScalarField thetaOld
@@ -13652,7 +9047,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveContentComponents
         lambda = min(lambda, fctLimiter(thetaLow, thetaOld, AT));
 
         tmp<surfaceScalarField> tAR;
-        if (networkPressureReference_ == "deposited")
         {
             tAR = fctAntidiffusiveFlux(carrier, thetaNetRef_);
             lambda = min
@@ -13704,8 +9098,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveContentComponents
             if (thetaC_[celli] < 0 || thetaH_[celli] < 0) { ++negAfter; }
             if
             (
-                networkPressureReference_ == "deposited"
-             && thetaNetRef_[celli] < 0
+                thetaNetRef_[celli] < 0
             )
             {
                 ++negAfter;
@@ -13737,7 +9130,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveContentComponents
     //         field units with the exact-zero convention (R1; lam_R1 L69-72,
     //         apply_R1 L75-77).
     // Non-negative by construction; a non-finite input is refused.
-    if (partition && contentTransportScheme_ == "fct")
     {
         const labelUList& own = mesh_.owner();
         const labelUList& nei = mesh_.neighbour();
@@ -13815,7 +9207,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveContentComponents
         // S17 A: THE FIBRE RIDES P2's C AND C+ FLUXES (12 section 1; 08/10:
         // q_P's flux is p_P of the donor times thP's limited flux). Seven
         // passengers: C_B's six components and q_P.
-        if (fibreRelease())
         {
             symmTensorField& cB = thetaPendingB_.primitiveFieldRef();
             scalarField& qP = thetaPendingP_.primitiveFieldRef();
@@ -13838,19 +9229,12 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveContentComponents
             // tautShare()'s A/B operation order (07: 0 raises in 352 491
             // kernel projections against 2401 shipped).
             const char* err =
-                cplusOrder_ == "shared"
-              ? damagePartitionKernel::passengersShared<scalar, label>
+                damagePartitionKernel::passengersShared<scalar, label>
                 (
                     nC, nF, own.cdata(), nei.cdata(), V.cdata(),
                     g.cdata(), fFace, sFU, Vrel.cdata(),
                     P2afterC.cdata(), Pnew[1].cdata(), muF, EF[1], 7,
                     XlowP, XnewP, projSiteLog_ ? &s18pKernelDbg_ : nullptr
-                )
-              : damagePartitionKernel::passengers<scalar, label>
-                (
-                    nC, nF, own.cdata(), nei.cdata(), V.cdata(),
-                    g.cdata(), fFace, sFU, Vrel.cdata(),
-                    P2afterC.cdata(), muF, EF[1], 7, XlowP, XnewP
                 );
             if (err)
             {
@@ -13869,7 +9253,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveContentComponents
             // S17b A1 (V1): the taut share rides P2's C and C+ fluxes with
             // the donor's taut fraction, theta_T <= P2 EXACT by the kernel's
             // monotone construction (damagePartitionKernel::tautShare).
-            if (fibreSlack_ == "v1")
             {
                 scalarField& tT = thetaTaut_.primitiveFieldRef();
                 const scalarField tLow(tT);
@@ -13898,7 +9281,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveContentComponents
     }
     // S16 C: ruptured_ = D/theta for every consumer of d; the partition is
     // checked (negative or non-finite is fatal), never bounded.
-    if (partition)
     {
         syncDamageFromPartition("content transport");
     }
@@ -13957,7 +9339,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveContentComponents
         << " thetaHNeg=" << negH
         << " contentVolume=" << contentAfter
         << " contentChange=" << (contentAfter - contentBefore)
-        << " operator=" << contentOperator_
+        << " operator=content"
         << " contentSourceDt=" << contentSourceDt
         << " kinetics=off"
         << endl;
@@ -13968,28 +9350,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::checkPlateletConfiguration()
 {
     // FAIL CLOSED. Every combination that could produce a plausible-looking
     // wrong answer is refused here rather than discovered in the fields.
-    if (!plateletContentModel_)
-    {
-        // A case that sets the parameters but forgets the switch would run
-        // the legacy model and silently report nothing. Say so.
-        if (phaseClotProperties_.found("plateletFluxConvention"))
-        {
-            Info<< "PHASE_CLOT_FREEPLATELET_OFF"
-                << " plateletFluxConvention is set but plateletContentModel"
-                << " is false -- no platelet equation is solved." << endl;
-        }
-        return;
-    }
-
-    if (!contentModel_)
-    {
-        FatalErrorInFunction
-            << "plateletContentModel requires contentModel true: the"
-            << " platelet porosity is eps = 1 - (thetaC + thetaH) and those"
-            << " fields are not solved with contentModel false."
-            << exit(FatalError);
-    }
-
     // THE DOUBLE-GROWTH COMBINATION. `matched` reproduces the legacy phase
     // equation INCLUDING its growth source; the accepted transfer below also
     // adds solid. Running both means two independent things deposit content
@@ -13998,23 +9358,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::checkPlateletConfiguration()
     // The double-growth refusal that stood here is subsumed: `matched` was
     // the only operator that carried the legacy growth source, and S6c-2
     // refuses it at construction.
-
-    if (plateletFluxConvention_ != "intrinsic"
-     && plateletFluxConvention_ != "superficial")
-    {
-        FatalErrorInFunction
-            << "plateletFluxConvention must be declared as `intrinsic` or"
-            << " `superficial`; found `" << plateletFluxConvention_ << "`."
-            << nl
-            << "  intrinsic   : carrier is u_f & Sf (F_eps = eps_f*carrier)."
-            << nl
-            << "  superficial : carrier is ALREADY eps*u_f & Sf."
-            << nl
-            << "There is no default. Advecting with the wrong one is an"
-            << " EXACT factor of eps -- 0.55x at eps = 0.55 -- and it is"
-            << " invisible in uniform fields."
-            << exit(FatalError);
-    }
 
     if (plateletDiffusivity_ < 0)
     {
@@ -14039,20 +9382,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::checkPlateletConfiguration()
             << exit(FatalError);
     }
 
-    // VALIDATED AGAINST AN EXPLICIT LIST, not lookupOrDefault's silence. A
-    // child whose manifest says "interface" but whose spelling slipped would
-    // otherwise run the unlocalised path and be read as a localiser that did
-    // not work -- the same trap contentOperator is validated against.
-    if (plateletBindLocalisation_ != "uniform"
-     && plateletBindLocalisation_ != "interface")
-    {
-        FatalErrorInFunction
-            << "plateletBindLocalisation must be 'uniform' or 'interface';"
-            << " found '" << plateletBindLocalisation_ << "'"
-            << exit(FatalError);
-    }
-
-    if (plateletBindLocalisation_ == "interface" && plateletAdhesionSpeed_ == 0)
+    if (plateletAdhesionSpeed_ == 0)
     {
         FatalErrorInFunction
             << "plateletBindLocalisation is 'interface' but"
@@ -14068,18 +9398,14 @@ void Foam::solvers::phaseClotAxisymmetricFluid::checkPlateletConfiguration()
     const bool specialised = (mag(plateletYield_ - vP_) <= 0);
 
     Info<< "PHASE_CLOT_FREEPLATELET_CONFIG"
-        << " fluxConvention=" << plateletFluxConvention_
         << " Deff=" << plateletDiffusivity_
         << " Y=" << plateletYield_
         << " vP=" << vP_
         << " yieldModel="
         << (specialised ? "platelet-equivalent(Y=vP)" : "independent-Y")
         << " lambda=" << plateletBindRate_
-        << " bindLocalisation=" << plateletBindLocalisation_
         << " adhesionSpeedSource="
-        << (plateletBindLocalisation_ != "interface"
-                ? "n/a"
-              : plateletAdhesionSpeed_ < 0
+        << (plateletAdhesionSpeed_ < 0
                 ? "reuse-adhesionSpeedEff"
                 : "dictionary")
         << " adhesionSpeed=" << plateletAdhesionSpeed_
@@ -14087,16 +9413,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::checkPlateletConfiguration()
         << " thetaMax=" << phiSMax_
         << endl;
 
-    if (plateletBindLocalisation_ == "uniform" && plateletBindRate_ > 0)
-    {
-        Info<< "PHASE_CLOT_FREEPLATELET_UNLOCALISED The accepted transfer is"
-            << " running with a UNIFORM rate, so it deposits in every cell,"
-            << " fastest where there is no clot (run 20260915-073208: 86.5%"
-            << " of deposition landed in >99% blood). This contradicts"
-            << " AM2020-phase-clot-v1 eq. (P). It is a consistency"
-            << " configuration only; NO morphology claim follows from it."
-            << endl;
-    }
 
     if (specialised)
     {
@@ -14118,11 +9434,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlateletContent
     const label phaseCorrector
 )
 {
-    if (!plateletContentModel_)
-    {
-        return;
-    }
-
     const scalar dt = runTime.deltaTValue();
     const dimensionedScalar deltaT("dt", dimTime, dt);
 
@@ -14165,18 +9476,13 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlateletContent
     // No claim follows that this content porosity already agrees with the
     // legacy momentum fractions: the volume residual below still measures it.
     surfaceScalarField carrier("plateletCarrier", suppliedCarrier);
-    if (twoVelocitySkeleton_)
     {
         carrier = phiFluidOwn_;
-        if (plateletFluxConvention_ == "superficial")
-        {
-            carrier *= fvc::interpolate(epsP_);
-        }
     }
 
     const tmp<surfaceScalarField> tFeps
     (
-        plateletContent::flux(plateletFluxConvention_, epsP_, carrier)
+        plateletContent::flux(word("intrinsic"), epsP_, carrier)
     );
     const surfaceScalarField& Feps = tFeps();
 
@@ -14303,8 +9609,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlateletContent
         zeroGradientFvPatchField<scalar>::typeName
     );
 
-    const bool localised = (plateletBindLocalisation_ == "interface");
-    if (localised)
     {
         const dimensionedScalar kFixed
         (
@@ -14323,13 +9627,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlateletContent
                     zeroGradientFvPatchField<scalar>::typeName
                 )
             );
-    }
-    else
-    {
-        bindRate == dimensionedScalar
-        (
-            "plateletBindRate", dimless/dimTime, plateletBindRate_
-        );
     }
     bindRate.correctBoundaryConditions();
 
@@ -14381,7 +9678,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlateletContent
     // deposit (new network is intact), so the pending fibre -- its content,
     // axis, stretch and tension -- is unchanged by it: nothing to mirror.
     tmp<volScalarField> tIntactShareBefore;
-    if (fibreRelease())
     {
         tIntactShareBefore = intactShare();
     }
@@ -14400,7 +9696,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlateletContent
     // and nothing else: d and d* are diluted by exactly the share it adds.
     // d itself (ruptured_) is re-derived after the stress-free mixing below,
     // which must read the PRE-deposit intact share.
-    if (damageTransport_ == "contentPartition")
     {
         const scalarField pIBefore(thetaIntact_.primitiveField());
         const scalarField& hNew = thetaH_.primitiveField();
@@ -14452,7 +9747,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlateletContent
     // taken from Y*dB would disagree with theta exactly when the cap bites.
     // Added to the reference as well as to theta, so deposition leaves
     // theta - thetaNetRef_ unchanged: growth is not compaction.
-    if (networkPressureReference_ == "deposited")
     {
         // S11 FIX 6: NEW NETWORK IS ALSO LAID DOWN STRESS-FREE.
         //
@@ -14465,7 +9759,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlateletContent
         // Removal (a negative increment) takes material of the cell's own
         // state and leaves be unchanged. Renormalised to det = 1 as
         // solveElasticStrain() does, so be stays isochoric between them.
-        if (beRelaxBasis_ == "networkAbsent")
         {
             const scalarField& r0 = thetaNetRef_.primitiveField();
             const scalarField& tN = thetaNew.primitiveField();
@@ -14485,29 +9778,22 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlateletContent
                     // ruptured fraction is diluted by exactly the share the
                     // deposit adds. With rupture off rIntact is r.
                     scalar rIntact = r;
-                    if (networkRupture_ != "off")
                     {
                         rIntact = r*(1.0 - ruptured_[celli]);
                         // S16 C: under contentPartition the deposit has
                         // already diluted d through thetaIntact_; diluting
                         // the label again here would count it twice.
-                        if (damageTransport_ != "contentPartition")
-                        {
-                            ruptured_[celli] *= r/(r + d);
-                        }
                         // S17 A, 09 rule 2: under fibreRelease the old
                         // strain is weighted by r (1 - d*) = r thI/S of the
                         // PRE-deposit partition, not r (1 - d). A deposit
                         // into a cell with no intact network leaves be = I
                         // exactly (G-dep).
-                        if (fibreRelease())
                         {
                             rIntact = r*tIntactShareBefore()[celli];
                         }
                     }
                     b[celli] =
                         (rIntact*b[celli] + d*symmTensor::I)/(rIntact + d);
-                    if (beDetRenormalise_)
                     {
                         const scalar dB = det(b[celli]);
                         if (!(dB > 0))
@@ -14566,7 +9852,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlateletContent
     //
     // The phase-field clip runs after this call and so sees the incremented
     // field, which is what it must.
-    if (phaseGrowthDriver_ == "transfer")
     {
         const volScalarField dTheta("dTheta", thetaNew - thetaStar);
 
@@ -14619,7 +9904,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlateletContent
     Info<< "PHASE_CLOT_FREEPLATELET time=" << runTime.userTimeValue()
         << " step=" << runTime.timeIndex()
         << " attempt=" << plateletAttempt_
-        << " outer=" << plateletOuter_
+        << " outer=" << 0
         << " phase=" << phaseCorrector
         << " nMin=" << gMin(nP_.primitiveField())
         << " nMax=" << gMax(nP_.primitiveField())
@@ -14633,7 +9918,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlateletContent
         << " boundaryOut=" << boundaryOut
         << " dBSum=" << dBSum
         << " pairMax=" << pairMax
-        << " bindLocalisation=" << plateletBindLocalisation_
+        << " bindLocalisation=interface"
         << " bindRateMax=" << bindRateMax
         << " bindRateClotFrac=" << bindRateClotFrac
         << " volResMax=" << volResMax
@@ -14643,7 +9928,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlateletContent
         << " capClamped=" << nCap
         << " Y=" << plateletYield_
         << " Deff=" << plateletDiffusivity_
-        << " convention=" << plateletFluxConvention_
+        << " convention=intrinsic"
         << " kinetics=" << (plateletTransportOnly_ ? "off" : "on")
         << " carrierMin=" << carrierMin
         << " carrierMax=" << carrierMax
@@ -14653,189 +9938,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlateletContent
         << " FepsMax=" << FepsMax
         << " FepsAbsSum=" << FepsAbsSum
         << " FepsBoundarySum=" << FepsBoundarySum
-        << endl;
-
-    // ---- 7. TEST-ONLY PER-FACE EVIDENCE ----
-    //
-    // Off unless the case asks for it, and deliberately a SEPARATE function.
-    // The evidence needs to read the supplied carrier and the skeleton flux;
-    // the wiring guard in scripts/check_platelet_fluid_carrier.py refuses
-    // either of those inside this function, because either one appearing
-    // here is indistinguishable from the defect the repair removed. Putting
-    // the archive behind a call keeps that refusal at full strength.
-    if (plateletCarrierArchive_)
-    {
-        archivePlateletCarrier(suppliedCarrier, carrier, Feps, phaseCorrector);
-    }
-}
-
-
-void Foam::solvers::phaseClotAxisymmetricFluid::archivePlateletCarrier
-(
-    const surfaceScalarField& suppliedCarrier,
-    const surfaceScalarField& carrier,
-    const surfaceScalarField& Feps,
-    const label phaseCorrector
-) const
-{
-    // TEST-ONLY. Writes what solvePlateletContent() actually consumed, once
-    // per phase corrector, so an offline assembler can rebuild
-    // ddt(eps,nP) + div(Feps,nP) from the solver's own arrays rather than
-    // from a case dictionary's declared ones.
-    //
-    // WHY A DUMP AND NOT A LOG LINE. The PHASE_CLOT_FREEPLATELET report
-    // carries min/max/absSum of the carrier and Feps. Those are reductions:
-    // they cannot distinguish a carrier that is right everywhere from one
-    // that is wrong on half the faces and compensating on the other half,
-    // and they cannot be fed to a discrete reference. The defect this exists
-    // to measure -- a MIXTURE flux supplied where a fluid-phase flux is
-    // required -- is a per-face identity, so the evidence is per-face.
-    //
-    // NOTHING IN THE SOLVER READS THESE BACK. NO_WRITE with an explicit
-    // write() is what keeps them evidence rather than state: a restart must
-    // not pick them up as fields to read.
-    const scalar dt = runTime.deltaTValue();
-    const word tag("_c" + Foam::name(phaseCorrector));
-
-    // Nothing here is a copy for its own sake. A surfaceScalarField
-    // constructed from another keeps the SOURCE's registered name, so
-    // writing it would put "phi" on disk under whatever name the
-    // registry already holds; the renaming constructor is what makes
-    // the file name the one this archive promises.
-    const surfaceScalarField supplied
-    (
-        IOobject
-        (
-            "plateletSupplied" + tag, runTime.name(), mesh,
-            IOobject::NO_READ, IOobject::NO_WRITE
-        ),
-        suppliedCarrier
-    );
-    supplied.write();
-
-    const surfaceScalarField selected
-    (
-        IOobject
-        (
-            "plateletCarrier" + tag, runTime.name(), mesh,
-            IOobject::NO_READ, IOobject::NO_WRITE
-        ),
-        carrier
-    );
-    selected.write();
-
-    const surfaceScalarField FepsOut
-    (
-        IOobject
-        (
-            "plateletFeps" + tag, runTime.name(), mesh,
-            IOobject::NO_READ, IOobject::NO_WRITE
-        ),
-        Feps
-    );
-    FepsOut.write();
-
-    // interpolate(eps) ON THE FACES, ARCHIVED RATHER THAN RECONSTRUCTED.
-    //
-    // The offline counterfactual -- what free platelets WOULD have done
-    // had the mixture flux been supplied -- is interpolate(eps)*supplied
-    // in the intrinsic convention. Dividing Feps by the carrier recovers
-    // interpolate(eps) only where the carrier is non-zero, and the faces
-    // where it vanishes are exactly the ones a wrong carrier can move.
-    // Archiving the factor keeps the counterfactual exact on every face
-    // instead of undefined on the interesting ones.
-    const surfaceScalarField epsFace
-    (
-        IOobject
-        (
-            "plateletEpsFace" + tag, runTime.name(), mesh,
-            IOobject::NO_READ, IOobject::NO_WRITE
-        ),
-        fvc::interpolate(epsP_)
-    );
-    epsFace.write();
-
-    const surfaceScalarField fluidOwn
-    (
-        IOobject
-        (
-            "plateletPhiFluidOwn" + tag, runTime.name(), mesh,
-            IOobject::NO_READ, IOobject::NO_WRITE
-        ),
-        phiFluidOwn_
-    );
-    fluidOwn.write();
-
-    const surfaceScalarField skelOwn
-    (
-        IOobject
-        (
-            "plateletPhiSkelOwn" + tag, runTime.name(), mesh,
-            IOobject::NO_READ, IOobject::NO_WRITE
-        ),
-        phiSkelOwn_
-    );
-    skelOwn.write();
-
-    // The porosity the transport rode is the TRIAL eps of this
-    // corrector, not the one on disk at the end of the step.
-    const volScalarField epsOut
-    (
-        IOobject
-        (
-            "plateletEps" + tag, runTime.name(), mesh,
-            IOobject::NO_READ, IOobject::NO_WRITE
-        ),
-        epsP_
-    );
-    epsOut.write();
-
-    // Both time levels of the storage. fvm::ddt(eps, nP) reads
-    // eps.oldTime() and nP.oldTime(); an assembler handed only the new
-    // values would have to guess them, and guessing the old state is
-    // how a reference ends up agreeing with the solver for the wrong
-    // reason.
-    const volScalarField nOut
-    (
-        IOobject
-        (
-            "plateletN" + tag, runTime.name(), mesh,
-            IOobject::NO_READ, IOobject::NO_WRITE
-        ),
-        nP_
-    );
-    nOut.write();
-
-    const volScalarField nOldOut
-    (
-        IOobject
-        (
-            "plateletNOld" + tag, runTime.name(), mesh,
-            IOobject::NO_READ, IOobject::NO_WRITE
-        ),
-        nP_.oldTime()
-    );
-    nOldOut.write();
-
-    const volScalarField epsOldOut
-    (
-        IOobject
-        (
-            "plateletEpsOld" + tag, runTime.name(), mesh,
-            IOobject::NO_READ, IOobject::NO_WRITE
-        ),
-        epsP_.oldTime()
-    );
-    epsOldOut.write();
-
-    Info<< "PHASE_CLOT_CARRIER_ARCHIVE"
-        << " time=" << runTime.name()
-        << " step=" << runTime.timeIndex()
-        << " phase=" << phaseCorrector
-        << " dt=" << dt
-        << " convention=" << plateletFluxConvention_
-        << " twoVelocity=" << Switch(twoVelocitySkeleton_)
-        << " fields=10"
         << endl;
 }
 
@@ -14981,7 +10083,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::advectMaterialLabel
             << " minShellDiagY=" << diagX.y()
             << " shellDiagNonPositive=" << nonPosAll
             << " shellDiagNonFinite=" << nonFiniteAll
-            << " carrierBlend=" << (materialCarrierBlend_ ? "ON" : "OFF")
+            << " carrierBlend=OFF"
             << nl;
 
         if (nonPosAll + nonFiniteAll > 0)
@@ -15194,7 +10296,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlatelets()
         fvc::interpolate(q_)*phi_
     );
 
-    if (plateletContentFormulation_)
     {
         // THE CONSERVED FORM. Section 3.4 of
         // research/designs/AM2020_platelet_content_formulation_derivation.md
@@ -15507,7 +10608,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlatelets()
             if
             (
                 contentFctLambda_.valid()
-             && phasePlateletFluxBasis_ == "content"
             )
             {
                 const surfaceScalarField AW(fctAntidiffusiveFlux(carrier, Wp_));
@@ -15723,446 +10823,10 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlatelets()
         w_ = Wp_/qEff;
         w_.correctBoundaryConditions();
     }
-    else if (plateletFluxConsistent_)
-    {
-        // The (Vn - U.n) counter-terms are already applied by the operators
-        // above and must not be applied a second time here.
-        //
-        //   fvm::ddt(q,w)          -> q*dw/dt + w*dq/dt = q*dw/dt - w*Vn*delta
-        //   div(qPhi,w) "bounded"  -> q*(U . grad w); boundedConvectionScheme
-        //                             ::fvmDiv already returns
-        //                             scheme.fvmDiv - fvm::Sp(fvc::surface
-        //                             Integrate(faceFlux), vf), i.e. it has
-        //                             ALREADY subtracted (U.n)*delta*w.
-        //
-        // So the +Vn in the old coefficient is cancelled by w*dq/dt, and the
-        // -U.n is a SECOND subtraction of a term the bounded scheme removed.
-        // What survives is a spurious source -delta*(U.n)*w. At the worst cell
-        // of run 20260808-001811 that is delta*(U.n) = 2215*8.77e-3 = 19.4 1/s
-        // against an assembled coefficient of -20.378833 1/s: essentially the
-        // whole of it.
-        //
-        // The physically intended sink is delta*k alone, which is non-negative
-        // because adhesionSpeed_ is, so the diagonal cannot lose dominance.
-        // Derivation: research/designs/
-        // AM2020_platelet_flux_consistency_derivation.md
-        //
-        // REQUIRES the bounded convection scheme for div(qPhi,w); this is
-        // checked at construction. With an unbounded scheme the (U.n)*delta
-        // term would not be removed at all and this branch would be wrong.
-        solve
-        (
-            fvm::ddt(q_, w_)
-          + fvm::div(qPhi, w_)
-          - fvm::laplacian(qEff*D_, w_)
-          + fvm::Sp(interfaceDelta_*adhesionSpeedEff_, w_)
-         ==
-            zero()
-        );
-    }
-    else
-    {
-        // partial_t(qw) + div(q(Uw-D grad w))
-        // + delta_Gamma*(k+Vn-U.n)*w = 0
-        solve
-        (
-            fvm::ddt(q_, w_)
-          + fvm::div(qPhi, w_)
-          - fvm::laplacian(qEff*D_, w_)
-         + fvm::Sp(surfaceLossCoeff_, w_)
-         ==
-            zero()
-        );
-    }
     w_.correctBoundaryConditions();
 
-    if
-    (
-        operatorAudit_
-     && operatorAuditEvery_ > 0
-     &&
-        (
-            runTime.timeIndex() % operatorAuditEvery_ == 0
-         || runTime.writeTime()
-        )
-    )
-    {
-        writePlateletOperatorAudit(qEff, qPhi);
-    }
 }
 
-
-namespace
-{
-
-Foam::scalar writeOperatorAuditTerm
-(
-    const Foam::word& term,
-    const Foam::fvScalarMatrix& matrix,
-    const Foam::volScalarField& field,
-    const Foam::Time& runTime
-)
-{
-    // fvMatrix::residual() is not valid for v13 diagonal-only matrices such
-    // as fvm::ddt and fvm::Sp: it unconditionally asks the ldu matrix for
-    // upper/lower coefficients that were never allocated.  The public
-    // fvMatrix application operator works for both diagonal-only and coupled
-    // matrices.  It returns (A*w - source)/V, i.e. a signed equation
-    // imbalance density.  Integrating that field supplies comparable scalar
-    // term metrics without modifying the solved equation.
-    const Foam::tmp<Foam::volScalarField> tResidualDensity
-    (
-        matrix & field.internalField()
-    );
-    const Foam::scalarField& residualDensity =
-        tResidualDensity().internalField();
-    const auto& cellVolumes = field.mesh().V();
-    Foam::scalar signedResidual = 0;
-    Foam::scalar absoluteResidual = 0;
-
-    forAll(residualDensity, celli)
-    {
-        signedResidual += residualDensity[celli]*cellVolumes[celli];
-        absoluteResidual +=
-            Foam::mag(residualDensity[celli])*cellVolumes[celli];
-    }
-
-    signedResidual = Foam::returnReduce
-    (
-        signedResidual,
-        Foam::sumOp<Foam::scalar>()
-    );
-    absoluteResidual = Foam::returnReduce
-    (
-        absoluteResidual,
-        Foam::sumOp<Foam::scalar>()
-    );
-
-    Foam::Info<< "PHASE_CLOT_OPERATOR_TERM"
-        << " time=" << runTime.name()
-        << " term=" << term
-        << " signedResidual=" << signedResidual
-        << " absResidual=" << absoluteResidual
-        << " minResidual=" << Foam::gMin(residualDensity)
-        << " maxResidual=" << Foam::gMax(residualDensity)
-        << " residualKind=volumeIntegratedEquationImbalance"
-        << Foam::nl;
-
-    return absoluteResidual;
-}
-
-
-Foam::label operatorLocalisationBand(const Foam::scalar q)
-{
-    if (q < 0.05)
-    {
-        return 0;
-    }
-    if (q < 0.5)
-    {
-        return 1;
-    }
-    if (q < 0.95)
-    {
-        return 2;
-    }
-    return 3;
-}
-
-
-void writeOperatorLocalisationTerm
-(
-    const Foam::word& term,
-    const Foam::fvScalarMatrix& matrix,
-    const Foam::volScalarField& field,
-    const Foam::volScalarField& q,
-    const Foam::Time& runTime
-)
-{
-    const Foam::tmp<Foam::volScalarField> tResidualDensity
-    (
-        matrix & field.internalField()
-    );
-    const Foam::scalarField& residualDensity =
-        tResidualDensity().internalField();
-    const auto& cellVolumes = field.mesh().V();
-    const Foam::vectorField& cellCentres =
-        field.mesh().C().primitiveField();
-    const Foam::scalarField& qValues = q.primitiveField();
-    const Foam::scalarField& fieldValues = field.primitiveField();
-
-    Foam::scalarField bandSigned(4, 0);
-    Foam::scalarField bandAbsolute(4, 0);
-    Foam::scalarField bandVolume(4, 0);
-    Foam::labelList bandCells(4, 0);
-    Foam::scalar peakAbsolute = -Foam::GREAT;
-    Foam::label peakCell = -1;
-
-    forAll(residualDensity, celli)
-    {
-        const Foam::label bandi = operatorLocalisationBand(qValues[celli]);
-        const Foam::scalar weighted =
-            residualDensity[celli]*cellVolumes[celli];
-        bandSigned[bandi] += weighted;
-        bandAbsolute[bandi] += Foam::mag(weighted);
-        bandVolume[bandi] += cellVolumes[celli];
-        bandCells[bandi] += 1;
-
-        if (Foam::mag(residualDensity[celli]) > peakAbsolute)
-        {
-            peakAbsolute = Foam::mag(residualDensity[celli]);
-            peakCell = celli;
-        }
-    }
-
-    static const char* const bandNames[4] =
-    {
-        "clotCore",
-        "clotSideInterface",
-        "fluidSideInterface",
-        "fluidCore"
-    };
-
-    for (Foam::label bandi = 0; bandi < 4; ++bandi)
-    {
-        Foam::Info<< "PHASE_CLOT_OPERATOR_BAND"
-            << " time=" << runTime.name()
-            << " term=" << term
-            << " band=" << bandNames[bandi]
-            << " cellCount=" << bandCells[bandi]
-            << " volume=" << bandVolume[bandi]
-            << " signedResidual=" << bandSigned[bandi]
-            << " absResidual=" << bandAbsolute[bandi]
-            << Foam::nl;
-    }
-
-    if (peakCell < 0)
-    {
-        FatalErrorInFunction
-            << "No cells are available for operator localisation"
-            << Foam::exit(Foam::FatalError);
-    }
-
-    const Foam::vector& peakCentre = cellCentres[peakCell];
-    Foam::Info<< "PHASE_CLOT_OPERATOR_PEAK"
-        << " time=" << runTime.name()
-        << " term=" << term
-        << " cell=" << peakCell
-        << " absResidualDensity=" << peakAbsolute
-        << " signedResidualDensity=" << residualDensity[peakCell]
-        << " q=" << qValues[peakCell]
-        << " c=" << 2*qValues[peakCell] - 1
-        << " w=" << fieldValues[peakCell]
-        << " x=" << peakCentre.x()
-        << " y=" << peakCentre.y()
-        << " z=" << peakCentre.z()
-        << Foam::nl;
-}
-
-
-void writePlateletMinimumLocation
-(
-    const Foam::volScalarField& w,
-    const Foam::volScalarField& q,
-    const Foam::volScalarField& interfaceDelta,
-    const Foam::volVectorField& U,
-    const Foam::Time& runTime
-)
-{
-    const Foam::scalarField& wValues = w.primitiveField();
-    const Foam::scalarField& qValues = q.primitiveField();
-    const Foam::scalarField& deltaValues = interfaceDelta.primitiveField();
-    const Foam::vectorField& velocityValues = U.primitiveField();
-    const Foam::vectorField& cellCentres = w.mesh().C().primitiveField();
-    Foam::scalar minimum = Foam::GREAT;
-    Foam::label minimumCell = -1;
-
-    forAll(wValues, celli)
-    {
-        if (wValues[celli] < minimum)
-        {
-            minimum = wValues[celli];
-            minimumCell = celli;
-        }
-    }
-
-    if (minimumCell < 0)
-    {
-        FatalErrorInFunction
-            << "No cells are available for platelet-minimum localisation"
-            << Foam::exit(Foam::FatalError);
-    }
-
-    const Foam::vector& centre = cellCentres[minimumCell];
-    Foam::Info<< "PHASE_CLOT_W_MINIMUM"
-        << " time=" << runTime.name()
-        << " cell=" << minimumCell
-        << " w=" << minimum
-        << " q=" << qValues[minimumCell]
-        << " c=" << 2*qValues[minimumCell] - 1
-        << " interfaceDelta=" << deltaValues[minimumCell]
-        << " Ux=" << velocityValues[minimumCell].x()
-        << " x=" << centre.x()
-        << " y=" << centre.y()
-        << " z=" << centre.z()
-        << Foam::nl;
-}
-
-}
-
-
-void Foam::solvers::phaseClotAxisymmetricFluid::writePlateletOperatorAudit
-(
-    const volScalarField& qEff,
-    const surfaceScalarField& qPhi
-)
-{
-    // Reassemble the same finite-volume operators after the platelet solve
-    // and evaluate their matrix residuals at the solved w. This is diagnostic
-    // only: it does not alter the assembled equation or the solution.
-    const volScalarField adhesionCoeff(interfaceDelta_*adhesionSpeedEff_);
-    const volScalarField interfaceSpeedCoeff(interfaceDelta_*Vn_);
-    const volScalarField relativeMotionCoeff
-    (
-        -interfaceDelta_*(U_ & normal_)
-    );
-    const volScalarField qFloorExtension(max(qFloor_ - q_, scalar(0)));
-
-    const fvScalarMatrix storageMatrix(fvm::ddt(q_, w_));
-    const fvScalarMatrix transportMatrix(fvm::div(qPhi, w_));
-    const fvScalarMatrix diffusionMatrix(-fvm::laplacian(qEff*D_, w_));
-    const fvScalarMatrix surfaceMatrix(fvm::Sp(surfaceLossCoeff_, w_));
-    const fvScalarMatrix adhesionMatrix(fvm::Sp(adhesionCoeff, w_));
-    const fvScalarMatrix interfaceSpeedMatrix
-    (
-        fvm::Sp(interfaceSpeedCoeff, w_)
-    );
-    const fvScalarMatrix relativeMotionMatrix
-    (
-        fvm::Sp(relativeMotionCoeff, w_)
-    );
-    const fvScalarMatrix qFloorExtensionMatrix
-    (
-        -fvm::laplacian(qFloorExtension*D_, w_)
-    );
-    const fvScalarMatrix fullMatrix
-    (
-        fvm::ddt(q_, w_)
-      + fvm::div(qPhi, w_)
-      - fvm::laplacian(qEff*D_, w_)
-      + fvm::Sp(surfaceLossCoeff_, w_)
-    );
-
-    const scalar storageAbs =
-        writeOperatorAuditTerm("storage", storageMatrix, w_, runTime);
-    const scalar transportAbs =
-        writeOperatorAuditTerm("qPhiTransport", transportMatrix, w_, runTime);
-    const scalar diffusionAbs =
-        writeOperatorAuditTerm("qEffDiffusion", diffusionMatrix, w_, runTime);
-    const scalar surfaceAbs =
-        writeOperatorAuditTerm("surfaceLoss", surfaceMatrix, w_, runTime);
-    const scalar adhesionAbs =
-        writeOperatorAuditTerm("adhesion", adhesionMatrix, w_, runTime);
-    const scalar interfaceSpeedAbs =
-        writeOperatorAuditTerm
-        (
-            "interfaceSpeed",
-            interfaceSpeedMatrix,
-            w_,
-            runTime
-        );
-    const scalar relativeMotionAbs =
-        writeOperatorAuditTerm
-        (
-            "relativeMotion",
-            relativeMotionMatrix,
-            w_,
-            runTime
-        );
-    const scalar qFloorExtensionAbs =
-        writeOperatorAuditTerm
-        (
-            "qFloorDiffusionExtension",
-            qFloorExtensionMatrix,
-            w_,
-            runTime
-        );
-    const scalar fullAbs =
-        writeOperatorAuditTerm("fullEquation", fullMatrix, w_, runTime);
-    const scalar componentsAbs =
-        storageAbs + transportAbs + diffusionAbs + surfaceAbs;
-
-    Info<< "PHASE_CLOT_OPERATOR_SUMMARY"
-        << " time=" << runTime.name()
-        << " componentAbs=" << componentsAbs
-        << " fullAbs=" << fullAbs
-        << " fullRelative=" << fullAbs/max(componentsAbs, SMALL)
-        << " adhesionAbs=" << adhesionAbs
-        << " interfaceSpeedAbs=" << interfaceSpeedAbs
-        << " relativeMotionAbs=" << relativeMotionAbs
-        << " qFloorExtensionAbs=" << qFloorExtensionAbs
-        << nl;
-
-    if (operatorLocalisationAudit_)
-    {
-        if (Pstream::parRun())
-        {
-            FatalErrorInFunction
-                << "operatorLocalisationAudit is serial-only because it "
-                << "records exact peak-cell coordinates"
-                << exit(FatalError);
-        }
-
-        writeOperatorLocalisationTerm
-        (
-            "storage",
-            storageMatrix,
-            w_,
-            q_,
-            runTime
-        );
-        writeOperatorLocalisationTerm
-        (
-            "qPhiTransport",
-            transportMatrix,
-            w_,
-            q_,
-            runTime
-        );
-        writeOperatorLocalisationTerm
-        (
-            "qEffDiffusion",
-            diffusionMatrix,
-            w_,
-            q_,
-            runTime
-        );
-        writeOperatorLocalisationTerm
-        (
-            "surfaceLoss",
-            surfaceMatrix,
-            w_,
-            q_,
-            runTime
-        );
-        writeOperatorLocalisationTerm
-        (
-            "fullEquation",
-            fullMatrix,
-            w_,
-            q_,
-            runTime
-        );
-        writePlateletMinimumLocation
-        (
-            w_,
-            q_,
-            interfaceDelta_,
-            U_,
-            runTime
-        );
-    }
-}
 
 
 Foam::scalar Foam::solvers::phaseClotAxisymmetricFluid::maxDeltaT() const
@@ -16198,7 +10862,6 @@ Foam::scalar Foam::solvers::phaseClotAxisymmetricFluid::maxDeltaT() const
     // its increment carries no information the fluid limit does not already
     // have, and reading dt off it would resurrect the feedback loop for
     // nothing.
-    if (eulerianSolid_)
     {
         if (elasticCourant_ > 0)
         {
@@ -16259,7 +10922,6 @@ Foam::scalar Foam::solvers::phaseClotAxisymmetricFluid::maxDeltaT() const
         // 0.5; and the compact network pressure's diffusion number, held
         // under the 2-D explicit limit. Both are numerical-stability bounds
         // on dt for explicit terms; neither touches a field.
-        if (explicitStabilityBounds_ == "on" && twoVelocitySkeleton_)
         {
             const scalarField sumPhi
             (
@@ -16282,463 +10944,6 @@ Foam::scalar Foam::solvers::phaseClotAxisymmetricFluid::maxDeltaT() const
         return dt;
     }
 
-    if (materialCourant_ > 0 && clotMechanics_ && phaseFieldMaterialVelocity_)
-    {
-        // Same pairing as solvePhaseField(): the increment divided by the
-        // dt it actually spans. Using runTime.deltaT() here would reintroduce
-        // the feedback loop from the other side.
-        // WHICH VELOCITY ACTUALLY ADVECTS THE PHASE FIELD.
-        //
-        // Run 20260904-214345 crashed (SIGFPE, t = 0.0098 of 0.03) because
-        // this limiter read (Us_ - UsPrev_)/dt -- the PARTITIONED path's
-        // skeleton velocity -- while the phase field was being carried by
-        // Vs_. On the Eulerian path Us_ is written by
-        // solvePassiveDisplacement() and is a DIAGNOSTIC; it roughly tracks
-        // the fluid, so the limiter bounded a velocity nothing was advecting
-        // with and was inert. At the crashing step the fluid Courant was
-        // 0.102 against maxCo 0.5 -- comfortable -- while the material
-        // Courant on Vs_ was 92.06*1.664e-06/7.143e-07 = 214.
-        //
-        // A limiter that watches the wrong field is not a weaker limiter, it
-        // is no limiter, and it fails silently.
-        scalar vsPeak = 0;
-        if (twoVelocitySkeleton_)
-        {
-            vsPeak = gMax(mag(Vs_.primitiveField()));
-        }
-        else
-        {
-            const volVectorField vs
-            (
-                (Us_ - UsPrev_)
-               /dimensionedScalar("dtIncrement", dimTime, deltaTIncrement_)
-            );
-            vsPeak = gMax(mag(vs.primitiveField()));
-        }
-
-        // Same length scale as the vsCourant diagnostic, so the number the
-        // log prints and the number the limiter acts on cannot disagree.
-        const scalar hMin =
-            max(Foam::pow(gMin(mesh.V()), 1.0/3.0), vSmall);
-
-        if (vsPeak > vSmall)
-        {
-            const scalar dtMaterial = materialCourant_*hMin/vsPeak;
-
-            // THE FLOOR, AND WHY IT IS NOT A CONVENIENCE.
-            //
-            // v_s = (Us - UsPrev)/dt. If the skeleton settles, the increment
-            // shrinks with dt and v_s is a velocity. If it OSCILLATES, the
-            // increment does not shrink, so halving dt doubles the apparent
-            // v_s, which halves dt again. The limiter then feeds on itself.
-            //
-            // Run 20260815-191231 did exactly that: v_s went 0.19 -> 386 m/s
-            // -- 46000x the mean blood velocity -- and dt collapsed to
-            // 1.296e-9, at which 0.02 s needs 1.5e7 steps. The run was not
-            // slow, it was stalled, and nothing said so: no divergence, no
-            // terminal, every step reporting converged=true. A limiter that
-            // turns an instability into a silent stall is worse than the
-            // crash it replaced.
-            //
-            // So the limiter may not drive dt below this floor. Being pinned
-            // there is itself reported, and sustained pinning stops the run.
-            dt = min(dt, max(dtMaterial, materialDeltaTMin_));
-        }
-    }
-
-    // THE BIHARMONIC LIMIT, WHICH WAS ABSENT AND IS THE DANGEROUS KIND OF
-    // ABSENT.
-    //
-    // The Cahn-Hilliard term is spelled fvc::laplacian(mobility, muC) -- an
-    // EXPLICIT laplacian of muC, which itself contains laplacian(c). That is a
-    // fourth-order explicit operator with the stability limit
-    //     dt <= C h^4 / M,     C ~ 1/16 in 2-D.
-    // Before this, maxDeltaT() contained no reference to mobility_ at all, so
-    // raising M did not shorten dt. It produced an unstable or silently wrong
-    // c field with nothing in the log to say so -- the same class of failure as
-    // the material-Courant stall above, and the reason the 2026-08-26 review
-    // REFUSED Cahn-Hilliard as a configuration change rather than shipping it.
-    //
-    // MEASURED, 2026-08-27: cases/AM2020_axisymmetric_pipe carries
-    // mobility 1e-13 with deltaT 1e-5 and adjustTimeStep no. Its mesh is
-    // 0.01 m over 80x40, h ~ 2.5e-5 m, so the bound is 1.2e-7 to 2.4e-7 s --
-    // the case runs 41-82x over it. (AM2020_paper_cylinder_coarse also carries
-    // 1e-13 but its h ~ 5e-4 m puts the bound at 0.02-0.04 s, comfortably
-    // inside; it was wrongly flagged alongside the pipe and is not affected.)
-    //
-    // S6c-2: THE BIHARMONIC BOUND WENT WITH THE MOBILITY. The Cahn-Hilliard
-    // term laplacian(mobility, muC) is a fourth-order operator with an
-    // explicit dt ~ h^4/M stability limit, and this guard bounded it. Both
-    // mobility and muC are deleted, and a nonzero `mobility` in a case
-    // dictionary is REFUSED at construction rather than silently ignored --
-    // which is the only reason it is safe to drop the bound rather than
-    // keep it computing against a field that no longer exists.
-
-    return dt;
-}
-
-
-void Foam::solvers::phaseClotAxisymmetricFluid::registerSkeletonDivergence()
-{
-    // Called once per timestep, AFTER the staggered loop has finished with
-    // whatever state it reached. Its job is to decide whether the run can
-    // continue, which is the decision nothing was making before.
-    //
-    // A single diverged step is tolerated: the fixed point can be knocked off
-    // by one badly-sized timestep and recover on the next. A SUSTAINED
-    // divergence cannot recover, because each step starts from the previous
-    // step's diverged displacement. Run 20260814-224138 was continuously
-    // diverged from t = 6.67e-4 s until it overflowed -- 107 reports across
-    // roughly 15% of the steps it ran -- and every one of them was ignored.
-    // A STALLED TIMESTEP IS A FAILURE, NOT A SLOW RUN.
-    //
-    // Counted here because this function already runs exactly once per step.
-    // The floor in maxDeltaT() stops the feedback loop from driving dt to
-    // zero; this stops the run from grinding on at a dt that will never
-    // finish. Both are needed: the floor alone would just pin dt at 1e-8 and
-    // keep going for a week.
-    if (materialCourant_ > 0 && phaseFieldMaterialVelocity_)
-    {
-        if (runTime.deltaTValue() <= 1.001*materialDeltaTMin_)
-        {
-            ++materialFloorSteps_;
-
-            if (materialFloorSteps_ >= nMaterialFloorSteps_)
-            {
-                Info<< "PHASE_CLOT_SKELETON_TERMINAL time="
-                    << runTime.userTimeValue()
-                    << " reason=materialCourantStall"
-                    << " deltaT=" << runTime.deltaTValue()
-                    << " floor=" << materialDeltaTMin_
-                    << " steps=" << materialFloorSteps_
-                    << " -- the material velocity is driving the timestep to"
-                    << " zero; writing final state and ending the run" << endl;
-
-                const_cast<Time&>(runTime).writeAndEnd();
-                return;
-            }
-        }
-        else
-        {
-            materialFloorSteps_ = 0;
-        }
-    }
-
-    // A HARD FAILURE ENDS THE RUN AT ONCE. Non-finite state, a displacement
-    // past skeletonUsBound, or an inverted element are unambiguous -- no later
-    // corrector or timestep recovers from any of them -- so they do not get
-    // the consecutive-step tolerance that the residual test needs.
-    if (skeletonHardFailure_)
-    {
-        Info<< "PHASE_CLOT_SKELETON_TERMINAL time=" << runTime.userTimeValue()
-            << " reason=hardFailure"
-            << " UsPeak=" << gMax(mag(Us_.primitiveField()))
-            << " -- writing final state and ending the run" << endl;
-
-        const_cast<Time&>(runTime).writeAndEnd();
-        return;
-    }
-
-    // ONCE PER TIMESTEP, not once per call. In the strongly-coupled path this
-    // function is reached from solveMechanicsExchange(), which runs once per
-    // PIMPLE outer corrector -- up to 60 times a step in these cases.
-    //
-    // A step counts as diverged if ANY exchange within it diverged, so the
-    // flag is accumulated across the step and the step is judged when the
-    // next one begins. Judging on the first call of a step instead would miss
-    // a step whose first exchange was clean and whose thirtieth was not,
-    // which is the ordering divergence actually arrives in.
-    if (runTime.timeIndex() != divergenceTimeIndex_)
-    {
-        if (divergenceTimeIndex_ >= 0)
-        {
-            if (stepDiverged_)
-            {
-                ++skeletonDivergedSteps_;
-            }
-            else
-            {
-                skeletonDivergedSteps_ = 0;
-            }
-        }
-
-        divergenceTimeIndex_ = runTime.timeIndex();
-        stepDiverged_ = false;
-    }
-
-    stepDiverged_ = stepDiverged_ || skeletonDiverged_;
-
-    if (skeletonDivergedSteps_ < nSkeletonDivergedSteps_)
-    {
-        return;
-    }
-
-    // writeAndEnd(), not FatalError. The child must return its fields: a
-    // diverged run IS a measurement -- it says this constitutive model cannot
-    // carry this modulus at this shear rate -- and that measurement is only
-    // legible if the last finite state is on disk for the assessor to read.
-    // A fatal exit leaves the assessor with nothing but an exit code, which
-    // is what made the previous divergence indistinguishable from a crash.
-    Info<< "PHASE_CLOT_SKELETON_TERMINAL time=" << runTime.userTimeValue()
-        << " reason=sustainedDivergence"
-        << " divergedSteps=" << skeletonDivergedSteps_
-        << " UsPeak=" << gMax(mag(Us_.primitiveField()))
-        << " -- writing final state and ending the run" << endl;
-
-    // const_cast is required, not laziness: Foam::solvers::solver holds
-    // `const Time& runTime` (solver.H:105) while writeAndEnd() is non-const.
-    // The referent is the non-const Time that foamRun owns, so casting the
-    // constness away is defined; there is no other route to stopping the run
-    // from inside a solver module.
-    const_cast<Time&>(runTime).writeAndEnd();
-}
-
-
-void Foam::solvers::phaseClotAxisymmetricFluid::solveMechanicsExchange()
-{
-    // ONE SWEEP of the flow/skeleton fixed-point iteration.
-    //
-    // foamRun calls prePredictor() once per PIMPLE outer corrector, and
-    // momentumPredictor() and pressureCorrector() run after it, so calling
-    // this on EVERY outer iteration is exactly the partitioned Gauss-Seidel
-    // exchange being ITERATED rather than performed once. At convergence of
-    // that iteration the split has no influence on the answer: the result is
-    // the one a monolithic solve would give, and the relaxation factor drops
-    // out of it. THAT PROPERTY IS THE ENTIRE POINT - it is what makes the
-    // scheme defensible, and it is checkable by tightening fsiTolerance and
-    // seeing the answer not move.
-    //
-    // NOTE THE REQUIREMENT THIS PLACES ON THE CASE: with nOuterCorrectors 1
-    // there is no outer loop, this runs once, and the scheme degenerates to
-    // the loose one. The iteration count and residual are printed every step
-    // so that degeneration is visible rather than silent.
-    if (couplingConverged_ || couplingIters_ >= nFSICorrectors_)
-    {
-        // Converged, or the cap is reached. Re-solving would not improve the
-        // answer and the remaining outer iterations belong to the flow.
-        return;
-    }
-
-    // THE EULERIAN PATH HAS NO PARTITIONED EXCHANGE TO ITERATE.
-    //
-    // Everything below this block -- the Aitken relaxation, the residual, the
-    // staggered correctors, the sweep cap -- exists because the displacement
-    // skeleton and the flow are two fields solved in turn, and the split has
-    // to be iterated out. With a single velocity there is no split: be is
-    // advected by the same U the momentum equation solves for, and the stress
-    // it produces enters that equation directly. The PIMPLE outer loop is then
-    // the only iteration, which is what it was always supposed to be.
-    //
-    // Stage 0 measured what this loop cost: 5359 skeleton sweeps over 221
-    // steps, 77.3% of the wall clock.
-    //
-    // THE EULERIAN WORK IS NOT DONE HERE. It runs in prePredictor(), above the
-    // stronglyCoupledFSI_ split, because it belongs to neither coupling path.
-    // It was originally placed here, which meant it only ran when
-    // stronglyCoupledFSI_ was true -- a switch that defaults to false and that
-    // the degeneration guard forbids combining with nOuterCorrectors 1. The
-    // result was that solveElasticStrain() was never called at all.
-    //
-    // This is a hard guard rather than a comment because the caller at the end
-    // of prePredictor() already excludes eulerianSolid_, so reaching here in
-    // Eulerian mode means a NEW caller was added that does not know the work
-    // has been done. Advancing be twice in a step produces a smooth, plausible,
-    // wrong field, which is exactly the kind of error this project loses runs
-    // to; better to stop than to average two answers.
-    if (eulerianSolid_)
-    {
-        FatalErrorInFunction
-            << "solveMechanicsExchange() was reached with eulerianSolid on."
-            << nl
-            << "The Eulerian mechanics run in prePredictor(), outside the"
-            << " coupling split, and must not be advanced a second time here."
-            << exit(FatalError);
-    }
-
-    // NAMED COPIES. A plain `volVectorField UsInput(Us_)` copy-constructs with
-    // the registered name "Us" and puts a second object under that name in the
-    // registry; the renaming constructor is the correct idiom.
-    const volVectorField UsInput("UsInput", Us_);
-
-    // RESTORE THE IRREVERSIBLE STATE. solveDamage() applies
-    // H = max(H, psi+), a ratchet. Left alone inside the exchange it would
-    // accumulate the maximum over every TRIAL iterate rather than taking its
-    // value at the converged one, so the map being iterated would carry memory
-    // and its fixed point would depend on how many sweeps were taken. Same
-    // hazard as releaseDetachedMaterial(), which is already deferred to the end
-    // of the step; this is its sibling and was missed on the first pass.
-    H_ = HStep_;
-
-    // Third member of the same family: the adhesive bond is irreversible too.
-    restoreWallBonds();
-
-    for (label stag = 0; stag < nStaggeredCorrectors_; ++stag)
-    {
-        solveSkeleton();
-
-        // Same rule as the loose path: never iterate on a diverged state.
-        if (skeletonDiverged_)
-        {
-            break;
-        }
-
-        solveDamage();
-    }
-    registerSkeletonDivergence();
-
-    // r = (output of the exchange) - (input to it): the fixed-point residual.
-    // Convergence is measured on it and Aitken accelerates it.
-    const volVectorField r("fsiExchangeResidual", Us_ - UsInput);
-
-    if (fsiAitken_ && couplingIters_ > 0)
-    {
-        // Aitken's Delta^2, the standard accelerator for partitioned FSI:
-        //   omega_{k+1} = -omega_k * (r_{k-1} . (r_k - r_{k-1})) / |r_k - r_{k-1}|^2
-        // It is a CONVERGENCE ACCELERATOR, not a physical parameter - at
-        // convergence r -> 0 and the factor has no effect on the answer, which
-        // is the property that makes this scheme quotable.
-        // Unweighted cell sums; the meshes here are uniform, and a volume
-        // weighting would change the RATE but not the fixed point.
-        const vectorField& rPrev = fsiResidual_.primitiveField();
-        const vectorField& rNow = r.primitiveField();
-        const vectorField dr(rNow - rPrev);
-        const scalarField drMagSqr(magSqr(dr));
-        const scalarField rPrevDotDr(rPrev & dr);
-        const scalar den = gSum(drMagSqr);
-
-        if (den > vSmall)
-        {
-            fsiOmega_ = -fsiOmega_*gSum(rPrevDotDr)/den;
-            fsiOmega_ = max(min(fsiOmega_, fsiOmegaMax_), fsiOmegaMin_);
-        }
-    }
-    else
-    {
-        fsiOmega_ = fsiRelaxation_;
-    }
-
-    Us_ = UsInput + fsiOmega_*r;
-    Us_.correctBoundaryConditions();
-    fsiResidual_ = r;
-
-    // Relative infinity-norm residual. Reported, never assumed.
-    const scalar rInf = gMax(mag(r.primitiveField()));
-    const scalar uInf = gMax(mag(Us_.primitiveField()));
-    couplingResidual_ = rInf/max(uInf, small);
-    ++couplingIters_;
-    if (couplingIters_ == 1)
-    {
-        couplingResidual0_ = couplingResidual_;
-    }
-
-    if (couplingResidual_ < fsiTolerance_)
-    {
-        couplingConverged_ = true;
-    }
-
-    // One line per SWEEP, not per step. Off by default: it multiplies the log
-    // by the sweep count, and every gate passed so far was assessed from the
-    // per-step summary alone. Purely diagnostic - nothing below reads it, so
-    // enabling it cannot change a result.
-    if (fsiSweepTrace_)
-    {
-        const vectorField& residualValues = r.primitiveField();
-        const scalarField& cellVolumes = mesh_.V();
-        const scalarField& cellFluidFraction = q_.primitiveField();
-        // S6c-2: THE PHASE INDICATOR, NOT c. c = 1 - 2*ind exactly,
-        // so every threshold below is the same threshold restated:
-        // c < L becomes ind > (1 - L)/2, and the inequality turns
-        // over with it. Same cells, named in the surviving field.
-        const volScalarField indHoldCell(phaseIndicator());
-        const scalarField& cellInd = indHoldCell.primitiveField();
-        const vectorField& cellCentres = mesh_.C().primitiveField();
-        const scalar totalVolume = gSum(cellVolumes);
-        const scalar residualL2 =
-            sqrt
-            (
-                gSum(cellVolumes*magSqr(residualValues))
-               /max(totalVolume, small)
-            );
-        const scalar residualL2Relative = residualL2/max(uInf, small);
-        const scalar residualL2OverInf =
-            residualL2Relative/max(couplingResidual_, small);
-        const scalar threshold = fsiNormProbeFraction_*rInf;
-        label cellsAboveThreshold = 0;
-        label maxCell = -1;
-        scalar maxMagnitude = -1;
-
-        forAll(residualValues, celli)
-        {
-            const scalar magnitude = mag(residualValues[celli]);
-            if (magnitude >= threshold)
-            {
-                ++cellsAboveThreshold;
-            }
-            if (magnitude > maxMagnitude)
-            {
-                maxMagnitude = magnitude;
-                maxCell = celli;
-            }
-        }
-
-        const label nCells = residualValues.size();
-        const scalar cellsFromRatio =
-            nCells*sqr(residualL2OverInf);
-        const scalar maxCellPhase =
-            maxCell >= 0 ? cellInd[maxCell] : scalar(0);
-        const scalar maxCellFluidFraction =
-            maxCell >= 0 ? cellFluidFraction[maxCell] : scalar(0);
-        const vector maxCellCentre =
-            maxCell >= 0 ? cellCentres[maxCell] : vector::zero;
-
-        Info<< "PHASE_CLOT_FSI_SWEEP time=" << runTime.userTimeValue()
-            << " sweep=" << couplingIters_
-            << " residual=" << couplingResidual_
-            << " omega=" << fsiOmega_
-            // The INNER solve's exit state, on the same line as the OUTER
-            // residual it may be limiting. `skelIters` at nSkeletonCorrectors
-            // means that loop TRUNCATED rather than converged, so the map this
-            // sweep iterates is inexact.
-            << " skelIters=" << skeletonIters_
-            << " skelResidual=" << skeletonResidual_
-            // The volume-weighted RMS is a no-op on the uniform 120x15 mesh
-            // but remains well-defined for the planned 240x30 confirmation.
-            // Since the denominator is the same max(|Us|) as the L-infinity
-            // residual, L2/Linf estimates the participating-cell count.
-            << " l2Residual=" << residualL2Relative
-            << " l2OverInf=" << residualL2OverInf
-            << " mFromRatio=" << cellsFromRatio
-            << " cellsAboveFraction=" << cellsAboveThreshold
-            << " normProbeFraction=" << fsiNormProbeFraction_
-            << " nCells=" << nCells
-            << " maxCell=" << maxCell
-            << " maxCellX=" << maxCellCentre.x()
-            << " maxCellY=" << maxCellCentre.y()
-            << " maxCellZ=" << maxCellCentre.z()
-            << " maxCellPhase=" << maxCellPhase
-            << " maxCellQ=" << maxCellFluidFraction
-            << endl;
-    }
-
-    // Release detached material ONCE per time step, when the exchange has
-    // settled - not on every sweep, because releasing is irreversible and
-    // repeating it inside the iteration would make the fixed point depend on
-    // how many times it was visited. `pimple.finalIter()` is included so the
-    // release still happens when the exchange neither converges nor hits the
-    // cap, which is the case a lone outer corrector produces.
-    if
-    (
-        !mechanicsFinalised_
-     && (couplingConverged_ || couplingIters_ >= nFSICorrectors_
-      || pimple.finalIter())
-    )
-    {
-        releaseDetachedMaterial();
-        commitWallBonds();
-        updateDerivedFields();
-        updatePermeability();
-        mechanicsFinalised_ = true;
-    }
 }
 
 
@@ -16854,11 +11059,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::prePredictor()
         // Nothing reads it there -- the two-velocity drag is in the block
         // against the solved Vs -- and printing a rigid-body speed for a clot
         // that is not carried at it would be read as though it were.
-        if (advectReleased_ && releasedCarrier_ == "rigidBody")
-        {
-            UbodyCached_ = releasedBodyVelocity();
-        }
-
         // The anchored layer is rebuilt from the SAME bond state the release
         // test just used, before anything is advected by it.
         updateBondHold();
@@ -16885,31 +11085,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::prePredictor()
         solvePlatelets();
         updateDerivedFields();
 
-        if (clotMechanics_ && stronglyCoupledFSI_ && pimple.nCorr() < 2)
-        {
-            // THE DEGENERATION GUARD. With nOuterCorrectors 1 there is no
-            // outer loop, prePredictor() is called once, and the exchange
-            // cannot iterate - the scheme silently becomes the loose one
-            // while the dictionary says otherwise, and the run would look
-            // like a strongly-coupled result. That is the exact class of
-            // silent-wrong-configuration this project keeps being caught by,
-            // so it aborts in seconds instead.
-            //
-            // Checked HERE and not in the constructor because pimple.nCorr()
-            // returns 1 until foamRun builds the PIMPLE loop, which happens
-            // after the solver is constructed.
-            FatalErrorInFunction
-                << "stronglyCoupledFSI is on but nOuterCorrectors is "
-                << pimple.nCorr() << "." << nl
-                << "The flow/skeleton exchange is iterated by the PIMPLE outer"
-                << " loop, so with a single outer corrector it cannot iterate"
-                << " and the scheme degenerates to the loose one." << nl
-                << "Set nOuterCorrectors > 1 in system/fvSolution, or set"
-                << " stronglyCoupledFSI no."
-                << exit(FatalError);
-        }
 
-        if (clotMechanics_)
         {
             // Snapshot the displacement at the start of the step; the
             // skeleton velocity is measured against this. It must be taken
@@ -16933,7 +11109,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::prePredictor()
             fsiOmega_ = fsiRelaxation_;
             fsiResidual_ = dimensionedVector("zero", dimLength, Zero);
 
-            if (eulerianSolid_)
             {
                 // ---- ONE VELOCITY: NEITHER COUPLING PATH APPLIES ----
                 //
@@ -16991,61 +11166,13 @@ void Foam::solvers::phaseClotAxisymmetricFluid::prePredictor()
                 couplingIters_ = 1;
                 couplingConverged_ = true;
             }
-            else if (!stronglyCoupledFSI_)
-            {
-                // ---- LOOSE COUPLING: the original path, unchanged ----
-                // Staggered displacement/damage loop. Standard for phase-field
-                // fracture: the fully coupled system is non-convex, the
-                // staggered one is robust, at the cost of needing several
-                // passes. What it does NOT iterate is the flow, which is why
-                // this path oscillates at low G.
-                for (label stag = 0; stag < nStaggeredCorrectors_; ++stag)
-                {
-                    solveSkeleton();
-
-                    // Do not iterate on a diverged state. This loop used to
-                    // run all nStaggeredCorrectors_ passes regardless, so a
-                    // skeleton that had already been flagged was fed straight
-                    // back into solveSkeleton(); run 20260814-224138 went from
-                    // UsPeak 6.76e-6 m to 84952 m across one such pass and
-                    // then overflowed inside F & F.
-                    if (skeletonDiverged_)
-                    {
-                        break;
-                    }
-
-                    solveDamage();
-                }
-                registerSkeletonDivergence();
-
-                releaseDetachedMaterial();
-                commitWallBonds();
-                updateDerivedFields();
-                updatePermeability();
-                mechanicsFinalised_ = true;
-            }
         }
-    }
-    else if (plateletContentModel_ && plateletOuterTransactions_)
-    {
-        // Reconstruct the isolated content trial from the timestep checkpoint
-        // using the flux corrected by the preceding PIMPLE outer. Legacy
-        // solvePlatelets() is deliberately not repeated: this opt-in gate
-        // validates content transaction ordering before broader coupling.
-        ++plateletOuter_;
-        solvePhaseField();
-        syncMaterialLabelFromContent();
-        updateDerivedFields();
     }
 
     // `&& !eulerianSolid_`: the Eulerian path has already run, above, outside
     // the coupling split. Without this exclusion a case that set BOTH switches
     // would advance be twice in one timestep -- silently, since two transport
     // solves in a row still produce a smooth, plausible field.
-    if (clotMechanics_ && stronglyCoupledFSI_ && !eulerianSolid_)
-    {
-        solveMechanicsExchange();
-    }
 }
 
 
@@ -17215,7 +11342,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::correctPressureTwoVelocity()
     // mobility, ~1e4x the clot's. The face inverse keeps the Rhie-Chow pair:
     // the cell velocity still uses the cell inverse against H, the face flux
     // the face inverse against flux(H).
-    if (blockFaceInverse_ == "faceAssembled")
     {
         const surfaceScalarField Af(fvc::interpolate(Ablk));
         const surfaceScalarField Bf(fvc::interpolate(Bblk));
@@ -17264,7 +11390,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::correctPressureTwoVelocity()
     // correction subtracts aByAD*f*snGp: one inverse on both sides, or the
     // mixture flux would not be the one the pressure equation made
     // divergence-free.
-    if (blockFaceInverse_ == "faceAssembled")
     {
         aByADff = iAD00f*phiFf + iAD01f*phiSf;
         aByADsf = iAD10f*phiFf + iAD11f*phiSf;
@@ -17787,7 +11912,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::correctPressureTwoVelocity()
     surfaceScalarField reconU("reconU", FByADf - aByADff*snGradpSf);
     surfaceScalarField reconS("reconS", FByADs - aByADsf*snGradpSf);
     tmp<volVectorField> tWallSlipTerm;
-    if (s17Active())
     {
         surfaceScalarField wallU("wallU", 0.0*reconU);
         surfaceScalarField wallS("wallS", 0.0*reconS);
@@ -17801,7 +11925,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::correctPressureTwoVelocity()
         }
         tWallSlipTerm = fvc::reconstruct(wallS) - fvc::reconstruct(wallU);
     }
-    if (skeletonWallFace_ == "zeroed")
     {
         // THE SAME LOOP AND VALUE as phiSkelOwn_'s wall zeroing above: the
         // reconstructs then read the face fields the fluxes took, on both
@@ -17816,20 +11939,11 @@ void Foam::solvers::phaseClotAxisymmetricFluid::correctPressureTwoVelocity()
         }
         U = HbyADf + fvc::reconstruct(reconU);
     }
-    else
-    {
-    U = HbyADf + fvc::reconstruct(FByADf - aByADff*snGradpSf);
-    }
     U.correctBoundaryConditions();
     fvConstraints().constrain(U);
 
-    if (skeletonWallFace_ == "zeroed")
     {
         Vs_ = HbyADs + fvc::reconstruct(reconS);
-    }
-    else
-    {
-    Vs_ = HbyADs + fvc::reconstruct(FByADs - aByADsf*snGradpSf);
     }
     Vs_.correctBoundaryConditions();
     fvConstraints().constrain(Vs_);
@@ -17875,7 +11989,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::correctPressureTwoVelocity()
         // feeds back.
         const volScalarField indS(phaseIndicator());
         const scalarField& indI = indS.primitiveField();
-        const bool deposited = networkPressureReference_ == "deposited";
         const scalar residualContent =
             residualChi_*skeletonVolumeFraction_;
         const scalarField& refI = thetaNetRef_.primitiveField();
@@ -17899,9 +12012,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::correctPressureTwoVelocity()
             forAll(indI, celli)
             {
                 const bool network =
-                    deposited
-                  ? refI[celli] > residualContent
-                  : indI[celli] > 0.5*residualChi_;
+                  refI[celli] > residualContent;
                 if (network && indI[celli] < 0.5)
                 {
                     const scalar s = mag(vsI[celli] - uI[celli]);
@@ -17913,7 +12024,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::correctPressureTwoVelocity()
                 Info<< "PHASE_CLOT_VS_SPLIT time=" << runTime.userTimeValue()
                     << " x=" << mesh.C()[w].x() << " y=" << mesh.C()[w].y()
                     << " ind=" << indI[w]
-                    << " thetaNetRef=" << (deposited ? refI[w] : -1.0)
+                    << " thetaNetRef=" << refI[w]
                     << " slip=" << worstSlip
                     << " Vs=" << mag(vsI[w]) << " U=" << mag(uI[w])
                     << " HbyADs=" << mag(HbyADs[w])
@@ -17923,7 +12034,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::correctPressureTwoVelocity()
                     << " As=" << Dblk[w] - Kd[w] - Kres[w]
                     << " Kd=" << Kd[w] << " Kres=" << Kres[w]
                     << " ddtPhiS=" << ddtPhiS[w]
-                    << " momentumForm=" << skeletonMomentumForm_
+                    << " momentumForm=" << "phaseContinuity"
                     << endl;
 
                 // S16 (red-team Change 3): the state of THIS cell -- G8's
@@ -17932,11 +12043,9 @@ void Foam::solvers::phaseClotAxisymmetricFluid::correctPressureTwoVelocity()
                 // intact tail; a large transport |dd| (PHASE_CLOT_S16) is a
                 // transported step. w is the deviatoric weight as the stress
                 // uses it under skeletonFloorBasis.
-                if (s16Active())
                 {
                     const scalar dW = ruptured_[w];
                     scalar dStarW = dW;
-                    if (damageTransport_ == "contentPartition")
                     {
                         const scalar sW =
                             thetaIntact_[w]
@@ -17949,20 +12058,10 @@ void Foam::solvers::phaseClotAxisymmetricFluid::correctPressureTwoVelocity()
                     const scalar l1W =
                         sqrt(cmptMax(eigenValues(be_[w])));
                     const scalar indW = indI[w];
-                    const bool occ = skeletonFloorBasis_ == "occupancy";
                     const scalar wUsed =
-                        occ
-                      ? max(indW, skeletonSolidFloor_)*(1.0 - dW)
-                      : skeletonDiffuseDomain_
-                      ? max(indW*(1.0 - dW), skeletonSolidFloor_)
-                      : indW*(1.0 - dW);
+                      max(indW, skeletonSolidFloor_)*(1.0 - dW);
                     const bool floorBinds =
-                        skeletonDiffuseDomain_
-                     && (
-                            occ
-                          ? indW < skeletonSolidFloor_
-                          : indW*(1.0 - dW) < skeletonSolidFloor_
-                        );
+                          indW < skeletonSolidFloor_;
                     Info<< "PHASE_CLOT_S16_G8CELL time="
                         << runTime.userTimeValue()
                         << " x=" << mesh.C()[w].x()
@@ -17984,12 +12083,11 @@ void Foam::solvers::phaseClotAxisymmetricFluid::correctPressureTwoVelocity()
                 // (theta_I + theta_P): the slack fraction of the load-path
                 // content, a proxy for V1's tau lag, not the imported face
                 // traction (design section 8 g).
-                if (s17Active())
                 {
                     const vector slipDir(vsI[w] - uI[w]);
                     scalar parts[4];
                     s17bForceParts(iAD11f, w, slipDir, parts);
-                    const scalar refW = deposited ? refI[w] : 0.0;
+                    const scalar refW = refI[w];
                     const scalar thW = thetaC_[w] + thetaH_[w];
                     const scalar wallProj =
                         tWallSlipTerm.valid()
@@ -17997,7 +12095,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::correctPressureTwoVelocity()
                       : 0.0;
                     const scalar p12 = thetaIntact_[w] + thetaPending_[w];
                     const scalar slackShare =
-                        fibreSlack_ == "v1" && p12 > 0
+                        p12 > 0
                       ? (thetaPending_[w] - thetaTaut_[w])/p12
                       : 0.0;
                     const scalar tSlack = s17bLastSlackTime_[w];
@@ -18043,7 +12141,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::correctPressureTwoVelocity()
             {
                 Info<< "PHASE_CLOT_VS_SPLIT time=" << runTime.userTimeValue()
                     << " noDiluteNetworkCell" << endl;
-                if (s16Active())
                 {
                     Info<< "PHASE_CLOT_S16_G8CELL time="
                         << runTime.userTimeValue()
@@ -18071,13 +12168,12 @@ void Foam::solvers::phaseClotAxisymmetricFluid::correctPressureTwoVelocity()
                 << " x=" << (fw >= 0 ? mesh.Cf()[fw].x() : 0)
                 << " y=" << (fw >= 0 ? mesh.Cf()[fw].y() : 0)
                 << " maxU=" << gMax(mag(U.primitiveField()))
-                << " blockFaceInverse=" << blockFaceInverse_ << endl;
+                << " blockFaceInverse=" << "faceAssembled" << endl;
         }
 
         // (3) COMPACTION STRIPES, VOIDS, THE FRINGE, AND THE NETWORK
         // PRESSURE'S OWN STABILITY NUMBER. Only where the deposited reference
         // defines them.
-        if (deposited)
         {
             const volScalarField argF(networkPressureArgument());
             const volScalarField hp
@@ -18163,7 +12259,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::correctPressureTwoVelocity()
                 const scalar pm = phiSMax_;
                 const scalar dt = runTime.deltaTValue();
                 const scalar rhoV = rho_.value();
-                const bool convex = networkPressureModel_ == "convexExcess";
                 const volScalarField intactF(intactFraction());
                 const scalarField& intactI = intactF.primitiveField();
                 const symmTensorField& beI = be_.primitiveField();
@@ -18171,7 +12266,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::correctPressureTwoVelocity()
                 // the loop. Cells outside the deposited network do not enter
                 // the bound, and they carry the same formula, so they are
                 // filled with it and cannot hide a defect in the ones that do.
-                const bool occupancyFloor = skeletonFloorBasis_ == "occupancy";
                 scalarField wSite(aI.size(), 0.0);
                 scalar dampedStiffMax = 0;
                 // S17 A (design 2A, docket 10): the stiffness per unit weight
@@ -18179,10 +12273,8 @@ void Foam::solvers::phaseClotAxisymmetricFluid::correctPressureTwoVelocity()
                 // number is max(ind, floor)[(thI/S) stiff + (thP/S)(lf^2 -
                 // 1/lf)]. kSite is what THIS site used (S17split, site 2);
                 // cells outside the bound carry the same formula.
-                const bool fibreSite = fibreRelease();
                 tmp<volScalarField> tKeff;
                 scalarField kSite;
-                if (fibreSite)
                 {
                     tKeff = mixedTangentStiffness();
                     kSite = tKeff().primitiveField();
@@ -18192,14 +12284,9 @@ void Foam::solvers::phaseClotAxisymmetricFluid::correctPressureTwoVelocity()
                     const scalar gDc = sqr(1.0 - DgI[celli]) + etaRes_;
                     const scalar h2 = sqr(maxDC[celli]);
                     {
-                        const scalar wI0 = indI[celli]*intactI[celli];
                         wSite[celli] =
-                            occupancyFloor
-                          ? max(indI[celli], skeletonSolidFloor_)
-                           *intactI[celli]
-                          : skeletonDiffuseDomain_
-                          ? max(wI0, skeletonSolidFloor_)
-                          : wI0;
+                          max(indI[celli], skeletonSolidFloor_)
+                           *intactI[celli];
                     }
                     if (refI[celli] > residualContent)
                     {
@@ -18215,7 +12302,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::correctPressureTwoVelocity()
                         // max(ind*(1 - d), floor), unchanged).
                         const scalar w = wSite[celli];
                         scalar stiff = 1.0;
-                        if (elasticStabilityStiffness_ == "tangent")
                         {
                             const vector ev(eigenValues(beI[celli]));
                             const scalar b1 = cmptMax(ev);
@@ -18229,7 +12315,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::correctPressureTwoVelocity()
                         // S17 A: the stiffness per unit weight this site
                         // uses, recorded (after H-A1n above read the raw
                         // intact tangent).
-                        if (fibreSite)
                         {
                             stiff = tKeff()[celli];
                             kSite[celli] = stiff;
@@ -18238,7 +12323,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::correctPressureTwoVelocity()
                             w*gDc*stiff*GI[celli]*iA[celli]/rhoV;
                         nuElMax = max(nuElMax, Del*dt*h2);
                     }
-                    if (convex)
                     {
                         const scalar a = aI[celli];
                         const scalar Kn = networkPressureCoeff_*gDc*GI[celli];
@@ -18291,14 +12375,12 @@ void Foam::solvers::phaseClotAxisymmetricFluid::correctPressureTwoVelocity()
                 // -- and nuNet <= 0.2 and the wave CFL stay. The elastic
                 // number is still measured and printed.
                 explicitDiffusionRate_ = max(nuMax, nuElMax)/max(dt, vSmall);
-                if (elasticCoupling_ == "implicitTangent")
                 {
                     explicitDiffusionRate_ = nuMax/max(dt, vSmall);
                 }
 
                 // S16: the third weight site, and H-A1n's number.
                 recordStressWeight(wSite, 2);
-                if (fibreSite)
                 {
                     recordStiffnessSplit(kSite);
                 }
@@ -18329,11 +12411,9 @@ void Foam::solvers::phaseClotAxisymmetricFluid::correctPressureTwoVelocity()
             // C+'s mu (min, mean) and donor fraction, and max|sum P - theta|
             // (absolute; partitionSumDevMax is the same relative to max
             // theta, the WATCH).
-            if (s16Active())
             {
                 scalar sumDev = -1, sumDevAbs = -1, pMin = -1;
                 label nSub = -1;
-                if (damageTransport_ == "contentPartition")
                 {
                     const scalarField& pI = thetaIntact_.primitiveField();
                     const scalarField& pP = thetaPending_.primitiveField();
@@ -18399,11 +12479,9 @@ void Foam::solvers::phaseClotAxisymmetricFluid::correctPressureTwoVelocity()
             // (eigRelMax <= 1e-12), G-uni (uniUp = 0), G-proj (projRaised
             // = 0), S17split (splitDevMax0/1/2 = 0 with splitSites = 7), P2
             // (p2Max <= 1.05), W2 (w2Max), W1 (w1MaxDeg, w1Over5, w1Over10).
-            if (s17Active())
             {
                 scalar p2Max = 0, w2Max = 0, w1Max = 0;
                 label w1Over5 = 0, w1Over10 = 0, nPend = 0, nMixed = 0;
-                if (fibreRelease())
                 {
                     const scalar lc = networkCriticalStretch_;
                     const scalar sc = sqr(lc) - 1.0/sqr(lc);
@@ -18510,13 +12588,12 @@ void Foam::solvers::phaseClotAxisymmetricFluid::correctPressureTwoVelocity()
                     << " w1Over5=" << w1Over5
                     << " w1Over10=" << w1Over10
                     << " pendingPressureMax=" << s17PendingPressureMax_
-                    << " elasticCoupling=" << elasticCoupling_
+                    << " elasticCoupling=implicitTangent"
                     << " nuElMax=" << nuElMax
                     << " nuNetMax=" << nuMax
                     << endl;
 
                 // S17b (design section 2 "New logs"; 02, 05, 06, 08, 12).
-                if (fibreRelease())
                 {
                     const scalarField& pIb = thetaIntact_.primitiveField();
                     const scalarField& pPb = thetaPending_.primitiveField();
@@ -18527,7 +12604,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::correctPressureTwoVelocity()
                     const scalarField& qPb = thetaPendingP_.primitiveField();
                     const vectorField& ccb = mesh.C().primitiveField();
                     const scalarField& volb = mesh.V();
-                    const bool v1b = fibreSlack_ == "v1";
                     // theta_T <= theta_P, exactly (V1)
                     label tautAbove = 0;
                     scalar tautAboveMax = 0;
@@ -18551,11 +12627,9 @@ void Foam::solvers::phaseClotAxisymmetricFluid::correctPressureTwoVelocity()
                     );
                     const scalarField& divVsI = tDivVs();
                     scalar pPRatioMax = 0, frozenPower = 0;
-                    const bool frozenApplied =
-                        frozenPendingPressure_ == "shipped";
                     forAll(pPb, celli)
                     {
-                        if (v1b && tTb[celli] > pPb[celli])
+                        if (tTb[celli] > pPb[celli])
                         {
                             ++tautAbove;
                             tautAboveMax =
@@ -18570,9 +12644,9 @@ void Foam::solvers::phaseClotAxisymmetricFluid::correctPressureTwoVelocity()
                         frozenPower -=
                             fibreReleaseKernel::frozenPressureShare
                             (
-                                qPb[celli], S, frozenApplied
+                                qPb[celli], S, false
                             )*divVsI[celli]*volb[celli];
-                        if (v1b && pIb[celli] + pPb[celli] > 0)
+                        if (pIb[celli] + pPb[celli] > 0)
                         {
                             slackShareMax = max
                             (
@@ -18619,7 +12693,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::correctPressureTwoVelocity()
                     // < 0 at fixed shares (the shipped, presence-weighted
                     // form: W p'(a) (1 on packing, aI on tension)).
                     label halfCells = 0, sNeg = 0, netCells = 0;
-                    if (networkPressureModel_ == "convexExcess")
                     {
                         const scalar phi0 = skeletonVolumeFraction_;
                         const scalar pm = phiSMax_;
@@ -18674,11 +12747,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::correctPressureTwoVelocity()
                             if (slope < 0) { ++sNeg; }
                         }
                     }
-                    else
-                    {
-                        halfCells = -1;
-                        sNeg = -1;
-                    }
                     reduce(halfCells, sumOp<label>());
                     reduce(sNeg, sumOp<label>());
                     reduce(netCells, sumOp<label>());
@@ -18713,7 +12781,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::correctPressureTwoVelocity()
                         << " pPRatioMax=" << pPRatioMax
                         << " frozenPower=" << frozenPower
                         << " slackContentShareMax=" << slackShareMax
-                        << " fibreSlack=" << fibreSlack_
+                        << " fibreSlack=v1"
                         << endl;
 
                     // S18 F (design section 2 F; docket 03 D6): the
@@ -18756,10 +12824,10 @@ void Foam::solvers::phaseClotAxisymmetricFluid::correctPressureTwoVelocity()
                         << " netCells=" << netCells
                         << " sNegCells=" << sNeg
                         << " frozenPower=" << frozenPower
-                        << " frozenPendingPressure=" << frozenPendingPressure_
-                        << " wallPatchSplit=" << wallPatchSplit_
+                        << " frozenPendingPressure=none"
+                        << " wallPatchSplit=" << "split"
                         << " networkPressureWeight=" << networkPressureWeight_
-                        << " cplusOrder=" << cplusOrder_
+                        << " cplusOrder=shared"
                         << endl;
 
                     // S18p (design section 2): once per step, beside S18's
@@ -18806,7 +12874,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::correctPressureTwoVelocity()
                     }
                 }
             }
-            if (s16Active() || s17Active())
             {
                 writeS17SecondDifferences();
             }
@@ -19030,7 +13097,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveBlockCoupledStep()
     coef.r3 = networkViscosity_ == "kelvinVoigt";
     // S19b section 2.2: eliminate removes the lumen Vs unknowns; identityRows
     // keeps S19a's identity rows.
-    coef.eliminateLumen = blockCoupledLumen_ == "eliminate";
+    coef.eliminateLumen = true;
     coef.nu3w.assign(nF, 0.0);
     tmp<surfaceScalarField> tNu3w;
     if (coef.r3)
@@ -19515,7 +13582,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveBlockCoupledStep()
         // PHASE_CLOT_VS_SPLIT's population and argmax as the shipped
         // corrector; the H/A split (HbyADs, elasticFace, pressureFace) does
         // not exist in one block solve and is not printed.
-        const bool deposited = networkPressureReference_ == "deposited";
         const scalar residualContent = residualChi_*skeletonVolumeFraction_;
         const scalarField& refI = thetaNetRef_.primitiveField();
         const volScalarField ddtPhiSB("ddtPhiSB", fvc::ddt(phiSkel_));
@@ -19524,9 +13590,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveBlockCoupledStep()
         forAll(indBI, celli)
         {
             const bool network =
-                deposited
-              ? refI[celli] > residualContent
-              : indBI[celli] > 0.5*residualChi_;
+              refI[celli] > residualContent;
             if (network && indBI[celli] < 0.5)
             {
                 const scalar s = mag(Vs_[celli] - U[celli]);
@@ -19538,14 +13602,14 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveBlockCoupledStep()
             Info<< "PHASE_CLOT_VS_SPLIT time=" << runTime.userTimeValue()
                 << " x=" << mesh.C()[w].x() << " y=" << mesh.C()[w].y()
                 << " ind=" << indBI[w]
-                << " thetaNetRef=" << (deposited ? refI[w] : -1.0)
+                << " thetaNetRef=" << refI[w]
                 << " slip=" << worstSlip
                 << " Vs=" << mag(Vs_[w]) << " U=" << mag(U[w])
                 << " Dblk=" << DblkB[w]
                 << " As=" << DblkB[w] - KdB[w] - KresB[w]
                 << " Kd=" << KdB[w] << " Kres=" << KresB[w]
                 << " ddtPhiS=" << ddtPhiSB[w]
-                << " momentumForm=" << skeletonMomentumForm_
+                << " momentumForm=" << "phaseContinuity"
                 << " mode=blockCoupled"
                 << endl;
         }
@@ -19578,167 +13642,15 @@ void Foam::solvers::phaseClotAxisymmetricFluid::correctPressure()
         return;
     }
 
-    if (!elasticForce_.valid())
     {
         incompressibleFluid::correctPressure();
         return;
     }
-
-    volScalarField& p(p_);
-    volVectorField& U(U_);
-    surfaceScalarField& phi(phi_);
-
-    fvVectorMatrix& UEqn = tUEqn.ref();
-
-    // SIMPLEC IS REFUSED RATHER THAN APPROXIMATED. pimple.consistent() rebuilds
-    // rAtU from UEqn.H1() and adjusts BOTH phiHbyA and HbyA; carrying that
-    // through a reconstructed force correctly is a separate piece of work, and
-    // this stage runs transient PIMPLE where it is off. Guessing at it and
-    // being quietly wrong is the failure mode this project keeps paying for.
-    if (pimple.consistent())
-    {
-        FatalErrorInFunction
-            << "faceConsistentElasticForce is not implemented for "
-            << "pimple consistent (SIMPLEC). Set consistent no, or extend "
-            << "this function deliberately."
-            << exit(FatalError);
-    }
-
-    const volScalarField rAU(1.0/UEqn.A());
-    const surfaceScalarField rAUf("rAUf", fvc::interpolate(rAU));
-
-    volVectorField HbyA(constrainHbyA(rAU*UEqn.H(), U, p));
-
-    // THE ELASTIC FORCE, IN FACE FORM. This is the whole change: one face
-    // field, used BOTH to build the flux and to update the cell velocity, so
-    // the pressure Laplacian can cancel it face by face the way it cancels its
-    // own snGrad. Dimensions: rAU is s, the force is m/s^2, Sf is m^2, so the
-    // product is m^3/s -- a volumetric flux, the same as phiHbyA.
-    const surfaceScalarField phiSigmaE
-    (
-        "phiSigmaE",
-        rAUf*(fvc::interpolate(elasticForce_()) & mesh.Sf())
-    );
-
-    surfaceScalarField phiHbyA
-    (
-        "phiHbyA",
-        fvc::flux(HbyA)
-      + rAUf*fvc::ddtCorr(U, phi, Uf)
-      + phiSigmaE
-    );
-
-    MRF.makeRelative(phiHbyA);
-
-    if (p.needReference())
-    {
-        fvc::makeRelative(phiHbyA, U);
-        adjustPhi(phiHbyA, U, p);
-        fvc::makeAbsolute(phiHbyA, U);
-    }
-
-    if (pimple.nCorrPiso() <= 1)
-    {
-        tUEqn.clear();
-    }
-
-    // Update the pressure BCs to ensure flux consistency
-    constrainPressure(p, U, phiHbyA, rAU, MRF);
-
-    // Evaluate any volume sources
-    fvScalarMatrix pEqnSource(fvModels().sourceProxy(p));
-
-    // The final non-orthogonal iteration's flux is needed AFTER the loop for
-    // the velocity update, so it is kept rather than recomputed -- recomputing
-    // it from a relaxed p would make the cell update disagree with the flux,
-    // which is the defect this function exists to remove.
-    tmp<surfaceScalarField> tpEqnFlux;
-
-    // Non-orthogonal pressure corrector loop
-    while (pimple.correctNonOrthogonal())
-    {
-        fvScalarMatrix pEqn
-        (
-            fvm::laplacian(rAU, p)
-         ==
-            fvc::div(phiHbyA)
-          - pEqnSource
-        );
-
-        pEqn.setReference
-        (
-            pressureReference.refCell(),
-            pressureReference.refValue()
-        );
-
-        pEqn.solve();
-
-        if (pimple.finalNonOrthogonalIter())
-        {
-            tpEqnFlux = pEqn.flux();
-            phi = phiHbyA - tpEqnFlux();
-        }
-    }
-
-    // The loop above always runs at least once and always reaches its final
-    // iteration, so this cannot fire -- but the alternative to checking is
-    // dereferencing an invalid tmp, and a guard costs nothing.
-    if (!tpEqnFlux.valid())
-    {
-        FatalErrorInFunction
-            << "the non-orthogonal corrector loop produced no final flux"
-            << exit(FatalError);
-    }
-
-    continuityErrors();
-
-    // Explicitly relax pressure for momentum corrector
-    p.relax();
-
-    // THE CELL VELOCITY FROM THE SAME FACE FIELDS AS THE FLUX.
-    //
-    // The base writes U = HbyA - rAtU*fvc::grad(p): a CELL gradient, while the
-    // flux got a face snGrad. For pressure alone that discrepancy is the
-    // Rhie-Chow damping and is wanted. Here the elastic force is 5x the applied
-    // load, so the same discrepancy is a real unbalanced force -- and it cannot
-    // be removed for the force while being kept for the pressure, because
-    // consistency is a property of the pair. Both go through fvc::reconstruct
-    // of the identical face fields that produced phi above.
-    //
-    // fvc::ddtCorr is deliberately NOT in the reconstruction, matching the
-    // treatment in interFoam's equivalent update.
-    //
-    // NOTE ON RELAXATION: tpEqnFlux was formed before p.relax(), so with a
-    // pressure relaxation factor below 1 the cell update follows the flux
-    // rather than the relaxed field. That is the intended precedence here --
-    // agreement with phi is the property being bought -- and it is the same
-    // ordering interFoam uses. On this path nOuterCorrectors is 1, so the final
-    // iteration relaxation applies and the factor is 1 in any case.
-    U = HbyA + rAU*fvc::reconstruct((phiSigmaE - tpEqnFlux())/rAUf);
-    U.correctBoundaryConditions();
-    fvConstraints().constrain(U);
-
-    // Correct Uf if the mesh is moving
-    fvc::correctUf(Uf, U, phi, MRF);
-
-    // Make the fluxes relative to the mesh motion
-    fvc::makeRelative(phi, U);
 }
 
 
 void Foam::solvers::phaseClotAxisymmetricFluid::momentumPredictor()
 {
-    // INVALIDATE FIRST, SET ON EXACTLY ONE PATH.
-    //
-    // correctPressure() reads the validity of elasticForce_ as "this step built
-    // a face-form elastic force, use it". Only the Eulerian branch below sets
-    // it, so any path that does not -- the partitioned branch, the rigid v2
-    // penalty branch, clotMechanics off -- must leave it invalid rather than
-    // inherit whatever the previous call left behind. eulerianSolid is fixed
-    // for a run so the paths cannot actually alternate today; this is here so
-    // that stops being load-bearing.
-    elasticForce_.clear();
-
     // SAME CONTRACT AS elasticForce_. correctPressure() reads the validity of
     // tVsEqn as "this step built a skeleton momentum equation, use the coupled
     // solve". Only the two-velocity branch below sets it, so every other path
@@ -19749,7 +13661,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::momentumPredictor()
     // for the two ddt terms; see the note on their declaration for why they
     // cannot be temporaries. Refreshed unconditionally so the written field is
     // meaningful on every path, not only the two-velocity one.
-    if (phaseWeightBasis_ == "content")
     {
         // C1/C2. phiSf and phiFf at :9706-9707 are the interpolants of these
         // two fields and of nothing else, so assigning theta here migrates
@@ -19811,7 +13722,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::momentumPredictor()
 
         Info<< "PHASE_CLOT_PHASE_WEIGHT_BASIS"
             << " t=" << runTime.userTimeValue()
-            << " basis=" << phaseWeightBasis_
+            << " basis=content"
             << " thetaMin=" << thetaLo
             << " thetaMax=" << thetaHi
             << " clampedLow=" << nLo
@@ -19819,13 +13730,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::momentumPredictor()
             << " c1Max=" << c1Max
             << endl;
     }
-    else
-    {
-        phiSkel_ = solidFraction();
-        phiFluid_ = 1.0 - phiSkel_;
-    }
 
-    if (clotMechanics_)
     {
         // Poroelastic drag relative to the MOVING skeleton. This is the term
         // that couples deformation back into the flow, and it replaces the
@@ -19887,7 +13792,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::momentumPredictor()
             "poroFactor",
             0.0*phiFluid_ + dimensionedScalar("one", dimless, 1)
         );
-        if (twoVelocitySkeleton_)
         {
             poroFactor = sqr(phiFluid_);
         }
@@ -19921,15 +13825,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::momentumPredictor()
                 )
             )()
         );
-        if (dragDriver_ == "content")
-        {
-            // KINEMATIC form, 1/s, so no rho. poroFactor is NOT applied:
-            // the (1-theta)^2 fluid-fraction factor is already inside the
-            // cancellation the kernel evaluates, and multiplying it again
-            // would square it. That is why dragDriver `content` refuses to
-            // run without twoVelocitySkeleton -- see the constructor.
-            dragCoeff = contentDragK_;
-        }
         // S12: THE NETWORK'S OWN DRAG, WEIGHTED BY ITS OCCUPANCY. Built, then
         // overwritten -- the pattern this site already uses. The legacy
         // expression above is Kozeny-Carman at the cell AVERAGE, so a fringe
@@ -19938,12 +13833,10 @@ void Foam::solvers::phaseClotAxisymmetricFluid::momentumPredictor()
         // intrinsicDragRate() for the weighting and its precedent. poroPerm_
         // is assigned from the same state so the written field is the
         // permeability this drag was built from.
-        if (dragOccupancyBasis_ == "intrinsic")
         {
             dragCoeff = intrinsicDragRate();
             poroPerm_ = intrinsicPermeability();
         }
-        if (eulerianSolid_)
         {
             // ONE VELOCITY. The elastic stress enters the momentum equation
             // directly, and THE DARCY DRAG IS GONE -- not omitted by oversight
@@ -19984,7 +13877,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::momentumPredictor()
             // force on the RIGHT is +fvc::div(sigma_e)/rho. That is what is
             // stored: an acceleration in m/s^2, the same kind of quantity as
             // -fvc::grad(p), which is how correctPressure() treats it.
-            if (twoVelocitySkeleton_)
             {
                 // ---- TWO MOMENTUM EQUATIONS, BOTH SOLVED ----
                 //
@@ -19999,7 +13891,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::momentumPredictor()
                 // off-diagonal of the 2x2 block in correctPressure(): the
                 // skeleton's stress pushes the fluid VIA THE DRAG, which is
                 // the only channel physics gives it.
-                elasticForce_.clear();
 
 
                 // PHASE-WEIGHTED, AND ONLY ON THIS BRANCH. phi_f and phi_s sum
@@ -20051,7 +13942,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::momentumPredictor()
                 // the same reason multiphaseEuler applies it to EVERY phase.
                 // phiFluid >= 0.1 here, so this row never degenerates; it
                 // is applied so that both rows of the block are one form.
-                if (skeletonMomentumForm_ == "phaseContinuity")
                 {
                     tUEqn.ref() += fvm::SuSp(-fvc::ddt(phiFluid_), U_);
                 }
@@ -20103,8 +13993,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::momentumPredictor()
                 // research/designs/2026-09-19-OI6-correctness-criterion.md.
                 if
                 (
-                    phaseMomentumFluxBasis_ == "shared"
-                 && !contentFaceWeights_.valid()
+                    !contentFaceWeights_.valid()
                 )
                 {
                     FatalErrorInFunction
@@ -20121,10 +14010,8 @@ void Foam::solvers::phaseClotAxisymmetricFluid::momentumPredictor()
                 const surfaceScalarField thetaFaceMom
                 (
                     "thetaFaceMom",
-                    phaseMomentumFluxBasis_ == "shared"
-                  ? suppliedWeightsScheme(mesh_, contentTransportedWeights()())
+                    suppliedWeightsScheme(mesh_, contentTransportedWeights()())
                         .interpolate(phiSkel_)
-                  : fvc::interpolate(phiSkel_)
                 );
 
                 const surfaceScalarField phiSkelFlux
@@ -20181,7 +14068,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::momentumPredictor()
 
                     Info<< "PHASE_CLOT_MMC"
                         << " t=" << runTime.userTimeValue()
-                        << " basis=" << phaseMomentumFluxBasis_
+                        << " basis=shared"
                         << " mmcMax=" << mmcMax
                         << " mmcMeanRel=" << mmcMean
                         << endl;
@@ -20212,7 +14099,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::momentumPredictor()
                 // for 12 steps before it ran away. Growth enters theta
                 // without a flux, so it is part of the error removed here:
                 // deposited content takes the local skeleton velocity.
-                if (skeletonMomentumForm_ == "phaseContinuity")
                 {
                     tVsEqn.ref() += fvm::SuSp(-fvc::ddt(phiSkel_), Vs_);
                 }
@@ -20296,7 +14182,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::momentumPredictor()
                     (
                         "GammaBSD", fvc::interpolate(GammaBSD)
                     );
-                    if (stressFaceTransmission_ == "series")
                     {
                         GammaBSDf =
                             seriesFaceWeights(phiSIntact)
@@ -20312,7 +14197,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::momentumPredictor()
                     // series(w) interp(gD G M). The explicit half below uses
                     // the same Gamma_t. >= 0 by construction with be SPD
                     // (refused fatally otherwise). Series is required.
-                    if (elasticCoupling_ == "implicitTangent")
                     {
                         const volScalarField wT(skeletonStressWeight());
                         const volScalarField kEff(mixedTangentStiffness());
@@ -20322,15 +14206,9 @@ void Foam::solvers::phaseClotAxisymmetricFluid::momentumPredictor()
                            *runTime.deltaT()/rho_;
                         GammaBSD = wT*gD*GField_*kEff*runTime.deltaT()/rho_;
                     }
-                    if (stressFaceTransmission_ == "series")
                     {
                         tVsEqn.ref() -= fvm::laplacian(GammaBSDf, Vs_);
                         tVsEqn.ref() += fvc::laplacian(GammaBSDf, Vs_)();
-                    }
-                    else
-                    {
-                        tVsEqn.ref() -= fvm::laplacian(GammaBSD, Vs_);
-                        tVsEqn.ref() += fvc::laplacian(GammaBSD, Vs_)();
                     }
 
                     // The pair's imbalance, as a fraction of the implicit
@@ -20340,9 +14218,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::momentumPredictor()
                     // than silently absorbed into the stabilisation.
                     const volVectorField bsdExp
                     (
-                        stressFaceTransmission_ == "series"
-                      ? fvc::laplacian(GammaBSDf, Vs_)
-                      : fvc::laplacian(GammaBSD, Vs_)
+                        fvc::laplacian(GammaBSDf, Vs_)
                     );
                     const scalar bsdMag = gMax(mag(bsdExp.primitiveField()));
                     const scalar gammaMax = gMax(GammaBSD.primitiveField());
@@ -20384,40 +14260,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::momentumPredictor()
 
                 tVsEqn.ref().relax();
                 fvConstraints().constrain(tVsEqn.ref());
-            }
-            else if (faceConsistentElasticForce_)
-            {
-                elasticForce_ = tmp<volVectorField>
-                (
-                    new volVectorField
-                    (
-                        "elasticForce",
-                        fvc::div(elasticStress(), "div(sigmaElastic)")/rho_
-                    )
-                );
-
-                tUEqn =
-                (
-                    fvm::ddt(U_) + fvm::div(phi_, U_)
-                  + MRF.DDt(U_)
-                  + momentumTransport->divDevSigma(U_)
-                 ==
-                    fvModels().source(U_)
-                );
-            }
-            else
-            {
-                elasticForce_.clear();
-
-                tUEqn =
-                (
-                    fvm::ddt(U_) + fvm::div(phi_, U_)
-                  + MRF.DDt(U_)
-                  + momentumTransport->divDevSigma(U_)
-                  - fvc::div(elasticStress(), "div(sigmaElastic)")/rho_
-                 ==
-                    fvModels().source(U_)
-                );
             }
 
             // THE FLUID SIDE OF THE ANCHOR.
@@ -20525,7 +14367,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::momentumPredictor()
             // point U = Ubody is the physically right one: fluid inside a
             // released body travels with it, which is what makes the body
             // displace fluid instead of leaking it.
-            if (eulerianBrinkman_)
             {
                 // Clamped for the same reason chi is: released_ is built as
                 // a 0/1 indicator, but it is a written field with
@@ -20574,11 +14415,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::momentumPredictor()
                 // interface: high AND very non-uniform, both conditions at
                 // once. Rusche himself uses the weaker option 2 only because
                 // his own drag is mild.
-                if (!twoVelocitySkeleton_)
-                {
-                    tUEqn.ref() += fvm::Sp(dragCoeff, U_);
-                    tUEqn.ref() -= dragCoeff*skeletonVelocity;
-                }
 
                 // PUBLISHED FROM THE ASSEMBLED EXPRESSION, NOT RECOMPUTED.
                 // clotDrag_ is what writeBalanceDiagnostic() turns into
@@ -20601,38 +14437,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::momentumPredictor()
                 clotDrag_ = dragCoeff;
             }
         }
-        else
-        {
-        const volVectorField skeletonVelocity
-        (
-            (Us_ - UsPrev_)/runTime.deltaT()
-        );
-
-        tUEqn =
-        (
-            fvm::ddt(U_) + fvm::div(phi_, U_)
-          + MRF.DDt(U_)
-          + momentumTransport->divDevSigma(U_)
-          + fvm::Sp(dragCoeff, U_)
-          - dragCoeff*skeletonVelocity
-         ==
-            fvModels().source(U_)
-        );
-        }
-    }
-    else
-    {
-        // v2 rigid path, unchanged: the implicit penalty is the controlled
-        // stationary-clot term lambda(q)*(U-0), assembled on the diagonal.
-        tUEqn =
-        (
-            fvm::ddt(U_) + fvm::div(phi_, U_)
-          + MRF.DDt(U_)
-          + momentumTransport->divDevSigma(U_)
-          + fvm::Sp(lambda_, U_)
-         ==
-            fvModels().source(U_)
-        );
     }
     fvVectorMatrix& UEqn = tUEqn.ref();
 
@@ -20648,28 +14452,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::momentumPredictor()
 
     if (pimple.momentumPredictor())
     {
-        if (elasticForce_.valid())
-        {
-            // The predictor sees the SAME face fields the flux will see.
-            // Leaving it as -fvc::grad(p_) with the elastic force absent would
-            // predict a velocity that ignores a force 5x the applied load, and
-            // the corrector would then spend its sweeps undoing the predictor.
-            //
-            // Both terms are face quantities of dimension m^3/s^2 -- an
-            // acceleration times an area -- which fvc::reconstruct turns back
-            // into the m/s^2 that matches -fvc::grad(p_).
-            solve
-            (
-                UEqn
-             ==
-                fvc::reconstruct
-                (
-                    (fvc::interpolate(elasticForce_()) & mesh.Sf())
-                  - fvc::snGrad(p_)*mesh.magSf()
-                )
-            );
-        }
-        else if (tVsEqn.valid())
+        if (tVsEqn.valid())
         {
             // THE FLUID CARRIES ONLY ITS SHARE OF THE PRESSURE on the
             // two-velocity path, because its momentum equation is weighted by
@@ -20694,7 +14477,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::momentumPredictor()
             // THE DIAGONAL (red team 08: without it the lumen rows are a pure
             // Laplacian). An M-matrix, asymmetric (bounded upwind
             // convection): PBiCGStab or smoothSolver, refused PCG.
-            if (elasticCoupling_ == "implicitTangent")
             {
                 const volScalarField KdKres
                 (
@@ -21141,7 +14923,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::writeBalanceDiagnostic()
 
             Info<< "PHASE_CLOT_PHASE_INDICATOR"
                 << " time=" << runTime.name()
-                << " basis=" << phaseIndicatorBasis_
+                << " basis=content"
                 << " indMax=" << indMax
                 << " indMin=" << gMin(ind.primitiveField())
                 << " indAboveOne=" << indAboveOne
@@ -21223,7 +15005,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::writeBalanceDiagnostic()
             scalar deltaThetaInt = -1;
             scalar deltaThetaIntPost = -1;
 
-            if (plateletContentModel_ && skeletonVolumeFraction_ > 0)
+            if (skeletonVolumeFraction_ > 0)
             {
                 // The field as the CONSUMERS saw it -- assigned in
                 // updateDerivedFields(), before solvePlatelets() committed
@@ -21284,7 +15066,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::writeBalanceDiagnostic()
         // see that there wasn't. phiSOverNominal is the number to watch: 1.0
         // is the equilibrium, and a run walking away from it is compacting
         // (or dilating) whatever c happens to read.
-        if (twoVelocitySkeleton_)
         {
             // THE FRACTION THE FORCE ACTUALLY USES, not solidFraction().
             //
@@ -21380,19 +15161,19 @@ void Foam::solvers::phaseClotAxisymmetricFluid::writeBalanceDiagnostic()
                 << " phiSOverNominal="
                 << phiSMaxSeen/max(skeletonVolumeFraction_, small)
                 << " phiSFracOfMax=" << phiSMaxSeen/max(phiSMax_, small)
-                << " forceBasis=" << phaseForceBasis_
+                << " forceBasis=content"
                 << " phiSLegacyMax="
                 << gMax(volScalarField(solidFraction())().primitiveField())
                 << " pnMax=" << pnMax
                 << " pnMin=" << pnMin
                 << " pnTermMax=" << pnTermMax
                 << " pnTermMin=" << pnTermMin
-                << " pnModel=" << networkPressureModel_
+                << " pnModel=convexExcess"
                 << " pnCapLevel=" << capLevel
                 << " pnCapCells=" << pnCapCells
                 << " pnCapFrac="
                 << scalar(pnCapCells)/max(scalar(pnTotalCells), small)
-                << " pnReference=" << networkPressureReference_
+                << " pnReference=deposited"
                 << " pnArgMax=" << gMax(pnArg.primitiveField())
                 << " pnArgMin=" << gMin(pnArg.primitiveField())
                 << nl;
@@ -21432,7 +15213,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::writeBalanceDiagnostic()
             ),
             w_
         );
-        if (plateletContentFormulation_)
         {
             // mag(q_): see wGrowth. A diagnostic that reports the
             // 1e+06-amplified quotient is worse than no diagnostic.
@@ -21559,18 +15339,18 @@ void Foam::solvers::phaseClotAxisymmetricFluid::writeBalanceDiagnostic()
 
         Info<< "PHASE_CLOT_GROWTH_STOICH"
             << " time=" << runTime.name()
-            << " closure=" << growthClosure_
-            << " depletion=" << interfaceDepletionModel_
+            << " closure=" << "reaction"
+            << " depletion=" << "none"
             // WHICH PLATELET BRANCH RAN. The Fourier, LED and limiter
             // instruments live inside the CONTENT branch of solvePlatelets(),
             // so a plateletContentFormulation=no child can never emit them.
             // Without this token the assessor read that absence as "the binary
             // predates the harmonic fix" and failed gate_a_advect -- the
             // legacy control -- for doing exactly its job. Run 20260902-104340.
-            << " content=" << (plateletContentFormulation_ ? "yes" : "no")
+            << " content=yes"
             << " clotGrowth=" << clotGrowth
             << " clotGrowthFront=" << clotGrowthFront
-            << " growthDriver=" << phaseGrowthDriver_
+            << " growthDriver=transfer"
             << " plateletUptake=" << plateletUptake
             << " plateletUptakeCommitted=" << plateletUptakeCommitted
             << " transferStoich=" << transferStoich
@@ -21781,7 +15561,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::writeBalanceDiagnostic()
     // The presence of this line is now itself the check: the gate's assessor
     // requires it, so a run in which the Eulerian path never executed fails on
     // that, naming the cause, instead of on a downstream consequence.
-    if (eulerianSolid_)
     {
         Info<< "PHASE_CLOT_EULERIAN"
             << " time=" << runTime.name()
@@ -22132,8 +15911,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::writeBalanceDiagnostic()
                 const vectorField& fP = aPres.primitiveField();
                 const scalarField& lam = lambda_.primitiveField();
                 const scalarField& drg = clotDrag_.primitiveField();
-                // For the explicit half of the relative-velocity drag.
-                const scalarField& rel = released_.primitiveField();
                 const vectorField& uu = U_.primitiveField();
                 const vectorField& vsx = Vs_.primitiveField();
 
@@ -22151,8 +15928,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::writeBalanceDiagnostic()
                 const scalarField& bh = bondHold_.primitiveField();
                 const scalarField& qq = q_.primitiveField();
                 const bool bondHoldInUEqn =
-                    eulerianSolid_
-                 && bondHoldPenalty_ > 0
+                 bondHoldPenalty_ > 0
                  && bondHoldDilation_ >= 0;
 
                 // THE SATURATION OBSERVABLE. The offline analysis of run
@@ -22241,9 +16017,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::writeBalanceDiagnostic()
                     // formulation later.
                     mDrgR += v*
                     (
-                        twoVelocitySkeleton_
-                      ? drg[celli]*vsx[celli].x()
-                      : drg[celli]*rel[celli]*UbodyCached_.x()
+                      drg[celli]*vsx[celli].x()
                     );
                     // Same expression as the fvm::Sp in momentumPredictor():
                     // bondHoldPenalty_*bondHold_*max(1 - q, 0).
@@ -22307,8 +16081,6 @@ void Foam::solvers::phaseClotAxisymmetricFluid::writeBalanceDiagnostic()
                 // switch of its own. Reusing one flag for terms that can now
                 // move independently is how a budget silently starts summing
                 // a force the solver never applied.
-                const bool anchorsInUEqn = !eulerianSolid_;
-                const bool brinkmanInUEqn = eulerianSolid_ && eulerianBrinkman_;
                 // mDrgR RIDES ON brinkmanInUEqn AND NOTHING ELSE, for the
                 // reason the block above gives about three flags rather than
                 // one: the explicit reaction exists only in the branch that
@@ -22317,8 +16089,8 @@ void Foam::solvers::phaseClotAxisymmetricFluid::writeBalanceDiagnostic()
                 // from Us_, which is inside that branch's own assembly and
                 // is not this field.
                 const scalar mAnchor =
-                    (anchorsInUEqn ? (mPen + mDrg) : 0)
-                  + (brinkmanInUEqn ? (mDrg + mDrgR) : 0)
+                    0
+                  + (mDrg + mDrgR)
                   + (bondHoldInUEqn ? mBH : 0);
                 const scalar mSum = mC + mV + mE + mP + mAnchor;
 
@@ -22334,8 +16106,8 @@ void Foam::solvers::phaseClotAxisymmetricFluid::writeBalanceDiagnostic()
                     << " accDragReaction=" << mDrgR
                     << " UbodyX=" << UbodyCached_.x()
                     << " accBondHold=" << mBH
-                    << " anchorsInUEqn=" << (anchorsInUEqn ? 1 : 0)
-                    << " brinkmanInUEqn=" << (brinkmanInUEqn ? 1 : 0)
+                    << " anchorsInUEqn=" << 0
+                    << " brinkmanInUEqn=" << 1
                     << " bondHoldInUEqn=" << (bondHoldInUEqn ? 1 : 0)
                     << " dragMin=" << dragMin
                     << " dragMax=" << dragMax
@@ -22620,7 +16392,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::forceFraction() const
     // step -- would evaluate the law at phi_s = 0 and report a network
     // pressure of zero for a step. Recomputed from thetaC_/thetaH_ here so it
     // is correct whenever it is called.
-    if (phaseForceBasis_ == "content")
     {
         return volScalarField::New
         (
@@ -22636,8 +16407,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::forceFraction() const
             )
         );
     }
-
-    return solidFraction();
 }
 
 
@@ -22671,7 +16440,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseIndicator() const
     // elasticStress() runs before momentumPredictor() on the first step, so
     // anything refreshed inside the predictor is zero when the first caller
     // reads it.
-    if (phaseIndicatorBasis_ == "content")
     {
         return volScalarField::New
         (
@@ -22687,12 +16455,6 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseIndicator() const
             )
         );
     }
-
-    return volScalarField::New
-    (
-        "phaseIndicator",
-        max(1.0 - q_, dimensionedScalar("zero", dimless, 0))
-    );
 }
 
 
@@ -22986,127 +16748,8 @@ void Foam::solvers::phaseClotAxisymmetricFluid::reportSkeletonVelocity()
 }
 
 
-void Foam::solvers::phaseClotAxisymmetricFluid::writeSkeletonResidual()
-{
-    // Quasi-static, massless skeleton:
-    //     div(sigma_e)/rho - chi*grad(p) + dragCoeff*(U - v_s) = 0
-    // solved for v_s. Assembled with the SOLVER's operators -- the declared
-    // div(sigmaElastic) scheme and fvc::grad -- which is the whole point:
-    // the offline numpy reconstruction that produced |v_s| > |U| did not use
-    // them, and this is what separates "the closure is wrong" from "the
-    // offline derivative was bad".
-    //
-    // Nothing here feeds back. Every field written is a diagnostic.
-
-    // chi is the SOLID fraction, clamped exactly as it is in solveSkeleton()
-    // and momentumPredictor(): q is bounded by the case at 1.01, so an
-    // unclamped 1 - q can go negative.
-    const volScalarField chi
-    (
-        max(1.0 - q_, dimensionedScalar("zero", dimless, 0))
-    );
-
-    skelElasticForce_ = skeletonElasticForceCell();
-
-    // p_ is KINEMATIC on this solver ([0 2 -2]), so its gradient is already
-    // an acceleration and must NOT be divided by rho as well.
-    skelPressForce_ = chi*fvc::grad(p_);
-
-    // Guarded. clotDrag_ is identically zero in free blood, where there is no
-    // skeleton to have a velocity; v_s is defined to be U there rather than
-    // divided by zero. dragFloor is one over the longest timescale in the
-    // problem, not an epsilon chosen to look small.
-    const dimensionedScalar dragFloor("dragFloor", dimless/dimTime, 1.0);
-    const volScalarField dragSafe(max(clotDrag_, dragFloor));
-
-    skelVs_ =
-        U_ - (skelPressForce_ - skelElasticForce_)/dragSafe;
-
-    // Where there is no skeleton, report the fluid velocity rather than a
-    // number produced by the floor above.
-    const volScalarField isSkeleton
-    (
-        pos0(clotDrag_ - dragFloor)
-    );
-    skelVs_ = isSkeleton*skelVs_ + (1.0 - isSkeleton)*U_;
-
-    // THE FALSIFIABLE NUMBER. A skeleton dragged by a fluid, resisted by its
-    // own elastic stress, cannot move faster than that fluid. If this ratio
-    // sits above 1 in the clot then the closure is wrong, and no amount of it
-    // being cheap to evaluate makes it usable.
-    scalar sumRatio = 0;
-    scalar maxRatio = 0;
-    label clotCells = 0;
-    // S6c-2: THE PHASE INDICATOR, NOT c. c = 1 - 2*ind exactly,
-    // so every threshold below is the same threshold restated:
-    // c < L becomes ind > (1 - L)/2, and the inequality turns
-    // over with it. Same cells, named in the surviving field.
-    const volScalarField indHold(phaseIndicator());
-    const scalarField& indIn = indHold.primitiveField();
-    const scalarField& dragIn = clotDrag_.primitiveField();
-    const vectorField& vsIn = skelVs_.primitiveField();
-    const vectorField& UIn = U_.primitiveField();
-    forAll(indIn, celli)
-    {
-        if (indIn[celli] > 0.5 && dragIn[celli] > 1.0)
-        {
-            const scalar magU = mag(UIn[celli]);
-            if (magU > vSmall)
-            {
-                const scalar ratio = mag(vsIn[celli])/magU;
-                sumRatio += ratio;
-                maxRatio = max(maxRatio, ratio);
-                ++clotCells;
-            }
-        }
-    }
-    reduce(sumRatio, sumOp<scalar>());
-    reduce(maxRatio, maxOp<scalar>());
-    reduce(clotCells, sumOp<label>());
-
-    Info<< "PHASE_CLOT_SKELETON_RESIDUAL time=" << runTime.userTimeValue()
-        << " clotCells=" << clotCells
-        << " meanVsOverU=" << (clotCells ? sumRatio/scalar(clotCells) : 0.0)
-        << " maxVsOverU=" << maxRatio
-        << " maxElastic=" << gMax(mag(skelElasticForce_.primitiveField()))
-        << " maxPress=" << gMax(mag(skelPressForce_.primitiveField()))
-        << " maxVs=" << gMax(mag(vsIn))
-        << " maxU=" << gMax(mag(UIn))
-        << endl;
-}
-
-
 void Foam::solvers::phaseClotAxisymmetricFluid::postSolve()
 {
-    if (clotMechanics_ && stronglyCoupledFSI_)
-    {
-        // Printed EVERY step, converged or not. With nOuterCorrectors 1 the
-        // exchange cannot iterate and this line reads "iterations = 1,
-        // converged = 0" - which is the loose scheme wearing the strong
-        // scheme's name, and the failure this report exists to make visible.
-        // The CONTRACTION is the diagnostic that matters: an iteration that is
-        // merely slow has a factor below 1 and will finish given more sweeps,
-        // while one sitting on a floor has a factor at or above 1 and never
-        // will, however many are allowed. Run 20260804-031439 stalled near
-        // 4e-4 and had no way to tell those apart.
-        const scalar contraction =
-            (couplingIters_ > 1 && couplingResidual0_ > small)
-          ? Foam::pow
-            (
-                couplingResidual_/couplingResidual0_,
-                1.0/scalar(couplingIters_ - 1)
-            )
-          : -1.0;
-
-        Info<< "PHASE_CLOT_FSI time=" << runTime.userTimeValue()
-            << " iterations=" << couplingIters_
-            << " residual0=" << couplingResidual0_
-            << " residual=" << couplingResidual_
-            << " contraction=" << contraction
-            << " omega=" << fsiOmega_
-            << " converged=" << Switch(couplingConverged_)
-            << endl;
-    }
 
     writeBalanceDiagnostic();
 
@@ -23114,8 +16757,4 @@ void Foam::solvers::phaseClotAxisymmetricFluid::postSolve()
     // the cost is bounded by the number of write steps rather than by the
     // number of solver steps -- 60 evaluations against 19 920 on the run this
     // was built for.
-    if (skeletonResidualDiagnostic_ && runTime.writeTime())
-    {
-        writeSkeletonResidual();
-    }
 }

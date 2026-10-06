@@ -334,10 +334,13 @@ def self_test(solver: Path) -> int:
 
     run("the shipped solver is clean", source, False)
 
-    named = 'fvc::div(sigmaD_ & (I + gradUs), "div(sigmaD)")'
+    # S21: the anchor was solveSkeleton()'s `fvc::div(sigmaD_ & (I + gradUs),
+    # "div(sigmaD)")`, deleted with that function (docket 20261005-1621
+    # report 10). The kept named div of the be transport stands in for it.
+    named = 'fvc::div(phi_, be_, "div(phi,be)")'
     if named in source:
         run("a real unnamed div is caught",
-            source.replace(named, "fvc::div(sigmaD_ & (I + gradUs))", 1), True)
+            source.replace(named, "fvc::div(phi_*be_)", 1), True)
     else:
         print("  FAIL the anchor for the unnamed-div case is gone; fix this test")
         cases.append(False)

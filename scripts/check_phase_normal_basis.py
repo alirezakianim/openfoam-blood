@@ -58,14 +58,12 @@ HEADER = ROOT / "user-applications/phaseClotAxisymmetricFluid/phaseClotAxisymmet
 # The five members deleted in S6c-2, plus c itself.
 DELETED = ("c_", "muC_", "mobility_", "epsilonC_", "deltaC_")
 
-# The dictionary values that lost their implementation with c.
-DEAD_VALUES = (
-    ("phaseNormalBasis", "legacy"),
-    ("phaseDeltaBasis", "legacy"),
-    ("phaseLimiterBasis", "legacy"),
-    ("phaseFluidFractionBasis", "legacy"),
-    ("phaseGrowthDriver", "front"),
-)
+# S21 (2026-10-05, docket 20261005-1621 report 15): DEAD_VALUES and dead_value_is_refused() pinned the five
+# refuseDeadValue calls (phaseNormalBasis, phaseDeltaBasis, phaseLimiterBasis,
+# phaseFluidFractionBasis 'legacy'; phaseGrowthDriver 'front'), deleted by
+# S21A a11 (release .C:4052-4146). The five keys are built in; a dictionary
+# naming any of them is refused by the S21 built-in-key check instead
+# (check_refused_dictionary_values.py).
 
 
 def strip_comments(text: str) -> str:
@@ -139,11 +137,6 @@ def the_two_localisers_stay_a_factor_of_two_apart(src: str) -> bool:
     if "interfaceDelta_ = deltaTheta_;" not in body:
         return False
     return "interfaceDelta_ = phaseGradient_" not in body
-
-
-def dead_value_is_refused(src: str, key: str, value: str) -> bool:
-    body = compact(strip_comments(src))
-    return f'refuseDeadValue ( "{key}", {key}_, "{value}",' in body
 
 
 def nonzero_mobility_is_refused(src: str) -> bool:
@@ -297,15 +290,7 @@ class DeleteC(unittest.TestCase):
 
     # ---- fail closed on every value that lost its implementation --------
 
-    def test_every_dead_key_value_is_refused(self):
-        for key, value in DEAD_VALUES:
-            self.assertTrue(
-                dead_value_is_refused(self.src, key, value),
-                f"{key} '{value}' is not refused. Its implementation read "
-                f"c and is deleted, so a case naming it would silently run "
-                f"the surviving value instead -- a different model under "
-                f"the name of the one that was asked for",
-            )
+    # S21 (2026-10-05, docket 20261005-1621 report 15): test_every_dead_key_value_is_refused retired (S21A a11).
 
     def test_a_nonzero_mobility_is_refused(self):
         self.assertTrue(
@@ -408,15 +393,7 @@ class DeleteC(unittest.TestCase):
             "silent factor of two",
         )
 
-        for key, value in DEAD_VALUES:
-            broken = src.replace(f'"{key}", {key}_, "{value}",', "", 1)
-            self.assertNotEqual(broken, src,
-                                f"the {key} refusal mutation did not apply")
-            self.assertFalse(
-                dead_value_is_refused(broken, key, value),
-                f"removing the {key} '{value}' refusal is NOT caught",
-            )
-
+        # S21: the five dead-value refusal mutations went with them (S21A a11).
         broken = src.replace('phaseClotProperties_.found("mobility")', "false", 1)
         self.assertNotEqual(broken, src, "the mobility mutation did not apply")
         self.assertFalse(

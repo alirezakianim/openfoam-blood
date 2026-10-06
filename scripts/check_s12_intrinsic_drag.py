@@ -5,9 +5,11 @@ research/designs/2026-09-23-S12-intrinsic-occupancy-drag.md. Under
 dragOccupancyBasis intrinsic the interphase drag of a partial cell is its
 occupancy times the network's OWN Kozeny-Carman drag at its intrinsic density,
 ind*(1-a)^2*nu/k_KC(a) -- the diffuse-domain weighting the S11 stress already
-has. This file asserts that the solver source does exactly that, that the
-generator refuses what the constructor refuses, and that the law's numbers are
-the ones the design priced. Every predicate has a mutation beside it that must
+has. This file asserts that the solver source does exactly that and that the
+law's numbers are the ones the design priced. (S21: intrinsic is built in --
+the switch, its default, its refusals and the generator's mirror of them are
+deleted, so their pins are too; report 18 of docket
+20261005-1621-run110939-b68-free-clots lists each with its hunk.) Every predicate has a mutation beside it that must
 make it FAIL (write-the-negative-test-before-trusting-a-guard).
 
 What it does NOT check: that the fix cures the run. That is em55/em56's job,
@@ -86,29 +88,26 @@ def drag_is_occupancy_times_intrinsic(src: str) -> bool:
 
 
 def both_drag_sites_and_the_written_field_use_it(src: str) -> bool:
+    """S21: intrinsic is built in, so both overwrites are unconditional -- the
+    momentum drag straight after its legacy construction, and the written
+    poroPerm in updatePermeability(). (The dynamic rho_* site went with
+    solveSkeleton(), S21C1 hunk b23.)"""
     s = flat(src)
     perm = flat(body(src, "phaseClotAxisymmetricFluid::updatePermeability()"))
     return (
-        'if(dragOccupancyBasis_=="intrinsic"){dragCoeff=intrinsicDragRate();poroPerm_=intrinsicPermeability();}' in s
-        and 'if(dragOccupancyBasis_=="intrinsic"){dragCoeff=rho_*intrinsicDragRate();}' in s
-        and 'if(dragOccupancyBasis_=="intrinsic"){poroPerm_=intrinsicPermeability();}elseif(permeabilityModel_=="constant")' in perm
+        'permeabilityFloor_)))());{dragCoeff=intrinsicDragRate();poroPerm_=intrinsicPermeability();}' in s
+        and '(tPermeability_);{poroPerm_=intrinsicPermeability();}poroPerm_.correctBoundaryConditions();' in perm
     )
 
 
 def dependencies_are_refused(src: str) -> bool:
+    """S21: the switch, its value refusal and the requirements that only
+    other switches could break are gone with those switches; the refusal of
+    the calibrated floor on top (a real parameter) is kept."""
     s = flat(src)
     return (
-        'if(dragOccupancyBasis_!="legacy"&&dragOccupancyBasis_!="intrinsic")' in s
-        and 'if(dragOccupancyBasis_=="intrinsic"){if(!(twoVelocitySkeleton_&&eulerianSolid_))' in s
-        and 'if(networkPressureReference_!="deposited"||networkPressureModel_!="convexExcess")' in s
-        and 'if(permeabilityModel_!="kozenyCarmanSolid")' in s
-        and 'if(dragDriver_=="content"){FatalErrorInFunction<<"dragOccupancyBasisintrinsicanddragDrivercontent' in s
-        and 'if(skeletonDiluteDragRate_>0){FatalErrorInFunction<<"dragOccupancyBasisintrinsicgives' in s
+        'if(skeletonDiluteDragRate_>0){FatalErrorInFunction<<"dragOccupancyBasisintrinsicgives' in s
     )
-
-
-def default_is_legacy(src: str) -> bool:
-    return '"dragOccupancyBasis","legacy"' in flat(src)
 
 
 def domain_check_reports_cells_first(src: str) -> bool:
@@ -135,13 +134,6 @@ def diagnostic_is_logged(src: str) -> bool:
     )
 
 
-def generator_mirrors_the_refusals(gen: str) -> bool:
-    return ("S12_SWITCHES" in gen and "def s12_combination_refusal" in gen
-            and "s12_combination_refusal(" in gen.split("def s12_combination_refusal")[1]
-            and "for _key, _dict_key, _allowed in S12_SWITCHES:" in gen
-            and "would add the calibrated " in gen)
-
-
 def assessor_reads_the_gates(assess: str) -> bool:
     return ("def s12_report" in assess and '"s12": s12_report(text)' in assess
             and "<= 8.0" in assess and "1e-9" in assess)
@@ -152,7 +144,6 @@ PREDICATES = [
     ("occupancy x intrinsic drag", drag_is_occupancy_times_intrinsic),
     ("both sites + written field", both_drag_sites_and_the_written_field_use_it),
     ("dependencies refused", dependencies_are_refused),
-    ("default legacy", default_is_legacy),
     ("domain check cells first", domain_check_reports_cells_first),
     ("diagnostic logged", diagnostic_is_logged),
 ]
@@ -173,20 +164,12 @@ MUTATIONS = [
     ("kinematic site not overwritten", both_drag_sites_and_the_written_field_use_it,
      "            dragCoeff = intrinsicDragRate();\n            poroPerm_ = intrinsicPermeability();",
      "            poroPerm_ = intrinsicPermeability();"),
-    ("dynamic site without rho", both_drag_sites_and_the_written_field_use_it,
-     "        dragCoeff = rho_*intrinsicDragRate();",
-     "        dragCoeff = intrinsicDragRate();"),
     ("written poroPerm left legacy", both_drag_sites_and_the_written_field_use_it,
-     "    if (dragOccupancyBasis_ == \"intrinsic\")\n    {\n        poroPerm_ = intrinsicPermeability();\n    }\n    else if",
-     "    if (false)\n    {\n        poroPerm_ = intrinsicPermeability();\n    }\n    else if"),
+     "    {\n        poroPerm_ = intrinsicPermeability();\n    }\n\n    poroPerm_.correctBoundaryConditions();",
+     "    if (false)\n    {\n        poroPerm_ = intrinsicPermeability();\n    }\n\n    poroPerm_.correctBoundaryConditions();"),
     ("floor on top allowed", dependencies_are_refused,
      "        if (skeletonDiluteDragRate_ > 0)\n        {\n            FatalErrorInFunction\n                << \"dragOccupancyBasis intrinsic gives",
      "        if (skeletonDiluteDragRate_ > 1e30)\n        {\n            FatalErrorInFunction\n                << \"dragOccupancyBasis intrinsic gives"),
-    ("argument domain not required", dependencies_are_refused,
-     '         || networkPressureModel_ != "convexExcess"\n        )\n        {\n            FatalErrorInFunction\n                << "dragOccupancyBasis intrinsic evaluates',
-     '         && networkPressureModel_ != "convexExcess"\n        )\n        {\n            FatalErrorInFunction\n                << "dragOccupancyBasis intrinsic evaluates'),
-    ("default switched on", default_is_legacy,
-     '"dragOccupancyBasis", "legacy"', '"dragOccupancyBasis", "intrinsic"'),
     ("cell check disabled", domain_check_reports_cells_first,
      "        if (!(aIn[celli] > 0 && aIn[celli] < phiSMax_))\n        {\n            worst = celli;",
      "        if (false)\n        {\n            worst = celli;"),
@@ -226,14 +209,12 @@ class S12Properties(unittest.TestCase):
             with self.subTest(property=name):
                 self.assertTrue(pred(self.src), f"S12 property broken: {name}")
 
-    def test_the_generator_mirrors_the_refusals(self):
-        self.assertTrue(generator_mirrors_the_refusals(self.gen))
-
     def test_the_assessor_reads_the_gates(self):
         self.assertTrue(assessor_reads_the_gates(self.assess))
 
     def test_the_switch_is_declared_with_its_evidence(self):
-        self.assertIn("word dragOccupancyBasis_;", self.hdr)
+        # S21: `word dragOccupancyBasis_;` is gone (S21C1 hunk h26); the
+        # evidence and the four functions stay.
         self.assertIn("20260923-085741", self.hdr)
         for f in ("checkNetworkArgument", "intrinsicPermeability",
                   "intrinsicDragRate", "reportFringe"):
@@ -302,13 +283,6 @@ class S12Mutations(unittest.TestCase):
                 self.assertTrue(pred(self.src), f"{label}: baseline fails")
                 self.assertFalse(pred(self.src.replace(old, new)),
                                  f"{label}: the guard did not catch it")
-
-    def test_the_generator_guard_fires(self):
-        gen = GEN.read_text()
-        self.assertTrue(generator_mirrors_the_refusals(gen))
-        self.assertFalse(generator_mirrors_the_refusals(
-            gen.replace("for _key, _dict_key, _allowed in S12_SWITCHES:",
-                        "for _key, _dict_key, _allowed in ():")))
 
 
 if __name__ == "__main__":

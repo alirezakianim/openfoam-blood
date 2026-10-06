@@ -16,10 +16,8 @@ THE TWO TRAPS, both of which break no dimension check and do not crash:
      area and carries the UNIT delta. Swapping them silently halves or doubles
      the deposition.
 
-  2. A mode word that falls back. lookupOrDefault returns "uniform" for a TYPO
-     just as readily as for a missing key, so a child whose manifest claims
-     "interface" could run unlocalised and be read as a localiser that did not
-     work.
+  2. A mode word that falls back. RETIRED by S21: plateletBindLocalisation is
+     built in at interface (S21A b-hunks, c14), so there is no word to fall back.
 
 Every assertion below is negative-tested against a mutation of the source it
 reads: see MUTATIONS.
@@ -64,10 +62,8 @@ def rate_is_dimensionally_checked(text: str) -> bool:
         r"rate\.dimensions\(\)\s*!=\s*dimless/dimTime", text))
 
 
-def mode_is_validated(text: str) -> bool:
-    return bool(re.search(
-        r'plateletBindLocalisation_\s*!=\s*"uniform"\s*\n?\s*&&\s*'
-        r'plateletBindLocalisation_\s*!=\s*"interface"', text))
+# S21 (2026-10-05, docket 20261005-1621 report 15): mode_is_validated() pinned the plateletBindLocalisation value
+# refusal, deleted by S21A c14 (release .C:14042-14054).
 
 
 def reaction_gated_on_the_field(text: str) -> bool:
@@ -101,9 +97,6 @@ class LocaliserTests(unittest.TestCase):
     def test_the_rate_is_dimensionally_checked_as_per_second(self):
         self.assertTrue(rate_is_dimensionally_checked(self.content))
 
-    def test_the_mode_word_is_validated_against_an_explicit_list(self):
-        self.assertTrue(mode_is_validated(self.solver))
-
     def test_the_reaction_is_gated_on_the_field_not_the_scalar(self):
         """Gating on plateletBindRate_ would switch the whole interface mode
         off whenever lambda was left at its default -- precisely the
@@ -114,8 +107,10 @@ class LocaliserTests(unittest.TestCase):
         for key in ("bindLocalisation=", "bindRateMax=", "bindRateClotFrac="):
             self.assertIn(key, self.solver, key)
 
-    def test_the_unlocalised_mode_announces_itself(self):
-        self.assertIn("PHASE_CLOT_FREEPLATELET_UNLOCALISED", self.solver)
+    # S21 (2026-10-05, docket 20261005-1621 report 15): test_the_mode_word_is_validated_against_an_explicit_list
+    # (S21A c14) and test_the_unlocalised_mode_announces_itself (the
+    # uniform-mode banner, S21A a34, release .C:14090-14099) retired with the
+    # uniform mode.
 
     # ---- the generator ---------------------------------------------
 
@@ -123,14 +118,13 @@ class LocaliserTests(unittest.TestCase):
         self.assertIn('platelet_bind_localisation must be', self.gen)
         self.assertIn('("uniform", "interface")', self.gen)
 
-    def test_the_generator_writes_both_dictionary_keys(self):
-        self.assertIn('"plateletBindLocalisation"', self.gen)
+    def test_the_generator_writes_the_adhesion_speed_key(self):
+        # S21: the generator no longer writes plateletBindLocalisation (built
+        # in; release-4198bb17 create_cases.py L4052).
         self.assertIn('"plateletAdhesionSpeed"', self.gen)
 
-    def test_the_ceiling_applies_only_to_the_uniform_mode(self):
-        """Under `interface` the uniform-gain figure is not even the right
-        quantity -- the rate is zero away from the interface."""
-        self.assertIn('localisation == "uniform" and end_time > 0', self.gen)
+    # S21: test_the_ceiling_applies_only_to_the_uniform_mode retired with the
+    # ceiling (release-4198bb17 create_cases.py L2247, L311).
 
     def test_the_header_records_the_factor_of_two_contract(self):
         self.assertIn("UNIT surface delta", self.header)
@@ -146,9 +140,7 @@ MUTATIONS = [
     ("rate_is_dimensionally_checked", CONTENT,
      "rate.dimensions() != dimless/dimTime",
      "rate.dimensions() != dimless", rate_is_dimensionally_checked),
-    ("mode_is_validated", SOLVER,
-     'plateletBindLocalisation_ != "interface")',
-     'plateletBindLocalisation_ != "uniform")', mode_is_validated),
+    # S21: the mode_is_validated mutation went with its predicate (S21A c14).
 ]
 
 

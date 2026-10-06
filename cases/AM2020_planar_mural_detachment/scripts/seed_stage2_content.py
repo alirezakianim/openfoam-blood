@@ -27,7 +27,7 @@ SAME clot as em27/em28 rather than a different one:
     thetaH = theta0 * sClamp
     thetaC = theta0 * (1 - sClamp)
 
-A no-op unless the case declares `plateletContentModel yes`.
+Every case seeds the triple since S21: contentModel and plateletContentModel are built in.
 """
 from __future__ import annotations
 
@@ -90,16 +90,9 @@ def main() -> int:
         raise SystemExit(f"{props} is missing")
     text = props.read_text()
 
-    if (dictionary_value(text, "plateletContentModel") or "no").lower() not in (
-            "yes", "true", "on", "1"):
-        return 0
-
-    if (dictionary_value(text, "contentModel") or "no").lower() not in (
-            "yes", "true", "on", "1"):
-        raise SystemExit(
-            "plateletContentModel is on but contentModel is not; the solver "
-            "refuses this combination and so does create_cases.py")
-
+    # S21: contentModel and plateletContentModel are built in (true), so they are no longer in
+    # the dictionary and every case seeds the triple. Reading them here would find them absent
+    # and skip the seeding, which the solver's all-or-none restart check then refuses.
     theta_ref = dictionary_value(text, "skeletonVolumeFraction")
     if theta_ref is None:
         raise SystemExit("skeletonVolumeFraction is not declared")

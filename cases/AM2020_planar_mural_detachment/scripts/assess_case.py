@@ -1023,6 +1023,42 @@ def parse_body_velocity(text: str) -> list[dict[str, float]]:
             )
         out.append(kv)
     return out
+# S21 (research/designs/2026-10-05-S21-clean-solver.md section 1.2; docket 20261005-1621,
+# reports 06, 09, 10): the options the solver now runs built in. Their CONFIG echoes and
+# child.json members are gone (S11_CONFIG, S17B_CONFIG and PHASE_WEIGHT_CONFIG are not
+# printed at all), so the assessor reads the built-in value. A log from an older binary
+# that still prints the key is read as printed.
+S21_BUILT_IN = {
+    "networkRupture": "fibreRelease", "elasticCoupling": "implicitTangent",
+    "beStretchGradient": "fluxConsistent", "beDetRenormalise": "yes",
+    "fibreSlack": "v1", "fibreArithmetic": "fieldUnits", "skeletonWallFace": "zeroed",
+    "frozenPendingPressure": "none", "wallPatchSplit": "split", "cplusOrder": "shared",
+    "blockCoupledLumen": "eliminate", "contentTransportScheme": "fct",
+    "dragOccupancyBasis": "intrinsic", "skeletonFloorBasis": "occupancy",
+}
+# child.json members the generator no longer writes (built in): the value each kept child had.
+S21_BUILT_IN_SPEC = {
+    "advect_released": True, "permeability_model": "kozenyCarmanSolid",
+    "skeleton_diffuse_domain": True, "material_carrier_blend": False,
+}
+
+
+G3_LAMBDA_MEDIAN_MIN = 0.1     # S20 section 2.3: 1e5 above the printed resolution
+
+
+def s21_config(config: dict | None, key: str):
+    """A CONFIG key: as printed, else its S21 built-in value; None when the line itself is
+    absent (no such line in the log, which is never a pass)."""
+    if config is None:
+        return None
+    return config.get(key, S21_BUILT_IN[key])
+
+
+def s21_spec(spec: dict, key: str):
+    """A child.json member S21 removed: as written, else the built-in value."""
+    return spec.get(key, S21_BUILT_IN_SPEC[key])
+
+
 def s10_report(text: str, g_pa: float | None) -> dict:
     """The pre-registered S10 quantities, READ so they are not unread lines.
 
@@ -1093,6 +1129,35 @@ def s10_report(text: str, g_pa: float | None) -> dict:
     out["fct_lambda_flux_mean"] = (sum(lam) / len(lam)) if lam else None
     out["g3_content_nonnegative"] = (
         None if not fct else out["fct_neg_after_max"] == 0)
+
+    # G3'lambda (research/designs/2026-10-05-S20-content-fct-neutral-zero-flux.md section
+    # 2.3): over the records with activeFaces > 0, the median lambdaFluxMean must be
+    # >= 0.1. It applies only to S20 logs, whose FCT lines carry zeroFluxRule=exactZero;
+    # an older log (no zeroFluxRule on any FCT line) reports N/A. A failing run is
+    # batch 68's fsf_G4 (lambdaFluxMean 0 on every step); the loose replay reads 0.99-1.0.
+    rules = re.findall(r"^PHASE_CLOT_CONTENT_FCT .*?\bzeroFluxRule=(\S+)", text, re.M)
+    out["fct_zero_flux_rule"] = sorted(set(rules)) or None
+    out["g3_lambda_min_median"] = G3_LAMBDA_MEDIAN_MIN
+    active_lam = [f["lambdaFluxMean"] for f in fct
+                  if f.get("activeFaces", 0) > 0 and "lambdaFluxMean" in f]
+    out["fct_active_records"] = len(active_lam)
+    if not rules:
+        out["g3_lambda_median"] = None
+        out["g3_lambda"] = None
+        out["g3_lambda_note"] = "N/A: no zeroFluxRule on the FCT lines (a pre-S20 log)"
+    else:
+        srt = sorted(active_lam)
+        k = len(srt)
+        med = (None if not k else srt[k // 2] if k % 2 else 0.5*(srt[k//2 - 1] + srt[k//2]))
+        out["g3_lambda_median"] = med
+        everywhere = len(rules) == len(fct) and set(rules) == {"exactZero"}
+        out["g3_lambda"] = (None if med is None
+                            else bool(everywhere and med >= G3_LAMBDA_MEDIAN_MIN))
+        out["g3_lambda_note"] = (
+            "no FCT record has activeFaces > 0" if med is None
+            else None if everywhere
+            else f"zeroFluxRule is not exactZero on every FCT line ({len(rules)} of "
+                 f"{len(fct)} carry it: {sorted(set(rules))})")
     return out
 
 
@@ -1114,10 +1179,10 @@ def s11_report(text: str) -> dict:
     def series(tag):
         return [kv(m) for m in re.findall(rf"^{tag} (.*)$", text, re.M)]
 
-    out: dict = {"config": None}
-    cfg = re.search(r"^PHASE_CLOT_S11_CONFIG (.*)$", text, re.M)
-    if cfg:
-        out["config"] = dict(re.findall(r"(\w+)=(\S+)", cfg.group(1)))
+    # S21 (docket 20261005-1621 report 10): PHASE_CLOT_S11_CONFIG is no longer printed;
+    # every key it echoed is built in. The per-step S11 lines below are unchanged.
+    out: dict = {"config": None,
+                 "config_note": "S21: no S11_CONFIG line (its keys are built in)"}
 
     def peak(rows, key):
         vals = [r[key] for r in rows if key in r]
@@ -1225,7 +1290,7 @@ def s13_report(text: str) -> dict:
     out["presence_weight"] = (None if not c
                               else c.get("networkPressureWeight") == "networkPresence")
     out["flux_consistent_stretch"] = (None if not c
-                                      else c.get("beStretchGradient") == "fluxConsistent")
+                                      else s21_config(c, "beStretchGradient") == "fluxConsistent")
     return out
 
 
@@ -1301,7 +1366,7 @@ def s14_report(text: str) -> dict:
     # G12 is then the largest one-step rise of d, which must stay below 0.05
     # (resolved loading at the wall shear moves d by <= ~0.02 per step; a
     # stretch jump like em58's 2.6 -> 5 moves it ~0.5).
-    mode = (out["config"] or {}).get("networkRupture")
+    mode = s21_config(out["config"], "networkRupture")
     ds = [r["damageStepMax"] for r in rows if "damageStepMax" in r]
     out["damage_step_max"] = max(ds) if ds else None
     out["max_damage"] = out.get("ruptured_max")
@@ -1328,8 +1393,8 @@ def s14_report(text: str) -> dict:
     # number leaves the dt rate -- the pair carries the tangent implicitly --
     # so G13's explicit limit does not apply. Reported, not gated.
     s17cfg = re.search(r"^PHASE_CLOT_S17_CONFIG (.*)$", text, re.M)
-    if s17cfg and dict(re.findall(r"(\w+)=(\S+)", s17cfg.group(1))).get(
-            "elasticCoupling") == "implicitTangent":
+    if s17cfg and s21_config(dict(re.findall(r"(\w+)=(\S+)", s17cfg.group(1))),
+                             "elasticCoupling") == "implicitTangent":
         out["g13_elastic_number_bounded"] = None
         out["g13_note"] = ("not applicable under elasticCoupling "
                            "implicitTangent (the tangent is implicit)")
@@ -1381,7 +1446,7 @@ def s15_report(text: str) -> dict:
     out["composition_label"] = (
         None if not c else c.get("materialLabelBasis") == "contentComposition")
     out["progressive_damage"] = (
-        None if not c else c.get("networkRupture") == "progressiveDamage")
+        None if not c else s21_config(c, "networkRupture") == "progressiveDamage")
     return out
 
 
@@ -1482,7 +1547,7 @@ def s16_report(text: str, spec: dict | None = None) -> dict:
             "mirrorDevMax", "partitionMin", "partitionSubnormalCells",
             "muMin", "muMean", "foutMax", "partitionSumDevAbs",
             "partitionSumDevMax")
-    terminal_cfg = (out["config"] or {}).get("networkRupture") in (
+    terminal_cfg = s21_config(out["config"], "networkRupture") in (
         "terminalRelease", "fibreRelease")
     out["g12p"] = None
     out["g12p_note"] = (
@@ -1506,7 +1571,7 @@ def s16_report(text: str, spec: dict | None = None) -> dict:
                 tau = float(out["config"]["networkReleaseTime"])
             except ValueError:
                 tau = None
-        terminal = (out["config"] or {}).get("networkRupture") in (
+        terminal = s21_config(out["config"], "networkRupture") in (
             "terminalRelease", "fibreRelease")
         rel = [r for r in rows if "r" in r and "lawReleaseMax" in r]
         out["law_release_max"] = max((r["lawReleaseMax"] for r in rel), default=None)
@@ -1702,8 +1767,9 @@ def s17_report(text: str, spec: dict | None = None) -> dict:
     elif out["config"] is None:
         out["config_matches_child"] = False
     else:
-        bad = [k for k in ("networkRupture", "elasticCoupling",
-                           "beDetRenormalise", "pendingForm")
+        # S21: networkRupture, elasticCoupling and beDetRenormalise are built in; the
+        # line and child.json carry pendingForm only.
+        bad = [k for k in ("pendingForm",)
                if str(out["config"].get(k)) != str(want.get(k))]
         out["config_mismatched_keys"] = bad
         out["config_matches_child"] = not bad
@@ -2052,10 +2118,10 @@ def s17b_report(text: str, spec: dict | None = None) -> dict:
 
     spec = spec or {}
     want = spec.get("s17b")
+    # S21 (report 10): PHASE_CLOT_S17B_CONFIG is no longer printed and fibreSlack,
+    # fibreArithmetic and skeletonWallFace are built in; a child.json s17b block would
+    # be a generator defect, and it is then reported as not matching.
     out: dict = {"config": None, "config_expected": want}
-    cfg = re.search(r"^PHASE_CLOT_S17B_CONFIG (.*)$", text, re.M)
-    if cfg:
-        out["config"] = dict(re.findall(r"(\w+)=(\S+)", cfg.group(1)))
     if want is None:
         out["config_matches_child"] = None
     elif out["config"] is None:
@@ -2065,7 +2131,13 @@ def s17b_report(text: str, spec: dict | None = None) -> dict:
                if str(out["config"].get(k)) != str(want.get(k))]
         out["config_mismatched_keys"] = bad
         out["config_matches_child"] = not bad
-    v1 = (out["config"] or {}).get("fibreSlack") == "v1"
+    # S21: S17B_CONFIG is gone and fibreSlack is built in at v1; child.json has no s17b
+    # block, so config_matches_child is None (nothing declared) and the gates apply.
+    v1 = s21_config(out["config"] or {}, "fibreSlack") == "v1"
+    # S21: every child runs S17b (the block was all built-in members, so child.json
+    # no longer carries it); the gates below that keyed on a declared block apply to
+    # every child, or they would have gone silent on all 18 kept children.
+    s17b_child = want is not None or v1
     rows = [kv(m) for m in re.findall(r"^PHASE_CLOT_S17B (.*)$", text, re.M)]
     out["records"] = len(rows)
     keys = ("slackEvents", "slackDdMax", "slackMuMax", "slackAtRest",
@@ -2111,15 +2183,15 @@ def s17b_report(text: str, spec: dict | None = None) -> dict:
                     "taut_le_pending": None})
     inv = re.findall(r"^PHASE_CLOT_S17_FIBRE_INVALID (.*)$", text, re.M)
     fatal = re.search(r"pending fibre is invalid", text)
-    out["no_fibre_invalid_fatal"] = (None if want is None
+    out["no_fibre_invalid_fatal"] = (None if not s17b_child
                                      else not (inv or fatal))
     s17 = [kv(m) for m in re.findall(r"^PHASE_CLOT_S17 (.*)$", text, re.M)]
     w2 = [r["w2Max"] for r in s17 if "w2Max" in r]
     p2 = [r["p2Max"] for r in s17 if "p2Max" in r]
     out["w2_max"] = max(w2) if w2 else None
     out["p2_max"] = max(p2) if p2 else None
-    out["w2"] = None if not w2 or want is None else bool(max(w2) <= S17B_W2_LIMIT)
-    out["p2"] = None if not p2 or want is None else bool(max(p2) <= S17B_W2_LIMIT)
+    out["w2"] = None if not w2 or not s17b_child else bool(max(w2) <= S17B_W2_LIMIT)
+    out["p2"] = None if not p2 or not s17b_child else bool(max(p2) <= S17B_W2_LIMIT)
     tr = [r["transferB1Max"] for r in s17 if r.get("transfers", 0) > 0]
     out["watch_g_tr_max"] = max(tr) if tr else None
     out["g_tr_note"] = "G-tr is a WATCH under S17b (design section 2)"
@@ -2285,8 +2357,9 @@ def s18_report(text: str, spec: dict | None = None) -> dict:
     elif out["config"] is None:
         out["config_matches_child"] = False
     else:
-        bad = [k for k in ("frozenPendingPressure", "wallPatchSplit",
-                           "networkPressureWeight", "cplusOrder")
+        # S21: frozenPendingPressure, wallPatchSplit and cplusOrder are built in; the
+        # line and child.json carry networkPressureWeight only.
+        bad = [k for k in ("networkPressureWeight",)
                if str(out["config"].get(k)) != str(want.get(k))]
         out["config_mismatched_keys"] = bad
         out["config_matches_child"] = not bad
@@ -2344,11 +2417,11 @@ def s18_report(text: str, spec: dict | None = None) -> dict:
     pr = [r["projRaised"] for r in s17 if "projRaised" in r]
     ws = [r["wallSplitDevMax"] for r in rows if "wallSplitDevMax" in r]
     out["conformance"] = {
-        "frozenPower_zero": (None if cf.get("frozenPendingPressure") != "none" or not fp
+        "frozenPower_zero": (None if s21_config(cf, "frozenPendingPressure") != "none" or not fp
                              else all(v == 0 for v in fp)),
         "frozenPower_max_abs": max((abs(v) for v in fp), default=None),
         "projRaised_zero": None if not pr else all(v == 0 for v in pr),
-        "wall_patch_split_holds": (None if cf.get("wallPatchSplit") != "split" or not ws
+        "wall_patch_split_holds": (None if s21_config(cf, "wallPatchSplit") != "split" or not ws
                                    else all(v == 0 for v in ws)),
     }
     out["conformance_ok"] = (None if any(v is None for k, v in out["conformance"].items()
@@ -2683,7 +2756,7 @@ def s19_report(text: str, spec: dict | None = None, case: Path | None = None) ->
         n_cells = None
         out["n_cells_source_error"] = repr(exc)
     out["n_cells"] = n_cells
-    cfg_lumen = (out["config"] or {}).get("blockCoupledLumen")
+    cfg_lumen = s21_config(out["config"], "blockCoupledLumen")
     out["config_lumen"] = cfg_lumen
     out["c1"] = (None if lumen != "identityRows" or not rows or n_cells is None else
                  bool(cfg_lumen == "identityRows" and all(
@@ -2870,8 +2943,9 @@ def xu2017_report(case: Path, text: str, spec: dict, result: dict) -> dict:
         bad.append(f"U_mean {u_mean} for {gamma} 1/s (design {XU_U_MEAN.get(gamma)})")
     if not math.isclose(u_mean, gamma*geo.get("channel_height_m", 0.0)/6.0, rel_tol=1e-9):
         bad.append("U_mean != gammaDot H / 6")
-    for k, want in (("bondHoldDilation", "4"), ("bondHoldTaper", "no"),
-                    ("releaseCoreExempt", "no"), ("advectReleased", "yes"),
+    # S21: bondHoldTaper (no) and advectReleased (yes) are built in and absent here.
+    for k, want in (("bondHoldDilation", "4"),
+                    ("releaseCoreExempt", "no"),
                     ("plateletTransportOnly", "yes"), ("alpha", "0.0"),
                     ("coreShell", "yes")):
         if props.get(k) != want:
@@ -4338,7 +4412,7 @@ def transport_measurement(case: Path, spec: dict) -> dict:
     # the timestep is adaptive and the clot peels, deforms and travels in the
     # same time series. Displacement is therefore measured from the FIRST
     # written time to the last, not across a restart boundary.
-    if not spec.get("advect_released"):
+    if not s21_spec(spec, "advect_released"):
         out["reason"] = "advection is off for this child"
         return out
 
@@ -4615,6 +4689,25 @@ def assess_child(case: Path, spec: dict, controls: dict) -> dict:
     if watcher_stop is not None:
         completed = False
 
+    # THE 5 ms WATCHER (pipeline pass 2a; runner run_main_case_colab.py watch_child):
+    # runs/<child>/watcher-verdict.json. Any verdict but PASS or NOT_REACHED means the
+    # runner asked the solver to stop at the 5 ms frame (stopAtFile, writeNow), and the
+    # solver then exits 0 at ~5.2 ms: never a complete child, whatever the exit code or
+    # the log's own "End" line say. An unreadable record is not a pass either.
+    wv_path = case / "watcher-verdict.json"
+    watcher_verdict = None
+    if wv_path.is_file():
+        try:
+            watcher_verdict = json.loads(wv_path.read_text())
+            if not isinstance(watcher_verdict, dict):
+                raise ValueError("not a JSON object")
+        except (OSError, ValueError) as error:
+            watcher_verdict = {"verdict": "UNREADABLE", "reason": repr(error)}
+    stopped_by_watcher = (watcher_verdict is not None and watcher_verdict.get("verdict")
+                          not in ("PASS", "NOT_REACHED"))
+    if stopped_by_watcher:
+        completed = False
+
     sweeps = [
         {"iterations": int(m[1]), "residual": float(m[3]),
          "converged": m[6].strip().lower() == "true"}
@@ -4647,8 +4740,8 @@ def assess_child(case: Path, spec: dict, controls: dict) -> dict:
         "G_core_pa": spec.get("G_core_pa"),
         "Gc_core_j_m2": spec.get("Gc_core_j_m2"),
         "k0p_core_m2": spec.get("k0p_core_m2"),
-        "permeability_model": spec.get("permeability_model"),
-        "skeleton_diffuse_domain": spec.get("skeleton_diffuse_domain"),
+        "permeability_model": s21_spec(spec, "permeability_model"),
+        "skeleton_diffuse_domain": s21_spec(spec, "skeleton_diffuse_domain"),
         "growth": spec["growth"],
         "growth_rate_multiplier": spec.get("growth_rate_multiplier", 1.0),
         "alpha_m2_s": spec.get("alpha_m2_s"),
@@ -4662,7 +4755,17 @@ def assess_child(case: Path, spec: dict, controls: dict) -> dict:
         "final_log_time_s": max(times) if times else None,
         "completed": completed,
         "watcher_stop": watcher_stop,
-        "verdict_note": "WATCHER-STOPPED" if watcher_stop is not None else None,
+        "watcher_verdict": (None if watcher_verdict is None else {
+            "verdict": watcher_verdict.get("verdict"),
+            "reason": watcher_verdict.get("reason"),
+            "frame_read": watcher_verdict.get("frame_read"),
+            "failed_clauses": [c.get("clause") for c in watcher_verdict.get("clauses") or []
+                               if isinstance(c, dict) and c.get("status") in ("FAIL", "ERROR")],
+            "stop": watcher_verdict.get("stop")}),
+        "status": ("STOPPED_BY_WATCHER" if stopped_by_watcher
+                   else "COMPLETE" if completed else "INCOMPLETE"),
+        "verdict_note": ("STOPPED_BY_WATCHER" if stopped_by_watcher
+                         else "WATCHER-STOPPED" if watcher_stop is not None else None),
         "ran": len(times) > 0,
         "cohesive_release_cells": sum(int(n) for n in DETACHMENT_LINE.findall(text)),
         # From the WRITTEN shearRate field, not from a log line. The solver
@@ -4776,7 +4879,7 @@ def assess_child(case: Path, spec: dict, controls: dict) -> dict:
                 default=None,
             ),
             "floor_m2": permeability[-1]["floor"] if permeability else None,
-            "model": spec.get("permeability_model"),
+            "model": s21_spec(spec, "permeability_model"),
         },
         "tear": tear_measurement(case, spec),
         "transport": transport_measurement(case, spec),
@@ -5345,7 +5448,7 @@ def assess_child(case: Path, spec: dict, controls: dict) -> dict:
     # object create_cases.py writes to child.json -- so it is read here rather
     # than re-parsed off disk, which removes a failure path that could only
     # ever silence this comparison.
-    declared_blend = spec.get("material_carrier_blend")
+    declared_blend = s21_spec(spec, "material_carrier_blend")
     if declared_blend is not None and carrier_blend_seen is not None:
         want = "ON" if declared_blend else "OFF"
         if carrier_blend_seen != want:
@@ -5852,6 +5955,12 @@ def cohesive_tear_table(children: dict, controls: dict) -> dict:
     from the measured 5.547 J/m2.  The distance IS the result, and it says
     what source 33 says -- at 250 1/s this clot does not fragment.
     """
+    # S21 (docket 20261005-1621 report 07): the cohesive_tear series and its axis
+    # block left the controls with the retired children; without this the whole
+    # assessment died on a KeyError and wrote no result.json.
+    if "cohesive_tear_axis" not in controls:
+        return {"retired": "S21: the cohesive_tear series is not in the kept set",
+                "rows": [], "excluded": []}
     axis = controls["cohesive_tear_axis"]
     physiological = axis["physiological_Gc_j_m2"]
     rows, excluded = [], []
@@ -6151,8 +6260,9 @@ def core_shell_table(children: dict, controls: dict) -> dict:
             "toughness either -- their material leaves by being deformed and "
             "carried, which is the mechanism this child tests."
         ),
-        "what_is_guaranteed_and_what_is_not": controls["series"]
-        ["source33_replication"]["_what_this_can_and_cannot_promise"],
+        # S21: source33_replication is a retired series (report 07); absent, not a crash.
+        "what_is_guaranteed_and_what_is_not": (controls["series"].get(
+            "source33_replication") or {}).get("_what_this_can_and_cannot_promise"),
     }
 
 
@@ -6171,7 +6281,9 @@ def cohesive_margin(children: dict, controls: dict) -> dict:
     """
     strength = controls["adhesive_strength"]
     sigma_c = strength["upper_bound_pa"]
-    peak = controls["_established_by_the_gate"]["peak_bond_traction_pa"]
+    # S21: the gate block left the controls with the retired series (report 07); with
+    # no peak on record the margin is None and the interpretation says so.
+    peak = (controls.get("_established_by_the_gate") or {}).get("peak_bond_traction_pa")
 
     scored = [c for c in children.values() if c["admissible"]
               and c.get("Dg_max") is not None]
@@ -6256,7 +6368,11 @@ def main() -> int:
     inadmissible = [
         {"child_id": c["child_id"], "series": c["series"],
          "completed": c["completed"], "bounded": c["bounded"],
-         "why": c["bounds_reason"] or f"exit code {c['exit_code']}"}
+         "status": c["status"],
+         "why": (f"STOPPED_BY_WATCHER (watcher verdict "
+                 f"{c['watcher_verdict']['verdict']}: {c['watcher_verdict']['failed_clauses']})"
+                 if c["status"] == "STOPPED_BY_WATCHER"
+                 else c["bounds_reason"] or f"exit code {c['exit_code']}")}
         for c in children.values() if not c["admissible"]
     ]
 

@@ -36,11 +36,16 @@ SOLVER = (Path(__file__).resolve().parent.parent / "user-applications"
           / "phaseClotAxisymmetricFluid" / "phaseClotAxisymmetricFluid.C")
 
 # signature -> why it is safe at D == 0
+#
+# S21 (research/designs/2026-10-05-S21-clean-solver.md) deleted four recorded
+# uses with the code around them, so their entries are removed: the Dfloor
+# denominator in updateDerivedFields() (release-4198bb17 .C:8716), the two
+# `- fvm::laplacian(qEff*D_, w_)` sites of solvePlatelets()'s legacy branches
+# (.C:15757, 15771; report 06 hunk a39), and its diffusionMatrix and
+# qFloorExtension forms (.C:16033, 16046, 16052). None is in the S21 solver.
 ALLOWED = {
     'D_(phaseClotProperties_.lookup("D")),':
         "the lookup itself",
-    '/(2.0*max(D_, dimensionedScalar("Dfloor", D_.dimensions(), vSmall)))':
-        "GUARDED: max(D_, vSmall) floors the denominator",
     "if (D_.value() == 0.0)":
         "THE GUARD: refuses alpha != 0 with D == 0 as ill-posed",
     "stoichRatio = alpha_/D_;":
@@ -54,14 +59,6 @@ ALLOWED = {
         "D == 0 and a zero field is substituted. The D != 0 path still goes "
         "through the original (word, tmp) constructor so its boundary field "
         "is unchanged -- fvc::laplacian(gammaPlateletf, w_) reads it.",
-    "- fvm::laplacian(qEff*D_, w_)":
-        "laplacian MULTIPLIES by the coefficient; zero gamma is a zero "
-        "matrix, no division. Requires fvSchemes to keep a non-harmonic "
-        "laplacianScheme, which check_fvschemes_coverage.py pins.",
-    "const fvScalarMatrix diffusionMatrix(-fvm::laplacian(qEff*D_, w_));":
-        "same: multiplication only",
-    "-fvm::laplacian(qFloorExtension*D_, w_)":
-        "same: multiplication only",
     "- fvc::interpolate(q_)*D_*fvc::snGrad(w_)*mesh.magSf()":
         "multiplication only",
     "const scalar Dv = max(D_.value(), vSmall);":

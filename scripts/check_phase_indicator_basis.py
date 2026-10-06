@@ -129,8 +129,9 @@ def content_branch_divides_by_theta_ref(src: str) -> bool:
 
 
 def content_branch_reads_the_content_fields(src: str) -> bool:
+    # S21A d59 removed the `phaseIndicatorBasis_ == "content"` guard.
     body = compact(_indicator_body(src))
-    return 'phaseIndicatorBasis_=="content"' in body and "thetaC_+thetaH_" in body
+    return "thetaC_+thetaH_" in body
 
 
 def indicator_is_guarded_below_at_zero(src: str) -> bool:
@@ -162,40 +163,20 @@ def accessor_is_not_the_fraction(src: str) -> bool:
                    ("phiSkel_", "solidFraction()", "forceFraction()"))
 
 
-def legacy_branch_is_the_old_expression(src: str) -> bool:
-    body = compact(_indicator_body(src))
-    return 'max(1.0-q_,dimensionedScalar("zero",dimless,0))' in body
+# S21 (2026-10-05, docket 20261005-1621 report 15): legacy_branch_is_the_old_expression() retired; its text was deleted by S21A a43 (legacy branch of phaseIndicator()).
 
 
-def basis_validated_against_explicit_list(src: str) -> bool:
-    c = compact(src)
-    return ('phaseIndicatorBasis_!="legacy"&&phaseIndicatorBasis_!="content"'
-            in c
-            and "phaseIndicatorBasismustbe'legacy'or'content'" in c)
+
+# S21 (2026-10-05, docket 20261005-1621 report 15): basis_validated_against_explicit_list() retired; its text was deleted by S21A c07.
 
 
-def validation_is_outside_the_content_model_gate(src: str) -> bool:
-    """checkPlateletConfiguration() returns early when the content model is
-    off. A key that changes six operators on EVERY path must be validated on
-    every path -- the exact trap the generator fell into on 2026-09-15.
 
-    Resolved by OWNING FUNCTION, not by file position. A position comparison
-    would pass or fail on the order the definitions happen to sit in, which is
-    not the property being asserted.
-    """
-    # Owners come from the STRIPPED source (code_lines drops string bodies,
-    # which is where the message lives) but the search runs on the RAW lines.
-    # Both lists are line-aligned by construction.
-    owners = enclosing_functions(code_lines(src))
-    for n, line in enumerate(src.split("\n")):
-        if "phaseIndicatorBasis must be" in line:
-            return owners[n] != "checkPlateletConfiguration"
-    return False
+# S21 (2026-10-05, docket 20261005-1621 report 15): validation_is_outside_the_content_model_gate() retired; its text was deleted by S21A c07.
 
 
-def content_requires_the_content_model(src: str) -> bool:
-    return ("phaseIndicatorBasis'content'requires" in compact(src)
-            and "plateletContentModeltrue" in compact(src))
+
+# S21 (2026-10-05, docket 20261005-1621 report 15): content_requires_the_content_model() retired; its text was deleted by S21A a16.
+
 
 
 def content_guards_the_divisor(src: str) -> bool:
@@ -216,36 +197,21 @@ def content_guards_the_divisor(src: str) -> bool:
     return "if (skeletonVolumeFraction_ <= 0)" in src[max(0, i - 700):i]
 
 
-def content_refuses_unlocalised_deposition(src: str) -> bool:
-    """SCOPED to this refusal's own condition.
-
-    The weight basis carries an identical four-clause test a few hundred
-    lines up. A whole-file search would find its clauses after this one was
-    deleted -- which is precisely how the weight guard's own mutation stopped
-    firing the moment this refusal was added.
-    """
-    msg = "phaseIndicatorBasis 'content' with an UNLOCALISED"
-    i = src.find(msg)
-    if i < 0:
-        return False
-    c = compact(src[max(0, i - 900):i])
-    return ('plateletBindLocalisation_!="interface"' in c
-            and "&&!unlocalisedPhaseWeightsAccepted_" in c
-            and "&&plateletBindRate_>0" in c
-            and "&&!plateletTransportOnly_" in c)
+# S21 (2026-10-05, docket 20261005-1621 report 15): content_refuses_unlocalised_deposition() retired; its text was deleted by S21A a17.
 
 
-def carrier_blend_keeps_its_own_clamp(src: str) -> bool:
-    """The one site where ind > 1 subtracts the blood flux."""
-    body = compact(_blend_body(src))
-    return ('min(phaseIndicator(),dimensionedScalar("one",dimless,1))'
-            in body)
+
+# S21 (2026-10-05, docket 20261005-1621 report 15): carrier_blend_keeps_its_own_clamp() retired; its text was deleted by S21A a29 (materialCarrierBlend branch).
+
 
 
 def deviatoric_weight_keeps_its_floor(src: str) -> bool:
+    # S21C1 d28.1 deleted the skeletonDiffuseDomain_ `max(chi, solidFloor)`
+    # branch; the kept elasticStress weight is skeletonStressWeight()
+    # (occupancy-floored), assigned unconditionally.
     i = src.find("sigmaElasticInstant")
     body = compact(src[max(0, i - 4000): i + 400] if i >= 0 else "")
-    return "max(chi,dimensionedScalar(\"solidFloor\"" in body \
+    return "phiS=skeletonStressWeight();" in body \
         and "phiS*gD*GField_*dev(be_)" in body
 
 
@@ -477,10 +443,11 @@ def surface_delta_guards_every_divisor(src: str) -> bool:
     range of a non-negative integral, so `not computable` can never be read
     as a measurement.
     """
+    # S21A d53 reduced `plateletContentModel_ && skeletonVolumeFraction_ > 0`
+    # to its second clause; pinned contiguous with the two sentinels.
     c = compact(src)
-    return ("if(plateletContentModel_&&skeletonVolumeFraction_>0)" in c
-            and "scalardeltaThetaInt=-1;" in c
-            and "scalardeltaThetaIntPost=-1;" in c)
+    return ("scalardeltaThetaInt=-1;scalardeltaThetaIntPost=-1;"
+            "if(skeletonVolumeFraction_>0)" in c)
 
 def surface_delta_decomposes_moved_from_spread(src: str) -> bool:
     """Retired with deltaTV: deltaShift separated a translated interface from
@@ -590,19 +557,12 @@ def phase_gradient_stays_on_c(src: str) -> bool:
             in c
             and "sqr(magGradC)" not in c)
 
-def delta_basis_validated_against_explicit_list(src: str) -> bool:
-    c = compact(src)
-    return ('phaseDeltaBasis_!="legacy"&&phaseDeltaBasis_!="content"' in c
-            and "phaseDeltaBasismustbe'legacy'or'content'" in c)
+# S21 (2026-10-05, docket 20261005-1621 report 15): delta_basis_validated_against_explicit_list() retired; its text was deleted by S21A c08.
 
 
-def delta_basis_requires_the_content_model(src: str) -> bool:
-    """A zero delta is not a degraded localiser. It switches the accepted
-    transfer and the bound-platelet uptake off entirely while every dimension
-    check still passes and every conservation identity still closes -- on
-    nothing."""
-    c = compact(src)
-    return ("phaseDeltaBasis'content'requiresplateletContentModel" in c)
+
+# S21 (2026-10-05, docket 20261005-1621 report 15): delta_basis_requires_the_content_model() retired; its text was deleted by S21A a18.
+
 
 
 def delta_basis_guards_its_divisor(src: str) -> bool:
@@ -627,36 +587,27 @@ def delta_basis_defaults_to_content(src: str) -> bool:
 
 def delta_basis_declared_in_header(hdr: str) -> bool:
     """The key survives with one admissible value; deltaC_ does not."""
+    # S21A h20 deleted `word phaseDeltaBasis_;`.
     c = compact(hdr)
-    return ("wordphaseDeltaBasis_;" in c
-            and "volScalarFielddeltaC_;" not in c
+    return ("volScalarFielddeltaC_;" not in c
             and "volScalarFielddeltaTheta_;" in c)
 
-def generator_writes_the_delta_key(gen: str) -> bool:
-    """And with the SAME default the solver carries.
-
-    The generator writes every basis key unconditionally, so its fallback is
-    what actually decides on this case -- the solver's own default is never
-    reached. Flipping one without the other would have been cosmetic.
-    """
-    c = compact(gen)
-    return ('"phaseDeltaBasis",' in c
-            and 'child.get("phase_delta_basis","content")' in c)
+# S21 (2026-10-05, docket 20261005-1621 report 15): generator_writes_the_delta_key() retired; its text was deleted by generator: release-4198bb17 create_cases.py L4149-4153.
 
 
-def default_is_legacy(src: str) -> bool:
-    return '"phaseIndicatorBasis","legacy"' in compact(src)
+
+# S21 (2026-10-05, docket 20261005-1621 report 15): default_is_legacy() retired; its text was deleted by S21A b10.
+
 
 
 def declared_in_header(hdr: str) -> bool:
+    # S21A h19 deleted `word phaseIndicatorBasis_;`.
     c = compact(hdr)
-    return ("wordphaseIndicatorBasis_;" in c
-            and "tmp<volScalarField>phaseIndicator()const;" in c)
+    return "tmp<volScalarField>phaseIndicator()const;" in c
 
 
-def generator_validates_the_key(gen: str) -> bool:
-    c = compact(gen)
-    return ("phase_indicator_basis" in c and "phaseIndicatorBasis" in c)
+# S21 (2026-10-05, docket 20261005-1621 report 15): generator_validates_the_key() retired; its text was deleted by generator: release create_cases.py L2057.
+
 
 
 def not_migrated_sites_still_read_the_raw_form(src: str) -> bool:
@@ -666,8 +617,8 @@ def not_migrated_sites_still_read_the_raw_form(src: str) -> bool:
     """
     raw = {f: v for f, v in call_sites(r"max\s*\(\s*1\.0\s*-\s*q_").items()
            if f not in INDICATOR_ACCESSORS}
-    return set(raw) == {"solveSkeleton", "momentumPredictor",
-                        "writeSkeletonResidual", "writeBalanceDiagnostic"}
+    # S21C1 b23 deleted solveSkeleton() and b27 writeSkeletonResidual().
+    return set(raw) == {"momentumPredictor", "writeBalanceDiagnostic"}
 
 
 def every_indicator_site_is_one_of_two_forms(src: str) -> bool:
@@ -723,10 +674,17 @@ def every_indicator_site_is_one_of_two_forms(src: str) -> bool:
     block-coupled step, blockCoupled only) hoists ONE indicator for i6's
     isSkel threshold (unchanged; it selects the lumen identity rows), the
     run-time bond-seed test, VS_SPLIT and bodySlipRms (i34).
+
+    S21 (2026-10-05) took it to 34 across 22 by deletion only: S21C1 b23
+    solveSkeleton() (1), b26 solveMechanicsExchange() (1), b27
+    writeSkeletonResidual() (2), and solvePhaseField()'s three reads (S21A
+    a29 carrier blend, S21B a36 rigid-body released carrier, S21C1 d36.2
+    material-flux chain element). No site was added; the required set is
+    unchanged.
     """
     sites = {f: v for f, v in call_sites(INDICATOR).items()
              if f not in INDICATOR_ACCESSORS}
-    return (sum(len(v) for v in sites.values()) == 41 and len(sites) == 26
+    return (sum(len(v) for v in sites.values()) == 34 and len(sites) == 22
             and {"updateReleasedIndicator", "updateBondHold",
                  "releaseDetachedMaterial", "skeletonFaceStress",
                  "writeBalanceDiagnostic", "intrinsicDragRate",
@@ -880,18 +838,12 @@ def stoichiometry_stays_on_the_front(src: str) -> bool:
             and "?clotGrowth/plateletUptake:" not in c)
 
 
-def growth_driver_validated_against_explicit_list(src: str) -> bool:
-    c = compact(src)
-    return ('phaseGrowthDriver_!="front"&&phaseGrowthDriver_!="transfer"' in c
-            and "phaseGrowthDrivermustbe'front'or'transfer'" in c)
+# S21 (2026-10-05, docket 20261005-1621 report 15): growth_driver_validated_against_explicit_list() retired; its text was deleted by S21A c10.
 
 
-def growth_driver_requires_the_content_model(src: str) -> bool:
-    """Sharper than the delta's twin: without the content model 'transfer'
-    deletes the front and puts NOTHING in its place. The clot would never
-    grow, and every conservation identity would still close -- on zero."""
-    return ('phaseGrowthDriver\'transfer\'requires"'
-            '<<"plateletContentModeltrue' in compact(src))
+
+# S21 (2026-10-05, docket 20261005-1621 report 15): growth_driver_requires_the_content_model() retired; its text was deleted by S21A a20.
+
 
 
 def growth_driver_guards_its_divisor(src: str) -> bool:
@@ -905,29 +857,12 @@ def growth_driver_guards_its_divisor(src: str) -> bool:
     return "if (skeletonVolumeFraction_ <= 0)" in src[max(0, i - 700):i]
 
 
-def growth_driver_requires_the_content_delta(src: str) -> bool:
-    """S3 MUST PRECEDE S4, enforced rather than written down. Under a legacy
-    delta the transfer localises on 0.5*|grad c|, so the theta clot would grow
-    on the geometry of the c clot it replaces."""
-    c = compact(src)
-    return ("phaseGrowthDriver'transfer'requiresphaseDeltaBasis" in c
-            and 'if(phaseDeltaBasis_!="content")' in c)
+# S21 (2026-10-05, docket 20261005-1621 report 15): growth_driver_requires_the_content_delta() retired; its text was deleted by S21A a21.
 
 
-def growth_driver_refuses_the_matched_operator(src: str) -> bool:
-    """`matched` is refused OUTRIGHT now, not merely as a combination.
 
-    It mapped the c equation's own Stefan front into theta, so with the front
-    removed theta would have received both that mapping and the transfer --
-    growing twice. S6c-2 goes further: the mapped source read mobility and
-    muC, both deleted, so the operator cannot be assembled at all. A case
-    naming it is refused at construction rather than quietly given
-    `content`, because the two operators build different matrices.
-    """
-    c = compact(src)
-    return ('contentOperator_!="content"' in c
-            and "contentOperatormustbe`content`,found`" in c
-            and "matched:DELETEDINS6c-2." in c)
+# S21 (2026-10-05, docket 20261005-1621 report 15): growth_driver_refuses_the_matched_operator() retired; its text was deleted by S21A a01.
+
 
 def growth_driver_defaults_to_transfer(src: str) -> bool:
     """Alireza's standing direction: the new method is the default. Same
@@ -937,9 +872,9 @@ def growth_driver_defaults_to_transfer(src: str) -> bool:
 
 
 def growth_driver_declared_in_header(hdr: str) -> bool:
+    # S21A h22 deleted `word phaseGrowthDriver_;`.
     c = compact(hdr)
-    return ("wordphaseGrowthDriver_;" in c
-            and "scalartransferClotGrowth_;" in c
+    return ("scalartransferClotGrowth_;" in c
             and "scalardBSumCommitted_;" in c
             and "scalardeltaThetaIntAtTransfer_;" in c)
 
@@ -948,32 +883,16 @@ def growth_driver_is_reported_at_startup(src: str) -> bool:
     """A run is read from its log, never from its JSON. Absent, or
     driver=front, makes an S4 run VOID rather than null."""
     c = compact(src)
-    return ('Info<<"PHASE_CLOT_GROWTH_DRIVER"<<"driver="<<phaseGrowthDriver_'
-            in c)
+    # S21A d16 substituted the built-in value into the startup line.
+    return 'Info<<"PHASE_CLOT_GROWTH_DRIVER"<<"driver=transfer"' in c
 
 
-def generator_writes_the_growth_key(gen: str) -> bool:
-    """WITH THE SAME DEFAULT THE SOLVER CARRIES.
-
-    create_cases.py writes every such key unconditionally, so its fallback is
-    what actually decides on this case and the solver's own default is never
-    reached. Flipping one without the other would have been cosmetic -- the
-    exact trap phaseDeltaBasis walked into on 2026-09-16.
-    """
-    c = compact(gen)
-    return ('"phaseGrowthDriver",growth_driver' in c
-            and 'child.get("phase_growth_driver","transfer")' in c)
+# S21 (2026-10-05, docket 20261005-1621 report 15): generator_writes_the_growth_key() retired; its text was deleted by generator: release create_cases.py L4187-4244.
 
 
-def generator_refuses_the_same_combinations(gen: str) -> bool:
-    """The generator runs locally and the solver runs in Colab: catching a bad
-    combination here costs seconds, catching it there costs a VM boot and a
-    packaged binary."""
-    c = compact(gen)
-    return ('phase_growth_driver\'transfer\'""requiresplatelet_content_model'
-            in c
-            and "requiresphase_delta_basis'content'" in c
-            and "incompatiblewithcontent_operator" in c)
+
+# S21 (2026-10-05, docket 20261005-1621 report 15): generator_refuses_the_same_combinations() retired; its text was deleted by generator: release create_cases.py L4229-4237.
+
 
 
 def vn_stays_live_in_the_surface_loss(src: str) -> bool:
@@ -984,9 +903,10 @@ def vn_stays_live_in_the_surface_loss(src: str) -> bool:
     the front would delete live physics.
     """
     c = compact(src)
+    # S21A a39 deleted the legacy w_ equation's fvm::Sp(surfaceLossCoeff_, w_)
+    # and S21C1 b28 the operator audit's two copies; the Vn_ term itself is kept.
     return ("surfaceLossCoeff_=interfaceDelta_*(adhesionSpeedEff_+Vn_"
-            "-(U_&normal_));" in c
-            and "fvm::Sp(surfaceLossCoeff_,w_)" in c)
+            "-(U_&normal_));" in c)
 
 
 def oi11_snapshot_is_taken_where_the_reaction_reads_it(src: str) -> bool:
@@ -1050,32 +970,18 @@ MUTATIONS = [
      stoichiometry_stays_on_the_front,
      "          ? clotGrowthFront/plateletUptake",
      "          ? clotGrowth/plateletUptake"),
-    ("accept any spelling of the growth driver",
-     growth_driver_validated_against_explicit_list,
-     'if (phaseGrowthDriver_ != "front" && phaseGrowthDriver_ != "transfer")',
-     "if (false)"),
-    ("stop refusing transfer on a dead content model",
-     growth_driver_requires_the_content_model,
-     '                << "phaseGrowthDriver \'transfer\' requires"\n'
-     '                << " plateletContentModel true',
-     '                << "phaseGrowthDriver transfer note"\n'
-     '                << " plateletContentModel maybe'),
     ("stop guarding the growth driver's divisor",
      growth_driver_guards_its_divisor,
      '        if (skeletonVolumeFraction_ <= 0)\n        {\n            FatalErrorInFunction\n                << "phaseGrowthDriver \'transfer\' divides by"',
      '        if (false)\n        {\n            FatalErrorInFunction\n                << "phaseGrowthDriver \'transfer\' divides by"'),
-    ("let S4 run on a legacy delta, i.e. skip S3",
-     growth_driver_requires_the_content_delta,
-     '        if (phaseDeltaBasis_ != "content")\n        {\n            FatalErrorInFunction\n                << "phaseGrowthDriver \'transfer\' requires phaseDeltaBasis"',
-     '        if (false)\n        {\n            FatalErrorInFunction\n                << "unused phaseDeltaBasis"'),
     ("default the growth driver back to the front",
      growth_driver_defaults_to_transfer,
-     '            "phaseGrowthDriver", "transfer"',
-     '            "phaseGrowthDriver", "front"'),
+     '{"phaseGrowthDriver", "transfer"}',
+     '{"phaseGrowthDriver", "front"}'),
     ("stop announcing the driver at startup",
      growth_driver_is_reported_at_startup,
-     '    Info<< "PHASE_CLOT_GROWTH_DRIVER"\n        << " driver=" << phaseGrowthDriver_',
-     '    Info<< "PHASE_CLOT_GROWTH_DRIVER_X"\n        << " d=" << phaseGrowthDriver_'),
+     '    Info<< "PHASE_CLOT_GROWTH_DRIVER"\n        << " driver=transfer"',
+     '    Info<< "PHASE_CLOT_GROWTH_DRIVER_X"\n        << " d=transfer"'),
     ("delete Vn from the surface loss along with the front",
      vn_stays_live_in_the_surface_loss,
      "    surfaceLossCoeff_ =\n        interfaceDelta_*(adhesionSpeedEff_ + Vn_ - (U_ & normal_));",
@@ -1104,30 +1010,14 @@ MUTATIONS = [
      accessor_is_not_the_fraction,
      '            "phaseIndicator",\n            max\n            (\n                thetaC_ + thetaH_',
      '            "phaseIndicator",\n            max\n            (\n                phiSkel_'),
-    ("accept any spelling of the basis",
-     basis_validated_against_explicit_list,
-     'if (phaseIndicatorBasis_ != "legacy" && phaseIndicatorBasis_ != "content")',
-     'if (false)'),
-    ("stop refusing content on a dead content model",
-     content_requires_the_content_model,
-     "                << \"phaseIndicatorBasis 'content' requires\"\n                << \" plateletContentModel true",
-     "                << \"phaseIndicatorBasis content note\"\n                << \" plateletContentModel maybe"),
     ("stop guarding the divisor",
      content_guards_the_divisor,
      "        if (skeletonVolumeFraction_ <= 0)",
      "        if (false)"),
-    ("stop refusing unlocalised deposition",
-     content_refuses_unlocalised_deposition,
-     '        if (plateletBindLocalisation_ != "interface"\n         && !plateletTransportOnly_\n         && plateletBindRate_ > 0\n         && !unlocalisedPhaseWeightsAccepted_)\n        {\n            FatalErrorInFunction\n                << "phaseIndicatorBasis \'content\' with an UNLOCALISED"',
-     '        if (false)\n        {\n            FatalErrorInFunction\n                << "unused"'),
-    ("drop the carrier blend's own clamp",
-     carrier_blend_keeps_its_own_clamp,
-     "                min\n                (\n                    phaseIndicator(),\n                    dimensionedScalar(\"one\", dimless, 1)\n                )",
-     "                phaseIndicator()"),
     ("move the deviatoric weight onto the unfloored indicator",
      deviatoric_weight_keeps_its_floor,
-     "        phiS = max\n        (\n            chi,\n            dimensionedScalar(\"solidFloor\", dimless, skeletonSolidFloor_)\n        );",
-     "        phiS = chi;"),
+     "        phiS = skeletonStressWeight();\n    }\n    recordStressWeight(phiS.primitiveField(), 1);",
+     "        phiS = chi;\n    }\n    recordStressWeight(phiS.primitiveField(), 1);"),
     ("threshold isSkel at zero instead of 0.5*residualChi_",
      isSkel_keeps_its_threshold,
      "          phaseIndicator()\n          - dimensionedScalar(\"halfChi\", dimless, 0.5*residualChi_)",
@@ -1170,32 +1060,22 @@ MUTATIONS = [
      '            "deltaTheta", runTime.name(), mesh, IOobject::NO_READ, IOobject::NO_WRITE'),
     ("let a momentum path read deltaTheta directly",
      delta_theta_reaches_equations_only_through_interfaceDelta,
-     "    clotDrag_ = dragCoeff/rho_;",
-     "    clotDrag_ = dragCoeff/rho_ + 0.0*deltaTheta_;"),
-    ("default the key to content",
-     default_is_legacy,
-     '            "phaseIndicatorBasis", "legacy"',
-     '            "phaseIndicatorBasis", "content"'),
+     # S21: the old anchor `clotDrag_ = dragCoeff/rho_;` was deleted; the
+     # second consumer is planted in elasticStress() instead.
+     "    recordStressWeight(phiS.primitiveField(), 1);",
+     "    recordStressWeight(phiS.primitiveField(), 1); phiS += 0.0*deltaTheta_;"),
     ("stop reporting the postSolve recomputation",
      instrument_reports_the_postsolve_recomputation,
      '                << " deltaThetaIntPost=" << deltaThetaIntPost',
      ""),
-    ("accept any spelling of the delta basis",
-     delta_basis_validated_against_explicit_list,
-     'if (phaseDeltaBasis_ != "legacy" && phaseDeltaBasis_ != "content")',
-     "if (false)"),
-    ("stop refusing a content delta on a dead content model",
-     delta_basis_requires_the_content_model,
-     '                << "phaseDeltaBasis \'content\' requires plateletContentModel"',
-     '                << "phaseDeltaBasis content note plateletContentModel"'),
     ("stop guarding the delta basis divisor",
      delta_basis_guards_its_divisor,
      '        if (skeletonVolumeFraction_ <= 0)\n        {\n            FatalErrorInFunction\n                << "phaseDeltaBasis \'content\' divides by"',
      '        if (false)\n        {\n            FatalErrorInFunction\n                << "phaseDeltaBasis \'content\' divides by"'),
     ("default the delta basis back to legacy",
      delta_basis_defaults_to_content,
-     '            "phaseDeltaBasis", "content"',
-     '            "phaseDeltaBasis", "legacy"'),
+     '{"phaseDeltaBasis", "content"}',
+     '{"phaseDeltaBasis", "legacy"}'),
     # ---- S6c-2: NINETEEN MUTATIONS REBUILT ----------------------------
     #
     # Every one of these used to mutate code the deletion removed, so the
@@ -1241,12 +1121,6 @@ MUTATIONS = [
         mass_budget_closes_on_the_active_source,
         '    const scalar clotGrowth = transferClotGrowth_;',
         '    const scalar clotGrowth =\n        (phaseGrowthDriver_ == "transfer")\n      ? transferClotGrowth_\n      : clotGrowthFront;',
-    ),
-    (
-        'refuse only `matched` instead of everything but `content`',
-        growth_driver_refuses_the_matched_operator,
-        '     && contentOperator_ != "content"',
-        '     && contentOperator_ == "matched"',
     ),
     (
         'stop reporting the OI-11 snapshot',
@@ -1323,6 +1197,24 @@ MUTATIONS = [
 ]
 
 
+
+# S21 (2026-10-05, docket 20261005-1621 report 15): mutations whose anchor
+# and predicate were deleted with the S21 built-in keys. Each name -> hunk.
+S21_RETIRED_MUTATIONS = {
+    "accept any spelling of the growth driver": "S21A c10",
+    "stop refusing transfer on a dead content model": "S21A a20",
+    "let S4 run on a legacy delta, i.e. skip S3": "S21A a21",
+    "accept any spelling of the basis": "S21A c07",
+    "stop refusing content on a dead content model": "S21A a16",
+    "stop refusing unlocalised deposition": "S21A a17",
+    "drop the carrier blend's own clamp": "S21A a29",
+    "default the key to content": "S21A b10",
+    "accept any spelling of the delta basis": "S21A c08",
+    "stop refusing a content delta on a dead content model": "S21A a18",
+    "refuse only `matched` instead of everything but `content`": "S21A a01",
+}
+assert not S21_RETIRED_MUTATIONS.keys() & {m[0] for m in MUTATIONS}
+
 class IndicatorBasisTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -1350,62 +1242,22 @@ class IndicatorBasisTests(unittest.TestCase):
     def test_not_a_fraction(self):
         self.assertTrue(accessor_is_not_the_fraction(self.src))
 
-    def test_legacy_branch_unchanged(self):
-        self.assertTrue(legacy_branch_is_the_old_expression(self.src))
+    # S21: test_legacy_branch_unchanged retired (S21A a43).
 
-    def test_basis_validated(self):
-        self.assertTrue(basis_validated_against_explicit_list(self.src))
+    # S21: test_basis_validated retired (S21A c07).
 
-    def test_validation_runs_on_every_path(self):
-        self.assertTrue(validation_is_outside_the_content_model_gate(self.src))
+    # S21: test_validation_runs_on_every_path retired (S21A c07).
 
-    def test_the_every_path_guard_fires_when_the_check_moves_into_the_gate(
-            self):
-        """THE NEGATIVE TEST, and it is not optional here.
+    # S21: test_the_every_path_guard_fires_when_the_check_moves_into_the_gate retired (S21A c07).
 
-        The predicate above asserts a location. A location predicate that
-        resolves the owner wrongly -- as the first version of this one did,
-        by comparing file positions -- passes on code it should reject. So
-        move the refusal inside checkPlateletConfiguration(), which returns
-        early when the content model is off, and require the predicate to
-        notice.
-        """
-        src = self.src
-        real = src.index("phaseIndicatorBasis must be")
-        start = src.rindex("\n", 0, real)
-        end = src.index("\n", real)
-        without = src[:start] + src[end:]
-
-        sig = ("void Foam::solvers::phaseClotAxisymmetricFluid"
-               "::checkPlateletConfiguration")
-        self.assertIn(sig, without, "the gate function was renamed")
-        brace = without.index("{", without.index(sig))
-        moved = (
-            without[:brace + 1]
-            + '\n    if (phaseIndicatorBasis_ != "legacy")\n    {\n'
-              '        FatalErrorInFunction\n'
-              '            << "phaseIndicatorBasis must be one of two words"\n'
-              '            << exit(FatalError);\n    }\n'
-            + without[brace + 1:])
-
-        self.assertNotEqual(moved, src, "the mutation did not apply")
-        self.assertFalse(
-            validation_is_outside_the_content_model_gate(moved),
-            "the refusal was moved inside checkPlateletConfiguration(), which "
-            "returns early when the content model is off, and the guard did "
-            "not notice")
-
-    def test_content_requires_the_model(self):
-        self.assertTrue(content_requires_the_content_model(self.src))
+    # S21: test_content_requires_the_model retired (S21A a16).
 
     def test_divisor_guarded(self):
         self.assertTrue(content_guards_the_divisor(self.src))
 
-    def test_unlocalised_refused(self):
-        self.assertTrue(content_refuses_unlocalised_deposition(self.src))
+    # S21: test_unlocalised_refused retired (S21A a17).
 
-    def test_carrier_blend_clamp(self):
-        self.assertTrue(carrier_blend_keeps_its_own_clamp(self.src))
+    # S21: test_carrier_blend_clamp retired (S21A a29).
 
     def test_deviatoric_floor(self):
         self.assertTrue(deviatoric_weight_keeps_its_floor(self.src))
@@ -1487,11 +1339,9 @@ class IndicatorBasisTests(unittest.TestCase):
     def test_phase_gradient_did_not_move(self):
         self.assertTrue(phase_gradient_stays_on_c(self.src))
 
-    def test_delta_basis_validated(self):
-        self.assertTrue(delta_basis_validated_against_explicit_list(self.src))
+    # S21: test_delta_basis_validated retired (S21A c08).
 
-    def test_delta_basis_requires_the_model(self):
-        self.assertTrue(delta_basis_requires_the_content_model(self.src))
+    # S21: test_delta_basis_requires_the_model retired (S21A a18).
 
     def test_delta_basis_divisor_guarded(self):
         self.assertTrue(delta_basis_guards_its_divisor(self.src))
@@ -1502,21 +1352,14 @@ class IndicatorBasisTests(unittest.TestCase):
     def test_delta_basis_declared_in_header(self):
         self.assertTrue(delta_basis_declared_in_header(self.hdr))
 
-    def test_generator_writes_the_delta_key(self):
-        if not self.gen:
-            self.skipTest("generator not present")
-        self.assertTrue(generator_writes_the_delta_key(self.gen))
+    # S21: test_generator_writes_the_delta_key retired (generator cut).
 
-    def test_default_is_legacy(self):
-        self.assertTrue(default_is_legacy(self.src))
+    # S21: test_default_is_legacy retired (S21A b10).
 
     def test_header_declares_both(self):
         self.assertTrue(declared_in_header(self.hdr))
 
-    def test_generator_validates(self):
-        if not self.gen:
-            self.skipTest("generator not present")
-        self.assertTrue(generator_validates_the_key(self.gen))
+    # S21: test_generator_validates retired (generator cut).
 
     def test_not_migrated_sites_are_still_raw(self):
         self.assertTrue(not_migrated_sites_still_read_the_raw_form(self.src))
@@ -1579,22 +1422,16 @@ class IndicatorBasisTests(unittest.TestCase):
     def test_stoichiometry_is_not_silently_redefined(self):
         self.assertTrue(stoichiometry_stays_on_the_front(self.src))
 
-    def test_growth_driver_validated(self):
-        self.assertTrue(growth_driver_validated_against_explicit_list(
-            self.src))
+    # S21: test_growth_driver_validated retired (S21A c10).
 
-    def test_growth_driver_requires_content_model(self):
-        self.assertTrue(growth_driver_requires_the_content_model(self.src))
+    # S21: test_growth_driver_requires_content_model retired (S21A a20).
 
     def test_growth_driver_guards_divisor(self):
         self.assertTrue(growth_driver_guards_its_divisor(self.src))
 
-    def test_growth_driver_requires_content_delta(self):
-        self.assertTrue(growth_driver_requires_the_content_delta(self.src),
-                        "S3 must precede S4 and the solver must enforce it")
+    # S21: test_growth_driver_requires_content_delta retired (S21A a21).
 
-    def test_growth_driver_refuses_matched(self):
-        self.assertTrue(growth_driver_refuses_the_matched_operator(self.src))
+    # S21: test_growth_driver_refuses_matched retired (S21A a01).
 
     def test_growth_driver_defaults_to_transfer(self):
         self.assertTrue(growth_driver_defaults_to_transfer(self.src))
@@ -1605,15 +1442,9 @@ class IndicatorBasisTests(unittest.TestCase):
     def test_growth_driver_announced(self):
         self.assertTrue(growth_driver_is_reported_at_startup(self.src))
 
-    def test_generator_writes_the_growth_key(self):
-        if not self.gen:
-            self.skipTest("generator not present")
-        self.assertTrue(generator_writes_the_growth_key(self.gen))
+    # S21: test_generator_writes_the_growth_key retired (generator cut).
 
-    def test_generator_refuses_the_same_combinations(self):
-        if not self.gen:
-            self.skipTest("generator not present")
-        self.assertTrue(generator_refuses_the_same_combinations(self.gen))
+    # S21: test_generator_refuses_the_same_combinations retired (generator cut).
 
     def test_vn_stays_live(self):
         self.assertTrue(vn_stays_live_in_the_surface_loss(self.src),

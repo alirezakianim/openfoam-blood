@@ -26,6 +26,14 @@ Fibrin ruptures at a critical stretch of ~2.8 (Tutwiler et al. 2020, source
   - makes the elastic dt number read the tangent stiffness.
 Every predicate has a mutation that must make it FAIL.
 
+S21 (2026-10-05, docket 20261005-1621 report 16): networkRupture is built in
+at fibreRelease and elasticStabilityStiffness at tangent. Assertions pinned
+to text S21 deleted are removed, each with its ledger hunk (probes/se06 A,
+se09 B, se10 C1, se11 C2 -hunks.txt) cited where it stood; checks on kept
+code that S21 rewrote (a guard removed, braces kept) are re-pinned to the
+text as S21 left it. The label's own transport (advectRuptureLabel) and the
+criticalStretch branch of the criterion are deleted, so their predicates go.
+
 Run: python3 scripts/check_s14_network_rupture.py
 """
 from __future__ import annotations
@@ -50,37 +58,26 @@ flat, body = _s12.flat, _s12.body
 
 def rupture_criterion_is_on_the_squared_stretch(src: str) -> bool:
     b = flat(body(src, "phaseClotAxisymmetricFluid::ruptureOverstretchedNetwork()"))
+    # S21 removed: the rupture-off return (B a25); b1c = sqr(lc) (C2 p61b);
+    # the criticalStretch branch -- presence test, b1, b1 >= b1c, be = I
+    # (B a26). The law that stays (fibreRelease) is s16/s17's to pin.
     return (
-        'if(networkRupture_=="off"){return;}' in b
-        and "constscalarb1c=sqr(networkCriticalStretch_);" in b
-        and "if(refI[celli]<=residualContent){continue;}" in b
-        and "constscalarb1=cmptMax(eigenValues(bI[celli]));" in b
-        and "if(b1>=b1c&&rI[celli]<1.0){b1RupturedMax=max(b1RupturedMax,b1);rI[celli]=1.0;bI[celli]=symmTensor::I;" in b
-        and "reduce(b1RupturedMax,maxOp<scalar>());" in b
+        "reduce(b1RupturedMax,maxOp<scalar>());" in b
     )
 
 
 def rupture_runs_after_the_be_update(src: str) -> bool:
     b = flat(body(src, "phaseClotAxisymmetricFluid::solveElasticStrain()"))
     i = b.find("ruptureOverstretchedNetwork();")
-    j = b.find("if(beDetRenormalise_)")
+    # S21 C1 d27.0: the renormalisation's guard removed, braces kept
+    j = b.find("{constvolScalarFielddetBe(det(be_));be_*=pow(")
     return 0 <= j < i
 
 
-def label_travels_with_the_material(src: str) -> bool:
-    b = flat(body(src, "phaseClotAxisymmetricFluid::advectRuptureLabel"))
-    s = flat(src)
-    return (
-        "phaseSharedConvection" not in b
-        and "fvm::ddt(ruptured_)+fv::gaussConvectionScheme<scalar>(mesh_,carrier,"
-            "tmp<surfaceInterpolationScheme<scalar>>(newupwind<scalar>(mesh_,carrier)))"
-            ".fvmDiv(carrier,ruptured_)-fvm::Sp(fvc::surfaceIntegrate(carrier),ruptured_)" in b
-        and "if(contentFctLambda_.valid()){constsurfaceScalarFieldAR(fctAntidiffusiveFlux(carrier,ruptured_));" in b
-        and "min(contentFctLambda_(),fctLimiter(ruptured_,ruptured_.oldTime(),AR))" in b
-        and "fctApply(ruptured_,lambdaR,AR);" in b
-        and "solveContentComponents(phiReleased);advectRuptureLabel(phiReleased);" in s
-        and "solveContentComponents(phiAttached);advectRuptureLabel(phiAttached);" in s
-    )
+# S21: label_travels_with_the_material removed. advectRuptureLabel() and its
+# two calls are deleted (B a24: under damageTransport contentPartition it
+# returned before its body; B a36: the released-carrier call; B b11: the
+# attached-carrier call). ruptured_ is now synced from the partition.
 
 
 def ruptured_network_carries_no_shear(src: str) -> bool:
@@ -97,7 +94,8 @@ def ruptured_network_carries_no_shear(src: str) -> bool:
 
 def ruptured_network_has_no_memory(src: str) -> bool:
     s = flat(src)
-    return ('if(networkRupture_!="off"){noMemory=max(1.0-thetaNetRef_*(1.0-ruptured_)/dimensionedScalar("residualContent",dimless,residualChi_*skeletonVolumeFraction_),dimensionedScalar("zero",dimless,0));}' in s
+    # S21 B d59: `if(networkRupture_!="off")` removed, braces kept
+    return ('volScalarFieldnoMemory("noNetworkMemory",absent);{noMemory=max(1.0-thetaNetRef_*(1.0-ruptured_)/dimensionedScalar("residualContent",dimless,residualChi_*skeletonVolumeFraction_),dimensionedScalar("zero",dimless,0));}' in s
             and "beRelax_=sqr(noMemory)" in s)
 
 
@@ -112,7 +110,10 @@ def label_is_diluted_and_cleared(src: str) -> bool:
     # S17 (2026-09-26): under networkRupture fibreRelease the intact share
     # is thI/S = 1 - d* of the pre-deposit partition (09 rule 2), set INSIDE
     # the same block after the S14/S16 weight; every other law keeps r(1 - d).
-    return ('scalarrIntact=r;if(networkRupture_!="off"){rIntact=r*(1.0-ruptured_[celli]);if(damageTransport_!="contentPartition"){ruptured_[celli]*=r/(r+d);}if(fibreRelease()){rIntact=r*tIntactShareBefore()[celli];}}b[celli]=(rIntact*b[celli]+d*symmTensor::I)/(rIntact+d);' in s
+    # S21: `if(networkRupture_!="off")` removed, braces kept (B d80); the
+    # label's own dilution `if(damageTransport_!="contentPartition"){...}`
+    # deleted (B a37); `if(fibreRelease())` removed, braces kept (C2 p77.3.0).
+    return ('scalarrIntact=r;{rIntact=r*(1.0-ruptured_[celli]);{rIntact=r*tIntactShareBefore()[celli];}}b[celli]=(rIntact*b[celli]+d*symmTensor::I)/(rIntact+d);' in s
             and "pI[celli]+=hNew[celli]-hStar[celli];" in dep
             and "ruptured_[celli]=0.0;" in rel)
 
@@ -120,32 +121,28 @@ def label_is_diluted_and_cleared(src: str) -> bool:
 def dt_reads_the_tangent(src: str) -> bool:
     s = flat(src)
     return (
-        'if(elasticStabilityStiffness_=="tangent"){constvectorev(eigenValues(beI[celli]));' in s
+        # S21 B d85: `if(elasticStabilityStiffness_=="tangent")` removed,
+        # braces kept
+        'scalarstiff=1.0;{constvectorev(eigenValues(beI[celli]));' in s
         and "stiff=(8.0/9.0)*b1+(2.0/9.0)*bRest;" in s
-        # S16: the weight per skeletonFloorBasis; intactWeight is the
-        # shipped max(ind*(1 - d), floor), and the bound multiplies by it.
-        and "constscalarwI0=indI[celli]*intactI[celli];" in s
+        # S16: the weight per skeletonFloorBasis. S21 C2 p99 deleted the
+        # unread local wI0 = ind*intact.
         and "constscalarw=wSite[celli];" in s
     )
 
 
-def dependencies_are_refused(src: str) -> bool:
-    s = flat(src)
-    return (
-        # S17 (2026-09-26): fibreRelease is the fifth accepted law.
-        'if(networkRupture_!="off"&&networkRupture_!="criticalStretch"&&networkRupture_!="progressiveDamage"&&networkRupture_!="terminalRelease"&&networkRupture_!="fibreRelease")' in s
-        and 'if(elasticStabilityStiffness_=="tangent"&&explicitStabilityBounds_!="on")' in s
-        and 'if(networkRupture_=="criticalStretch"&&!(networkCriticalStretch_>1))' in s
-        and 'if(elasticStabilityStiffness_!="tangent"){FatalErrorInFunction<<"networkRupture"<<networkRupture_<<"boundsthe"' in s
-    )
+# S21: dependencies_are_refused removed. The networkRupture value refusal
+# (B c08); the tangent-needs-bounds refusal (B d14 reduced it to
+# `if(explicitStabilityBounds_!="on")`, C1 c27 deleted it); the criticalStretch
+# lc > 1 refusal (B a08); rupture-needs-tangent (B a10). Both keys are built in.
 
 
 def defaults_are_shipped_and_zeros_are_not_written(src: str) -> bool:
     s = flat(src)
-    return ('lookupOrDefault<word>("networkRupture","off")' in s
-            and '"networkCriticalStretch",2.8' in s
-            and '"elasticStabilityStiffness","modulus"' in s
-            and 'if(networkRupture_=="off"){ruptured_.writeOpt()=IOobject::NO_WRITE;}' in s)
+    # S21 removed: the networkRupture initialiser (B b04), the
+    # elasticStabilityStiffness initialiser (B b05), ruptured NO_WRITE under
+    # off (B a11).
+    return '"networkCriticalStretch",2.8' in s
 
 
 def diagnostics_are_logged(src: str) -> bool:
@@ -156,43 +153,23 @@ def diagnostics_are_logged(src: str) -> bool:
 
 
 PREDICATES = [
-    ("criterion on eig(be) = lambda^2", rupture_criterion_is_on_the_squared_stretch),
+    ("the stretch at rupture reduced", rupture_criterion_is_on_the_squared_stretch),
     ("rupture after the be update", rupture_runs_after_the_be_update),
-    ("label travels with the material", label_travels_with_the_material),
     ("no shear through ruptured network", ruptured_network_carries_no_shear),
     ("memory kept only by intact network", ruptured_network_has_no_memory),
     ("label diluted, deposits mix with intact only, cleared", label_is_diluted_and_cleared),
     ("dt reads the tangent", dt_reads_the_tangent),
-    ("dependencies refused", dependencies_are_refused),
-    ("defaults, and zeros not written", defaults_are_shipped_and_zeros_are_not_written),
+    ("the critical stretch's default", defaults_are_shipped_and_zeros_are_not_written),
     ("diagnostics logged", diagnostics_are_logged),
 ]
 
 MUTATIONS = [
-    ("criterion on the stretch, not its square", rupture_criterion_is_on_the_squared_stretch,
-     "    const scalar b1c = sqr(networkCriticalStretch_);",
-     "    const scalar b1c = networkCriticalStretch_;"),
-    ("ruptured be keeps its strain", rupture_criterion_is_on_the_squared_stretch,
-     "            bI[celli] = symmTensor::I;\n            ++nNew;",
-     "            ++nNew;"),
+    # S21: "criterion on the stretch, not its square" (C2 p61b) and "ruptured
+    # be keeps its strain" (B a26) removed with their text.
     ("rupture before the renormalisation", rupture_runs_after_the_be_update,
      "    ruptureOverstretchedNetwork();\n\n    // AFTER the rescale",
      "    // AFTER the rescale"),
-    ("label left on the released flux only", label_travels_with_the_material,
-     "            advectRuptureLabel(phiAttached);\n", ""),
-    ("label back on the content's vanLeer weights", label_travels_with_the_material,
-     "      + fv::gaussConvectionScheme<scalar>\n        (\n            mesh_,\n            carrier,\n"
-     "            tmp<surfaceInterpolationScheme<scalar>>\n            (\n"
-     "                new upwind<scalar>(mesh_, carrier)\n            )\n"
-     "        ).fvmDiv(carrier, ruptured_)\n"
-     "      - fvm::Sp(fvc::surfaceIntegrate(carrier), ruptured_)\n",
-     "      + phaseSharedConvection(carrier, ruptured_)\n"),
-    ("correction without the label's own bound", label_travels_with_the_material,
-     "                fctLimiter(ruptured_, ruptured_.oldTime(), AR)\n",
-     "                contentFctLambda_()\n"),
-    ("label advected before the content's lambda exists", label_travels_with_the_material,
-     "            solveContentComponents(phiReleased);\n            advectRuptureLabel(phiReleased);\n",
-     "            advectRuptureLabel(phiReleased);\n            solveContentComponents(phiReleased);\n"),
+    # S21: the four label-transport mutations removed (B a24, a36, b11).
     ("face weight ignores rupture", ruptured_network_carries_no_shear,
      'volScalarField w("elasticSolidWeight", phaseIndicator()*intactFraction());',
      'volScalarField w("elasticSolidWeight", phaseIndicator());'),
@@ -205,23 +182,15 @@ MUTATIONS = [
      "            noMemory = max(absent, ruptured_); if (false) max\n            (\n                1.0\n              - thetaNetRef_*(1.0 - ruptured_)"),
     ("deposit averages debris strain in", label_is_diluted_and_cleared,
      "                        rIntact = r*(1.0 - ruptured_[celli]);\n", ""),
-    ("new deposits inherit rupture", label_is_diluted_and_cleared,
-     "                            ruptured_[celli] *= r/(r + d);",
-     "                            ruptured_[celli] *= 1.0;"),
+    # S21: "new deposits inherit rupture" removed (B a37).
     ("dt still reads G", dt_reads_the_tangent,
      "                            stiff = (8.0/9.0)*b1 + (2.0/9.0)*bRest;",
      "                            stiff = 1.0;"),
-    ("rupture allowed without the tangent bound", dependencies_are_refused,
-     '        if (elasticStabilityStiffness_ != "tangent")\n        {\n            FatalErrorInFunction',
-     '        if (false)\n        {\n            FatalErrorInFunction'),
-    ("zeros written when off", defaults_are_shipped_and_zeros_are_not_written,
-     "        ruptured_.writeOpt() = IOobject::NO_WRITE;",
-     "        ruptured_.writeOpt() = IOobject::AUTO_WRITE;"),
+    # S21: "rupture allowed without the tangent bound" (B a10) and "zeros
+    # written when off" (B a11) removed.
     ("rupture line renamed", diagnostics_are_logged,
      '"PHASE_CLOT_RUPTURE time="', '"PHASE_CLOT_RUPTUR time="'),
-    ("stretch at rupture not recorded", rupture_criterion_is_on_the_squared_stretch,
-     "            b1RupturedMax = max(b1RupturedMax, b1);\n            rI[celli] = 1.0;",
-     "            rI[celli] = 1.0;"),
+    # S21: "stretch at rupture not recorded" removed (B a26).
     ("label range not logged", diagnostics_are_logged,
      '<< " rupturedMax=" << gMax(rI)', '<< " rupturedMaxx=" << gMax(rI)'),
 ]
@@ -242,9 +211,8 @@ class S14Properties(unittest.TestCase):
 
     def test_the_generator_mirrors_the_refusals(self):
         g = self.gen
-        self.assertIn("S14_SWITCHES", g)
-        self.assertIn("def s14_combination_refusal", g)
-        self.assertIn("s14_combination_refusal(child)", g)
+        # S21: S14_SWITCHES and s14_combination_refusal went with the
+        # generator cut (report 07 item 3); the field's solver entry stays.
         self.assertIn('required.append("ruptured")', g)
         self.assertIn('"    ruptured { $c; }\\n"', g)
 
@@ -253,8 +221,9 @@ class S14Properties(unittest.TestCase):
         self.assertIn('"s14": s14_report(text)', self.assess)
 
     def test_the_switches_are_declared_with_their_evidence(self):
-        for decl in ("word networkRupture_;", "scalar networkCriticalStretch_;",
-                     "word elasticStabilityStiffness_;", "volScalarField ruptured_;"):
+        # S21: `word networkRupture_;` (B h07) and `word
+        # elasticStabilityStiffness_;` (B h08) deleted with their members.
+        for decl in ("scalar networkCriticalStretch_;", "volScalarField ruptured_;"):
             self.assertIn(decl, self.hdr)
         self.assertIn("20260923-204553", self.hdr)
         self.assertIn("Tutwiler", self.hdr)

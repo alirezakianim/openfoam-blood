@@ -24,8 +24,15 @@ import importlib.util
 import tarfile
 import json
 import os
+import re
+import shlex
 import shutil
+import statistics
 import subprocess
+import sys
+import threading
+import time
+import traceback
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -147,6 +154,393 @@ def verify_drive_copy(local: Path, drive: Path) -> dict:
     if absent:
         raise RuntimeError(f"Drive artifact verification missing required files: {absent}")
     return {"verified": True, "file_count": len(local_files), "required_files": list(required)}
+
+
+# ---------------------------------------------------------------------------
+# THE 5 ms WATCHER (design 2026-10-05-case-loose-40ms-r3-pair rev. 4 section 2;
+# S20 rev. 4 section 3 V6; docket 20261005-1621, report 08).
+#
+# BATCH 69's two 40 ms children each cost ~13 h. S20's fix is judged at the 5 ms
+# frame, so a child that does not pass there is stopped at ~1.5 h instead of
+# running on. Only the two BATCH 69 children are watched; no other child is
+# touched, and every other launch behaves exactly as before.
+#
+# THE RULES (rev. 4 section 2, red team 05 W1, W2, W4):
+#   * a key the verdict needs and the log lacks is an ERROR clause, never PASS;
+#   * the 5 ms frame is read only after the 5.2 ms frame exists;
+#   * on the R3-off child the width is REPORTED, not a stop (the 4.0 um price
+#     comes from the R3-on carrier); every other clause still stops it;
+#   * the record is runs/<child>/watcher-verdict.json: each clause's value,
+#     threshold and PASS / FAIL / ERROR;
+#   * a FAIL clause outranks an ERROR clause in the overall verdict (both stop
+#     the child; FAIL is the more informative), and an ERROR clause outranks a
+#     PASS: the overall verdict is PASS only if every gating clause is PASS;
+#   * the archive below runs after a stop exactly as after a normal end.
+#
+# THE STOP ROUTE (cited to the OpenFOAM-13 source; runTimeModifiable is false in
+# every child's controlDict, so editing system/controlDict would NOT be re-read):
+#   the child's controlDict carries the function object
+#       stopWatcher { type stopAtFile; libs (...); action writeNow; }
+#   (create_cases.py, the step1_watcher series). The watcher creates the file
+#   <case>/stopWatcher. Then, in the solver's own loop:
+#     foamRun.C:122               while (pimple.run(runTime))  -> Time::run()
+#     Time.C:898-920              Time::run() calls functionObjects_.execute() at
+#                                 every step; it is NOT gated by runTimeModifiable
+#                                 (that flag gates only readModifiedObjects(),
+#                                 Time.C:912 and TimeIO.C:200-203)
+#     stopAtFile.C:65-68          condition() is isFile(stopAtFileFile_)
+#     stopAtFile.C:81             stopAtFileFile_ = "$FOAM_CASE/" + the object's
+#                                 name = <case>/stopWatcher (FOAM_CASE is set at
+#                                 argList.C:419 and :428)
+#     stopAt.C:87-137             execute(): on the condition, action writeNow
+#                                 calls time_.stopAt(writeNow) (stopAt.C:112)
+#     Time.C:956-969              stopAt(sa) sets stopAt_ and endTime_ = great
+#     Time.C:1252-1256            at the next time increment, stopAt_ == writeNow
+#                                 sets endTime_ = value() and writeTime_ = true:
+#                                 a full write now, then run() is false
+#     stopAtFile.C:112-116        end() removes the file
+#   So foamRun writes the current state, logs "stopAtFile(timeIndex=N): stopping
+#   now after writing" (stopAt.C:114-117), and exits normally. The watcher reads
+#   that line as the acknowledgement. The signal route (sigStopAtWriteNow) is NOT
+#   used: it needs the foamRun pid and an environment variable set before launch.
+WATCHED_CHILDREN = {
+    "fsf_G4_kxu_r3_40": True,     # R3 on: the width is a stop
+    "fsf_G4_kxu_nor3_40": False,  # R3 off: the width is reported only
+}
+WATCH_TIME_S = 0.005             # the frame judged (S20 V6)
+WATCH_TIME_TOL_S = 1e-7          # << dt (4.76e-6): the log prints time=0.005 exactly
+WIDTH_MAX_UM = 4.0               # S20 V6: replay 3.47, batch 68 4.54, instrument agreement 0.01
+LAMBDA_MEDIAN_MIN = 0.9          # S20 V6, over the steps with activeFaces > 0
+PARTITION_SUM_DEV_MAX = 1e-12    # S20 V6: the components sum to theta within 1e-12
+WATCHER_LOG = "log.phaseClotAxisymmetricFluid"
+WATCHER_VERDICT = "watcher-verdict.json"
+WATCHER_STOP_FILE = "stopWatcher"   # the function object's name: stopAtFile.C:81
+WATCHER_STOP_ACK = "stopAtFile(timeIndex="   # stopAt.C:114-117
+WATCHER_POLL_S = 5.0
+WATCHER_ACK_TIMEOUT_S = 300.0    # ~70 steps at batch 68's 4.27 s per step
+_KV = re.compile(r"(\w+)=(\S+)")
+_REFUSAL = re.compile(r"FOAM FATAL|\brefused\b")
+
+
+def watch_frame_name(seconds: float) -> str:
+    """OpenFOAM's time-directory name (timeFormat general, timePrecision 10)."""
+    return format(seconds, ".10g")
+
+
+def launch_includes_watched(series_filter: str) -> bool:
+    tokens = series_filter.split()
+    return (not tokens or "throat_free_shell" in tokens
+            or any(c in tokens for c in WATCHED_CHILDREN))
+
+
+def watcher_preflight(width_script: Path) -> None:
+    """Refuse at the START of the session, not at 5 ms of a 13 h child: the
+    width probe must be on disk and numpy must import."""
+    if not width_script.is_file():
+        raise RuntimeError(f"the 5 ms watcher needs {width_script}, which is not in the package")
+    import importlib.util as _u
+    if _u.find_spec("numpy") is None:
+        raise RuntimeError("the 5 ms watcher needs numpy, which does not import")
+
+
+def measure_width_um(case: Path, seconds: float, width_script: Path) -> float:
+    """The interface width at `seconds`, in um, from scripts/na03_width.py (the
+    docket probe, copied unchanged): the w_int column of its t = `seconds` row."""
+    ms = seconds * 1e3
+    proc = subprocess.run(
+        [sys.executable, str(width_script), str(case), str(int(round(ms)))],
+        capture_output=True, text=True, timeout=900, check=False)
+    if proc.returncode != 0:
+        raise RuntimeError(f"na03_width.py exit {proc.returncode}: {proc.stderr.strip()[-300:]}")
+    for line in proc.stdout.splitlines():
+        tok = line.split()
+        if len(tok) >= 3 and re.fullmatch(r"\d+(\.\d+)?", tok[0]) and abs(float(tok[0]) - ms) < 1e-6:
+            return float(tok[2])
+    raise RuntimeError(f"na03_width.py printed no row for t = {ms:g} ms")
+
+
+def parse_watch_window(log_path: Path, t_end: float):
+    """One pass over the solver log: the PHASE_CLOT_CONTENT_FCT records up to
+    t_end, and every refusal / fatal-error line met before the window closes."""
+    fct, refusals = [], []
+    with log_path.open("r", errors="replace") as handle:
+        for line in handle:
+            if line.startswith("PHASE_CLOT_CONTENT_FCT "):
+                kv = dict(_KV.findall(line))
+                try:
+                    if float(kv["time"]) > t_end + WATCH_TIME_TOL_S:
+                        break
+                except (KeyError, ValueError):
+                    pass            # a record with no readable time stays in: its clauses read ERROR
+                fct.append(kv)
+            elif _REFUSAL.search(line):
+                refusals.append(line.strip()[:200])
+    return fct, refusals
+
+
+def _clause(name, rule, status, value=None, threshold=None, note=""):
+    return {"clause": name, "rule": rule, "status": status, "value": value,
+            "threshold": threshold, "note": note}
+
+
+def _numbers(fct, key):
+    """(values, number of records lacking a numeric `key`)."""
+    values, bad = [], 0
+    for kv in fct:
+        try:
+            values.append(float(kv[key]))
+        except (KeyError, ValueError):
+            values.append(None)
+            bad += 1
+    return values, bad
+
+
+def evaluate_child(case: Path, width_stops: bool, width_fn, seconds: float = WATCH_TIME_S) -> dict:
+    """The verdict at `seconds`. It reads the log and calls width_fn(case, seconds); it
+    does not wait for the frame (watch_child does) and does not stop anything."""
+    clauses = []
+    fct, refusals, log_error = [], [], None
+    try:
+        fct, refusals = parse_watch_window(case / WATCHER_LOG, seconds)
+    except OSError as error:
+        log_error = f"{type(error).__name__}: {error}"
+    if log_error or not fct:
+        why = log_error or "no PHASE_CLOT_CONTENT_FCT record up to the watch time"
+        clauses.append(_clause("fct_records", "at least one record, each with a time", "ERROR", 0, ">= 1", why))
+        for name, rule in (("lambda_median", f"median lambdaFluxMean over activeFaces > 0 >= {LAMBDA_MEDIAN_MIN}"),
+                           ("neg_after", "negAfter == 0 on every record"),
+                           ("zero_flux_rule", "zeroFluxRule == exactZero on every record"),
+                           ("partition_sum", f"max partitionSumDevMax <= {PARTITION_SUM_DEV_MAX:g}")):
+            clauses.append(_clause(name, rule, "ERROR", note=why))
+    else:
+        _, bad_time = _numbers(fct, "time")
+        clauses.append(_clause("fct_records", "at least one record, each with a time",
+                               "ERROR" if bad_time else "PASS", len(fct), ">= 1",
+                               f"{bad_time} records have no readable time" if bad_time else ""))
+        act, bad_a = _numbers(fct, "activeFaces")
+        lam, bad_l = _numbers(fct, "lambdaFluxMean")
+        rule = f"median lambdaFluxMean over activeFaces > 0 >= {LAMBDA_MEDIAN_MIN}"
+        if bad_a or bad_l:
+            clauses.append(_clause("lambda_median", rule, "ERROR", note=
+                                   f"{bad_a} records lack activeFaces, {bad_l} lack lambdaFluxMean"))
+        else:
+            sel = [l for a, l in zip(act, lam) if a > 0]
+            if not sel:
+                clauses.append(_clause("lambda_median", rule, "ERROR", note="no record has activeFaces > 0"))
+            else:
+                med = statistics.median(sel)
+                clauses.append(_clause("lambda_median", rule, "PASS" if med >= LAMBDA_MEDIAN_MIN else "FAIL",
+                                       med, LAMBDA_MEDIAN_MIN, f"{len(sel)} records with activeFaces > 0"))
+        neg, bad_n = _numbers(fct, "negAfter")
+        rule = "negAfter == 0 on every record"
+        if bad_n:
+            clauses.append(_clause("neg_after", rule, "ERROR", note=f"{bad_n} records lack negAfter"))
+        else:
+            clauses.append(_clause("neg_after", rule, "PASS" if max(neg) == 0 else "FAIL", max(neg), 0))
+        rule = "zeroFluxRule == exactZero on every record"
+        rules = [kv.get("zeroFluxRule") for kv in fct]
+        if any(r is None for r in rules):
+            clauses.append(_clause("zero_flux_rule", rule, "ERROR",
+                                   note=f"{sum(r is None for r in rules)} records lack zeroFluxRule "
+                                        "(the log is not from the S20 solver, or the key was dropped)"))
+        else:
+            odd = sorted({r for r in rules if r != "exactZero"})
+            clauses.append(_clause("zero_flux_rule", rule, "FAIL" if odd else "PASS",
+                                   odd[0] if odd else "exactZero", "exactZero"))
+        psd, bad_p = _numbers(fct, "partitionSumDevMax")
+        rule = f"max partitionSumDevMax <= {PARTITION_SUM_DEV_MAX:g}"
+        if bad_p:
+            clauses.append(_clause("partition_sum", rule, "ERROR",
+                                   note=f"{bad_p} records lack a numeric partitionSumDevMax (absent or NA)"))
+        else:
+            clauses.append(_clause("partition_sum", rule,
+                                   "PASS" if max(psd) <= PARTITION_SUM_DEV_MAX else "FAIL",
+                                   max(psd), PARTITION_SUM_DEV_MAX))
+    clauses.append(_clause("kernel_refusal", "no 'refused' or FOAM FATAL line before the watch time",
+                           "FAIL" if refusals else ("ERROR" if log_error else "PASS"),
+                           len(refusals), 0, "; ".join(refusals[:2]) if refusals else (log_error or "")))
+    rule = f"interface width at the watch time <= {WIDTH_MAX_UM:g} um" + ("" if width_stops else " (REPORTED only on this child)")
+    try:
+        width = float(width_fn(case, seconds))
+        status = ("PASS" if width <= WIDTH_MAX_UM else "FAIL") if width_stops else "REPORTED"
+        clauses.append(_clause("width_um", rule, status, width, WIDTH_MAX_UM))
+    except Exception as error:      # a width that cannot be measured is never a pass
+        clauses.append(_clause("width_um", rule, "ERROR" if width_stops else "REPORTED", None, WIDTH_MAX_UM,
+                               f"{type(error).__name__}: {error}"))
+    gating = [c["status"] for c in clauses if c["status"] in ("PASS", "FAIL", "ERROR")]
+    verdict = ("FAIL" if "FAIL" in gating else "WATCHER_ERROR" if "ERROR" in gating else "PASS")
+    return {"verdict": verdict, "watch_time_s": seconds, "width_stops_child": width_stops,
+            "records_in_window": len(fct), "clauses": clauses}
+
+
+def request_stop(case: Path) -> dict:
+    """Create <case>/stopWatcher (the stopAtFile route cited above) and wait for
+    the solver's acknowledgement line in its log."""
+    text = (case / "system" / "controlDict").read_text() if (case / "system" / "controlDict").is_file() else ""
+    body = re.search(r"\bstopWatcher\s*\{(.*?)\}", text, re.S)
+    if not body or not re.search(r"\btype\s+stopAtFile\s*;", body.group(1)) \
+            or not re.search(r"\baction\s+writeNow\s*;", body.group(1)):
+        return {"touched": False, "acknowledged": False,
+                "reason": "the controlDict has no stopWatcher stopAtFile (writeNow) function object: "
+                          "a touch would be inert, so none was made"}
+    log = case / WATCHER_LOG
+    offset = log.stat().st_size if log.is_file() else 0
+    (case / WATCHER_STOP_FILE).touch()
+    started = time.monotonic()
+    while time.monotonic() - started < WATCHER_ACK_TIMEOUT_S:
+        if log.is_file():
+            with log.open("r", errors="replace") as handle:
+                handle.seek(offset)
+                for line in handle:
+                    if WATCHER_STOP_ACK in line:
+                        return {"touched": True, "acknowledged": True, "log_line": line.strip(),
+                                "seconds_to_acknowledge": round(time.monotonic() - started, 1)}
+        if (case / "run-exit-code.txt").is_file() and not (case / WATCHER_STOP_FILE).exists():
+            break
+        time.sleep(min(1.0, WATCHER_POLL_S))
+    return {"touched": True, "acknowledged": False,
+            "reason": "no 'stopAtFile(timeIndex=' line in the solver log within "
+                      f"{WATCHER_ACK_TIMEOUT_S:g} s, or the child ended first"}
+
+
+def _write_verdict(case: Path, verdict: dict) -> None:
+    path = case / WATCHER_VERDICT
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(verdict, indent=2) + "\n")
+    os.replace(tmp, path)
+
+
+def frame_interval_s(case: Path) -> float:
+    """The frames function object's writeInterval, from the child's own controlDict."""
+    text = (case / "system" / "controlDict").read_text()
+    body = re.search(r"\bframes\s*\{(.*?)\}", text, re.S)
+    found = re.search(r"\bwriteInterval\s+([0-9.eE+-]+)\s*;", body.group(1)) if body else None
+    if not found:
+        raise RuntimeError("no frames function object with a writeInterval in the controlDict: "
+                           "the 5.2 ms frame-ready rule cannot be applied")
+    return float(found.group(1))
+
+
+def watch_child(case: Path, width_stops: bool, stop_event, width_fn, poll_s: float = WATCHER_POLL_S,
+                say=print) -> dict | None:
+    """Wait until the child's 5.2 ms frame exists, then judge its 5 ms frame, record
+    runs/<child>/watcher-verdict.json and stop the child unless the verdict is PASS.
+    Returns the verdict, or None when the child was never started."""
+    started_seen = False
+    while not stop_event.is_set():
+        if (case / "system" / "controlDict").is_file():
+            started_seen = True
+            break
+        stop_event.wait(poll_s)
+    if not started_seen:
+        return None
+    try:
+        nxt = watch_frame_name(WATCH_TIME_S + frame_interval_s(case))
+        now = watch_frame_name(WATCH_TIME_S)
+    except Exception as error:
+        verdict = {"verdict": "WATCHER_ERROR", "reason": f"{type(error).__name__}: {error}", "clauses": []}
+        _write_verdict(case, verdict)
+        say(f"[watcher] {case.name}: WATCHER_ERROR {verdict['reason']}", flush=True)
+        verdict["stop"] = request_stop(case)
+        _write_verdict(case, verdict)
+        return verdict
+    # THE FRAME-READY RULE (red team 05 W4b): the 5 ms frame is read only after
+    # the 5.2 ms directory exists, so the solver is past writing the 5 ms one.
+    while not stop_event.is_set():
+        if (case / nxt).is_dir() and (case / now / "q").is_file() and (case / now / "Vs").is_file():
+            break
+        if (case / "run-exit-code.txt").is_file():
+            break
+        stop_event.wait(poll_s)
+    ready = (case / nxt).is_dir() and (case / now / "q").is_file() and (case / now / "Vs").is_file()
+    if not ready:
+        verdict = {"verdict": "NOT_REACHED", "watch_time_s": WATCH_TIME_S,
+                   "reason": f"the child ended or the launch finished before the {nxt} frame existed",
+                   "run_exit_code": (case / "run-exit-code.txt").read_text().strip()
+                   if (case / "run-exit-code.txt").is_file() else None}
+        try:
+            _, refusals = parse_watch_window(case / WATCHER_LOG, WATCH_TIME_S)
+            verdict["refusal_lines"] = refusals[:3]
+        except OSError:
+            pass
+        _write_verdict(case, verdict)
+        say(f"[watcher] {case.name}: NOT_REACHED ({verdict['reason']})", flush=True)
+        return verdict
+    verdict = evaluate_child(case, width_stops, width_fn)
+    verdict.update({"child": case.name, "frame_read": now, "frame_ready_because": f"{nxt} exists",
+                    "stop_route": "stopAtFile function object stopWatcher, action writeNow "
+                                  "(stopAtFile.C:65-81, stopAt.C:87-137, Time.C:898-920, :1252-1256)"})
+    _write_verdict(case, verdict)               # recorded BEFORE any stop is attempted
+    summary = "; ".join(f"{c['clause']}={c['status']}" + ("" if c["value"] is None else f"({c['value']:.6g})"
+                        if isinstance(c["value"], (int, float)) else f"({c['value']})")
+                        for c in verdict["clauses"])
+    say(f"[watcher] {case.name}: {verdict['verdict']} at {now}: {summary}", flush=True)
+    if verdict["verdict"] != "PASS":
+        verdict["stop"] = request_stop(case)
+        _write_verdict(case, verdict)
+        say(f"[watcher] {case.name}: stop {verdict['stop']}", flush=True)
+    return verdict
+
+
+def start_watchers(gate: Path, width_script: Path, watched: dict = None, poll_s: float = WATCHER_POLL_S):
+    """One daemon thread per watched child. Returns (stop_event, threads)."""
+    watched = WATCHED_CHILDREN if watched is None else watched
+    stop_event = threading.Event()
+    threads = []
+
+    def width_fn(case, seconds):
+        return measure_width_um(case, seconds, width_script)
+
+    def run(child_id, width_stops):
+        case = gate / "runs" / child_id
+        try:
+            watch_child(case, width_stops, stop_event, width_fn, poll_s)
+        except Exception:                # a watcher fault is recorded and is never a pass
+            detail = traceback.format_exc()
+            print(f"[watcher] {child_id}: WATCHER_ERROR\n{detail}", flush=True)
+            if case.is_dir():
+                try:
+                    _write_verdict(case, {"verdict": "WATCHER_ERROR", "reason": detail[-1500:], "clauses": []})
+                    request_stop(case)
+                except Exception:
+                    pass
+
+    for child_id, width_stops in watched.items():
+        thread = threading.Thread(target=run, args=(child_id, width_stops), daemon=True, name=f"watch-{child_id}")
+        thread.start()
+        threads.append(thread)
+    return stop_event, threads
+
+
+def run_children_and_archive(gate: Path, openfoam_bash: str, series_filter: str, archive_script: Path,
+                             gate_artifact: Path, fields: str, width_script: Path, watched: dict = None,
+                             poll_s: float = WATCHER_POLL_S):
+    """Allrun, then the archive. The archive runs whatever Allrun returned, so a
+    watcher stop (foamRun exits normally after its writeNow) is archived exactly
+    as a completed child is. Returns (allrun exit, archive exit, child ids)."""
+    stop_event, threads = start_watchers(gate, width_script, watched, poll_s)
+    try:
+        code = stream(openfoam_bash + f" && cd {shlex.quote(str(gate))} && bash ./Allrun {series_filter}")
+    finally:
+        stop_event.set()
+        for thread in threads:
+            thread.join(timeout=1800)   # a width measurement in flight is seconds; this only bounds a hang
+    # CHILD LIST FROM matrix.json, not from this file. The hard-coded tuple that
+    # used to live in GATES went stale the moment the finite-strain gate's
+    # children were renamed, and the archiver would have quietly archived
+    # nothing for it -- the same failure that cost run 20260810-075435.
+    matrix_path = gate / "runs" / "matrix.json"
+    if matrix_path.is_file():
+        child_ids = [entry["child_id"] for entry in json.loads(matrix_path.read_text())]
+    else:
+        child_ids = []
+        print(f"[archive] {gate.name}: no matrix.json, nothing to archive", flush=True)
+    archive_code = subprocess.run(
+        ["python3", str(archive_script), "--gate", str(gate), "--artifact", str(gate_artifact),
+         "--children", *child_ids, "--tail-start", "0", "--fields", fields],
+        check=False,
+    ).returncode if child_ids else 1
+    return code, archive_code, child_ids
 
 
 def verify_repo_stamp(project: Path, expected: str, result: dict) -> None:
@@ -299,6 +693,10 @@ def main() -> int:
         # built in the notebook, so its sha is no release id; the tag and the
         # recomputed repo digest are.
         verify_repo_stamp(PROJECT_LOCAL, args.repo_digest.strip(), result)
+        # The 5 ms watcher's width probe must be in the package and numpy must
+        # import: refused here, at minute 3, not at 5 ms of a 13 h child.
+        if launch_includes_watched(series_filter):
+            watcher_preflight(PROJECT_LOCAL / "scripts" / "na03_width.py")
         repo_stamp = PROJECT_LOCAL / "REPO_STAMP.json"
         if repo_stamp.is_file():
             shutil.copy2(repo_stamp, artifact / repo_stamp.name)
@@ -435,120 +833,24 @@ def main() -> int:
             # (~3.5 h), which is what makes iterating on the transport
             # behaviour practical. matrix.json records what was actually built,
             # so a filtered run cannot be mistaken for a full one downstream.
-            code = stream(
-                openfoam_bash + f" && cd {bootstrap.quoted(gate)} && "
-                f"bash ./Allrun {series_filter}"
-            )
-            # CHILD LIST FROM matrix.json, not from this file. The hard-coded
-            # tuple that used to live in GATES went stale the moment the
-            # finite-strain gate's children were renamed, and the archiver
-            # would have quietly archived nothing for it -- the same failure
-            # that cost run 20260810-075435, one layer further out.
-            matrix_path = gate / "runs" / "matrix.json"
-            if matrix_path.is_file():
-                child_ids = [
-                    entry["child_id"]
-                    for entry in json.loads(matrix_path.read_text())
-                ]
-            else:
-                child_ids = []
-                print(f"[archive] {name}: no matrix.json, nothing to archive",
-                      flush=True)
-            archive_code = subprocess.run(
-                ["python3", str(archive_script), "--gate", str(gate),
-                 "--artifact", str(gate_artifact), "--children",
-                 *child_ids, "--tail-start", "0", "--fields", fields],
-                check=False,
-            ).returncode if child_ids else 1
-
-            # STAGE 3 HAS ITS OWN ASSESSOR AND ITS OWN VERDICT.
-            #
-            # assess_case.py reports the main case's tables and deliberately
-            # does not return a pass/fail. Stage 3 does return one -- it is a
-            # go/no-go for stage 4, and the plan's decision point says stop and
-            # re-plan below a 3x speedup. Run whenever stage-3 children are in
-            # the matrix, which covers the filtered stage-3-only invocation and
-            # the full run alike, and printed in full so the numbers are in the
-            # console even when the exit code is all that survives.
-            # THE PREFIX LIST IS THE TRIGGER AND IT HAS TO TRACK THE CHILD
-            # NAMES. Run 20260818-081527 ran five `diag_*` children and this
-            # line tested startswith("stage3_") alone, so assess_stage3.py never
-            # ran, no stage3_result.json was written, and the det(be) gate that
-            # had just been added and validated against the real logs never
-            # fired. Every number from that run had to be re-extracted from the
-            # raw solver logs by hand. A gate that does not run is worth less
-            # than no gate, because the empty artifact reads as "nothing to
-            # report".
-            # THE TRIGGER IS NOW DERIVED FROM THE SERIES, NOT FROM A LITERAL
-            # LIST OF PREFIXES. The list below is kept only as a union so that
-            # nothing which used to run stops running.
-            #
-            # THE PREFIX LIST FAILED A SECOND TIME, run 20260823-052707. Two
-            # new children named force_cell and force_face matched none of the
-            # prefixes, so `stage3` was empty, assess_stage3.py was NEVER
-            # INVOKED, no stage3_entry was recorded, and the run reported
-            # gate_exit_code 0 / status VALID / passed True with the entire
-            # stage-3 gate absent. Identical in kind to run 20260818-081527,
-            # which is what the comment above was written about: the mitigation
-            # chosen then was to extend the list, and extending a list only
-            # works until the next child is named something new.
-            #
-            # A series cannot be forgotten the way a prefix can, because
-            # create_cases.py refuses a child whose series is not declared in
-            # the controls file. Every stage-3 child lives in a series whose
-            # name begins "eulerian" -- eulerian_diag_xu, eulerian_diag_li,
-            # eulerian_stage3_xu, eulerian_stage3_li, eulerian_drift_probe.
-            stage3_series = set()
-            if matrix_path.is_file():
-                for entry in json.loads(matrix_path.read_text()):
-                    if str(entry.get("series", "")).startswith("eulerian"):
-                        stage3_series.add(entry["child_id"])
-
-            stage3 = sorted(
-                stage3_series
-                | {
-                    c for c in child_ids
-                    if c.startswith((
-                        "stage3_", "diag_", "fix_", "anchor_", "flux_",
-                        "grad_", "renorm_", "plt_", "gate_", "drift_",
-                        "force_",
-                    ))
-                }
-            )
-            if stage3:
-                print("\n" + "=" * 72, flush=True)
-                print(f"STAGE 3 -- {len(stage3)} children: "
-                      f"{', '.join(sorted(stage3))}", flush=True)
-                print("=" * 72, flush=True)
-                s3 = subprocess.run(
-                    ["python3", str(gate / "scripts" / "assess_stage3.py")],
-                    cwd=str(gate), capture_output=True, text=True, check=False,
-                )
-                print(s3.stdout + s3.stderr, flush=True)
-                s3_json = gate / "runs" / "stage3_result.json"
-                if s3_json.is_file():
-                    shutil.copy2(s3_json, gate_artifact / "stage3_result.json")
-                stage3_entry = {
-                    "children": sorted(stage3),
-                    "exit_code": s3.returncode,
-                    "verdict": "PASSED" if s3.returncode == 0 else "FAILED",
-                }
-                # A MISSING RESULT IS A FAILURE, NOT A QUIET GAP. If children
-                # were selected for this gate and it produced no JSON, the
-                # numbers are unassessed -- and an absent artifact reads as
-                # "nothing to report" rather than "not measured", which is how
-                # run 20260818-081527 lost a whole run's det(be) gate and how
-                # run 20260823-052707 reported VALID with the gate absent.
-                if not s3_json.is_file():
-                    stage3_entry["verdict"] = "FAILED"
-                    stage3_entry["no_result_json"] = (
-                        "assess_stage3.py produced no stage3_result.json for "
-                        f"{len(stage3)} selected children. The gate did not "
-                        "run or refused; its numbers are UNASSESSED and this "
-                        "run must not be read as a pass."
-                    )
-                    print(f"[stage3] REFUSED: {stage3_entry['no_result_json']}",
-                          flush=True)
+            # Allrun, the 5 ms watcher beside it, then the archive: the
+            # archive runs after a watcher stop exactly as after a normal end
+            # (run_children_and_archive).
+            code, archive_code, child_ids = run_children_and_archive(
+                gate, openfoam_bash, series_filter, archive_script,
+                gate_artifact, fields, PROJECT_LOCAL / "scripts" / "na03_width.py")
+            watcher = {}
+            for child_id in WATCHED_CHILDREN:
+                verdict_file = gate / "runs" / child_id / WATCHER_VERDICT
+                if verdict_file.is_file():
+                    shutil.copy2(verdict_file, gate_artifact / f"watcher-verdict-{child_id}.json")
+                    record = json.loads(verdict_file.read_text())
+                    watcher[child_id] = {
+                        "verdict": record.get("verdict"),
+                        "stopped": bool(record.get("stop", {}).get("touched")),
+                        "stop_acknowledged": bool(record.get("stop", {}).get("acknowledged")),
+                    }
+                    print(f"[watcher] {child_id}: {watcher[child_id]}", flush=True)
 
             source = gate / "postProcessing" / spec["outputs"] / "result.json"
             if source.is_file():
@@ -559,8 +861,8 @@ def main() -> int:
                     shutil.copy2(extra, gate_artifact / extra.name)
 
             entry = {"gate_exit_code": code, "archive_exit_code": archive_code}
-            if stage3:
-                entry["stage3"] = stage3_entry
+            if watcher:
+                entry["watcher"] = watcher
             if source.is_file():
                 assessed = json.loads(source.read_text())
                 # The main case reports tables, not a verdict. "Complete"

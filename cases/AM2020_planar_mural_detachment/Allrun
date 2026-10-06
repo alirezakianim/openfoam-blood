@@ -94,6 +94,11 @@ run_child() {
     # 20260915-062201 died exactly there, before solving anything. A no-op
     # unless the child declares plateletContentModel.
     [ "$setup_code" -eq 0 ] && ( cd "$case" && python3 "$gate/scripts/seed_stage2_content.py" . > log.seedStage2Content 2>&1 ) || setup_code=$?
+    # V21-8 (S20 V5): the seeded q < 0 child only. constant/seedTheta.json exists only for it, as
+    # constant/throatProfile.json exists only for throat children; for every other child this is a no-op.
+    if [ "$setup_code" -eq 0 ] && [ -f "$case/constant/seedTheta.json" ]; then
+        ( cd "$case" && python3 "$gate/scripts/seed_theta_peak.py" . > log.seedThetaPeak 2>&1 ) || setup_code=$?
+    fi
     if [ "$setup_code" -ne 0 ]; then
         echo "$setup_code" > "$case/run-exit-code.txt"
         echo "[$child_id] setup failed with exit $setup_code; continuing"

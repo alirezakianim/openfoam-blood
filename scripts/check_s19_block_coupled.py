@@ -183,23 +183,14 @@ SOURCE_MUTATIONS = [
      [('            << " numericPeakGB=" << st.numericPeakGB\n', "")],
      "S19a log carries G6's and G9's keys"),
     # S19b section 3: the switch, its refusals and the new log keys.
-    ("S19b default flipped to identityRows",
-     [('            "blockCoupledLumen", "eliminate"\n', '            "blockCoupledLumen", "identityRows"\n')],
-     "S19b: blockCoupledLumen is read with the default eliminate"),
+    # S21: the default, value-refusal, outside-key and config-echo mutations
+    # retired with their pins (hunks b15, c38, c39, c43 above).
     ("S19b kernel switch hard-wired off",
-     [('    coef.eliminateLumen = blockCoupledLumen_ == "eliminate";\n', "    coef.eliminateLumen = false;\n")],
-     "S19b: the kernel follows blockCoupledLumen"),
-    ("S19b value refusal dropped",
-     [('        blockCoupledLumen_ != "eliminate"\n     && blockCoupledLumen_ != "identityRows"\n',
-       '        false\n')],
-     "S19b: a value outside eliminate/identityRows is refused"),
-    ("S19b key outside blockCoupled accepted",
-     [('    if (phaseClotProperties_.found("blockCoupledLumen") && !s19BlockCoupled())\n',
-       "    if (false)\n")],
-     "S19b: the key outside blockCoupled is refused"),
-    ("S19b config echo dropped",
-     [('        << " blockCoupledLumen=" << blockCoupledLumen_\n', "")],
-     "S19b: PHASE_CLOT_S19_CONFIG echoes blockCoupledLumen"),
+     [('    coef.eliminateLumen = true;\n', "    coef.eliminateLumen = false;\n")],
+     "S19b: the kernel eliminates the lumen (blockCoupledLumen built in at eliminate)"),
+    ("the elastic site's weight left at the occupancy-blind form",
+     [('        w = skeletonStressWeight();\n', "")],
+     "the elastic site's occupancy weight is skeletonStressWeight()"),
     ("S19b record loses lumenEliminated",
      [('            << " lumenEliminated=" << st.nEliminated\n', "")],
      "S19b: PHASE_CLOT_S19 logs lumenEliminated and the 17-digit maxima"),
@@ -466,8 +457,14 @@ def source_pins(src: str | None = None) -> list[str]:
         ("the elastic site's gD and modulus are the ones R3 copies",
          'constvolScalarFieldgD(sqr(1.0-Dg_)+etaRes_);'
          'volSymmTensorFieldS("sigmaDevIntrinsic",gD*GField_*dev(be_));'),
+        # S21 (docket 20261005-1621 report 10, hunk d10.0; release-4198bb17
+        # .C at `if (skeletonFloorBasis_ == "occupancy")` in the elastic site):
+        # skeletonFloorBasis is built in at occupancy, so its guard line went
+        # and the block it guarded stays. The pin keeps the block, now anchored
+        # to the elastic site's own weight declaration.
         ("the elastic site's occupancy weight is skeletonStressWeight()",
-         'if(skeletonFloorBasis_=="occupancy"){//S16B:max(ind,floor)*(1-d)--'
+         'volScalarFieldw("elasticSolidWeight",phaseIndicator()*intactFraction());'
+         '{//S16B:max(ind,floor)*(1-d)--'
          'thefloorguardsoccupancyonly.w=skeletonStressWeight();}'),
         ("the elastic face stress is series(w) x interp(gD G M)",
          "seriesFaceWeights(w)*fvc::interpolate(S)"),
@@ -485,19 +482,16 @@ def source_pins(src: str | None = None) -> list[str]:
          '<<"linResScaled="<<linResScaled'),
         ("S19a log carries G6's and G9's keys",
          '<<"numericPeakGB="<<st.numericPeakGB<<"noffdiag="<<st.noffdiag'),
-        # S19b section 2.6-2.7.
-        ("S19b: blockCoupledLumen is read with the default eliminate",
-         'lookupOrDefault<word>("blockCoupledLumen","eliminate")'),
-        ("S19b: the kernel follows blockCoupledLumen",
-         'coef.eliminateLumen=blockCoupledLumen_=="eliminate";'),
-        ("S19b: a value outside eliminate/identityRows is refused",
-         'if(blockCoupledLumen_!="eliminate"&&blockCoupledLumen_!="identityRows"){FatalErrorInFunction'
-         '<<"blockCoupledLumen\'"<<blockCoupledLumen_<<"\'isnot"'),
-        ("S19b: the key outside blockCoupled is refused",
-         'if(phaseClotProperties_.found("blockCoupledLumen")&&!s19BlockCoupled()){FatalErrorInFunction'
-         '<<"blockCoupledLumen"<<blockCoupledLumen_<<"isreadonly"'),
-        ("S19b: PHASE_CLOT_S19_CONFIG echoes blockCoupledLumen",
-         '<<"networkViscosityTau="<<networkViscosityTau_<<"blockCoupledLumen="<<blockCoupledLumen_'),
+        # S19b section 2.6-2.7. S21 built blockCoupledLumen in at eliminate
+        # (docket 20261005-1621 report 10). Retired with the code they pinned:
+        # the read with default eliminate (hunk b15, release-4198bb17
+        # .C:1096-1100), the value refusal (c38, .C:3583-3590), the refusal of
+        # the key outside blockCoupled (c39, .C:3592-3597) and the
+        # PHASE_CLOT_S19_CONFIG echo (c43, .C:3662). A dictionary naming the
+        # key is now refused by s21BuiltInKeys (check_refused_dictionary_
+        # values.py). The kernel flag is kept, at its built-in value (d56).
+        ("S19b: the kernel eliminates the lumen (blockCoupledLumen built in at eliminate)",
+         'coef.eliminateLumen=true;'),
         ("S19b: PHASE_CLOT_S19 logs lumenEliminated and the 17-digit maxima",
          '<<"lumenEliminated="<<st.nEliminated<<maxesB.str().c_str();'),
         ("S19b: uMax, vsMax, pMax at 17 significant digits over every cell",

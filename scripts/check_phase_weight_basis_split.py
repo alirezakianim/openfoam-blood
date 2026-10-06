@@ -37,6 +37,12 @@ the adhesion sink and the explicit laplacian, not transport. A 1e-11 gate here
 would be six decades under the instrument, which is the failure this project
 has now made five times.
 
+S21 (2026-10-05, docket 20261005-1621 report 15): both keys are built in at
+content. Their initialisers (S21A b10), declarations (h17, h18), value and
+prerequisite refusals (c06, d11, a13, a14, a15, refuseDeadValue a11), the
+legacy Wp branch (a25) and the two *_CONFIG echoes (c11) were deleted, and the
+assertions on them with them. What is left guards the kept content path.
+
 Run: python3 scripts/check_phase_weight_basis_split.py
 """
 
@@ -179,19 +185,19 @@ def limiter_field_is_the_unclamped_ratio(src: str) -> bool:
 
 def interface_bin_is_basis_aware_and_legacy_is_unchanged(src: str) -> bool:
     """|c| < 0.9 is -0.9 < c < 0.9; c = 2q - 1 and q = 1 - ind make the same
-    bin 0.05 < ind < 0.95. The legacy numbers must be exactly the old ones."""
+    bin 0.05 < ind < 0.95. S21C2 p71-p73 reduced the `contentLimiter ?`
+    ternaries to the content numbers; those are pinned exactly."""
     c = compact(src)
-    return ("constscalarinterfaceLo=contentLimiter?0.05:-0.9;" in c
-            and "constscalarinterfaceHi=contentLimiter?0.95:0.9;" in c
+    return ("constscalarinterfaceLo=0.05;" in c
+            and "constscalarinterfaceHi=0.95;" in c
             and "mag(cCellIn[limOwn[facei]])<0.9" not in c)
 
 
 # ---- S6b-2: the platelet flux ---------------------------------------------
 
-def legacy_path_is_called_through_not_reimplemented(src: str) -> bool:
-    body = compact(platelet_convection_body(src))
-    return ('if(phasePlateletFluxBasis_!="content"){return'
-            "phaseConservativeConvection(carrier,f);}" in body)
+# S21 (2026-10-05, docket 20261005-1621 report 15): legacy_path_is_called_through_not_reimplemented() pinned the
+# `phasePlateletFluxBasis_ != "content"` branch, deleted by S21A a25
+# (release .C:8303-8309).
 
 
 def content_path_uses_the_content_weights(src: str) -> bool:
@@ -268,9 +274,9 @@ def content_face_weights_follow_the_matrix(src: str) -> bool:
 
 def both_configs_are_emitted(src: str) -> bool:
     c = compact(src)
-    return ('"PHASE_CLOT_PHASE_LIMITER_CONFIG"' in c
-            and '"PHASE_CLOT_PLATELET_FLUX_CONFIG"' in c
-            and '"limiterBasis="' in c)
+    # S21A c11 deleted PHASE_CLOT_PHASE_LIMITER_CONFIG and
+    # PHASE_CLOT_PLATELET_FLUX_CONFIG; S21A d22 kept the per-step tag.
+    return '"limiterBasis=content"' in c
 
 
 class PhaseWeightBasisSplit(unittest.TestCase):
@@ -280,71 +286,11 @@ class PhaseWeightBasisSplit(unittest.TestCase):
     def setUpClass(cls):
         cls.src = SOLVER.read_text()
         cls.hdr = HEADER.read_text()
-        # ONE OWNER for "which values does the solver refuse".
-        # check_refused_dictionary_values.py derives it from the
-        # refuseDeadValue call sites with comments stripped first --
-        # the messages quote the dead values verbatim -- and pins the
-        # site count so the set cannot quietly narrow. Re-deriving it
-        # here with a second regex is the two-place rule broken again.
-        spec = importlib.util.spec_from_file_location(
-            "_refused", pathlib.Path(__file__).resolve().parent
-            / "check_refused_dictionary_values.py")
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        cls.refused = mod.solver_refusals(cls.src)[0]
+        # S21: the refused-value set came from check_refused_dictionary_values'
+        # solver_refusals(), i.e. the refuseDeadValue sites S21A a11 deleted.
 
-    # ---- the keys ---------------------------------------------------------
-
-    def test_both_keys_are_declared_with_a_default_the_solver_accepts(self):
-        for key in ("phaseLimiterBasis", "phasePlateletFluxBasis"):
-            self.assertTrue(
-                key_is_declared(self.src, self.hdr, key),
-                "%s is not declared, or has no default -- a key with no "
-                "fallback is fatal on every case that omits it" % key)
-            self.assertTrue(
-                default_is_not_a_refused_value(self.src, key, self.refused),
-                "%s DEFAULTS to the value the solver refuses (%r). Omitting "
-                "the key is then fatal, and most cases omit it: that is the "
-                "S6c-2 defect, 201 of 203 cases aborting at construction "
-                "with every local gate green"
-                % (key, self.refused.get(key)))
-            self.assertTrue(
-                basis_validated_against_explicit_list(self.src, key),
-                "a misspelled %s would fall through silently" % key)
-
-    def test_each_content_basis_is_refused_without_its_prerequisites(self):
-        self.assertTrue(
-            content_requires(self.src, "phaseLimiterBasis",
-                             "if(!contentModel_)"),
-            "phaseLimiterBasis 'content' no longer requires contentModel: "
-            "the limiter would read a field frozen at initialisation, which "
-            "is central differencing on every interior face")
-        self.assertTrue(
-            content_requires(self.src, "phaseLimiterBasis",
-                             "if(skeletonVolumeFraction_<=small)"),
-            "the theta_ref divisor is unguarded in the limiter block")
-        self.assertTrue(
-            content_requires(self.src, "phaseLimiterBasis",
-                             'phaseFluidFractionBasis_!="content"'),
-            "phaseLimiterBasis 'content' no longer requires q to come from "
-            "theta -- theta's weights against a c-defined q is a NEW "
-            "mismatch, not a repair")
-
-        self.assertTrue(
-            content_requires(self.src, "phasePlateletFluxBasis",
-                             "if(!contentModel_)"),
-            "phasePlateletFluxBasis 'content' no longer requires "
-            "contentModel: contentFaceWeights_ would never be set")
-        self.assertTrue(
-            content_requires(self.src, "phasePlateletFluxBasis",
-                             "if(!plateletContentFormulation_)"),
-            "phasePlateletFluxBasis 'content' no longer requires the content "
-            "formulation: Wp is not solved without it and the key is inert")
-        self.assertTrue(
-            content_requires(self.src, "phasePlateletFluxBasis",
-                             'phaseFluidFractionBasis_!="content"'),
-            "phasePlateletFluxBasis 'content' no longer requires q to come "
-            "from theta -- the identity being repaired is Wp == q")
+    # S21 (2026-10-05, docket 20261005-1621 report 15): the key-declaration/default and content-prerequisite tests
+    # retired with the keys (S21A b10, h17, h18, c06, d11, a13, a14, a15).
 
     # ---- S6b-1 ------------------------------------------------------------
 
@@ -370,10 +316,6 @@ class PhaseWeightBasisSplit(unittest.TestCase):
     # ---- S6b-2 ------------------------------------------------------------
 
     def test_the_platelet_flux_selects_and_only_for_Wp(self):
-        self.assertTrue(
-            legacy_path_is_called_through_not_reimplemented(self.src),
-            "the legacy platelet path is no longer the previous call reached "
-            "through the same function; it can now drift from it")
         self.assertTrue(
             content_path_uses_the_content_weights(self.src),
             "the content path does not use contentFaceWeights_ -- the whole "
@@ -416,52 +358,8 @@ class PhaseWeightBasisSplit(unittest.TestCase):
     # ---- the mutations ----------------------------------------------------
 
     def test_the_checks_fire_on_their_mutations(self):
-        for key in ("phaseLimiterBasis", "phasePlateletFluxBasis"):
-            current = key_default(self.src, key)
-            self.assertTrue(current, "%s has no default to mutate" % key)
-
-            # 1. The default removed entirely.
-            stripped = self.src.replace('"%s", "%s"' % (key, current),
-                                        '"%s", ""' % key, 1)
-            self.assertNotEqual(stripped, self.src, "nothing was mutated")
-            self.assertFalse(key_is_declared(stripped, self.hdr, key),
-                             "emptying %s's default was not detected" % key)
-
-            # 2. The default moved ONTO a refused value -- the S6c-2
-            #    defect itself. Only reachable for a key that HAS a
-            #    refused value; phasePlateletFluxBasis has none, and
-            #    skipping silently is how a mutation test goes vacuous,
-            #    so assert which case we are in.
-            dead = self.refused.get(key)
-            if dead is None:
-                self.assertNotIn(
-                    key, self.refused,
-                    "%s gained a refused value; the mutation below must "
-                    "now run for it too" % key)
-            else:
-                onto = self.src.replace('"%s", "%s"' % (key, current),
-                                        '"%s", "%s"' % (key, dead), 1)
-                self.assertNotEqual(onto, self.src, "nothing was mutated")
-                self.assertFalse(
-                    default_is_not_a_refused_value(onto, key, self.refused),
-                    "%s defaulting to the refused %r was not detected"
-                    % (key, dead))
-
-            undeclared = self.hdr.replace("word %s_;" % key, "", 1)
-            self.assertNotEqual(undeclared, self.hdr, "nothing was mutated")
-            self.assertFalse(key_is_declared(self.src, undeclared, key),
-                             "removing %s's declaration was not detected" % key)
-
-            block = validation_block(self.src, key)
-            self.assertTrue(block, "%s's content block was not found" % key)
-            unguarded = self.src.replace(
-                block, block.replace("if (!contentModel_)", "if (false)", 1), 1)
-            self.assertNotEqual(unguarded, self.src, "nothing was mutated")
-            self.assertFalse(
-                content_requires(unguarded, key, "if(!contentModel_)"),
-                "dropping %s's contentModel refusal was not detected -- and "
-                "the identical refusal in the other four basis blocks is "
-                "still present, which is what the scoping is for" % key)
+        # S21: the per-key mutations (default, refused default, declaration,
+        # contentModel refusal) went with the keys (S21A b10, h17, h18, a11-a15).
 
         # S6b-1
         inert = self.src.replace("tinterp().weights(limiterField)",
@@ -502,26 +400,18 @@ class PhaseWeightBasisSplit(unittest.TestCase):
             "detected, and the second branch can only name a dead basis")
 
         rebinned = self.src.replace(
-            "const scalar interfaceLo = contentLimiter ? 0.05 : -0.9;",
-            "const scalar interfaceLo = contentLimiter ? 0.05 : -0.5;", 1)
+            "const scalar interfaceLo = 0.05;",
+            "const scalar interfaceLo = 0.5;", 1)
         self.assertNotEqual(rebinned, self.src, "nothing was mutated")
         self.assertFalse(
             interface_bin_is_basis_aware_and_legacy_is_unchanged(rebinned),
-            "moving the LEGACY half of the interface bin was not detected")
+            "moving the interface bin was not detected")
 
         # S6b-2
         pbody = platelet_convection_body(self.src)
         self.assertTrue(pbody, "plateletContentConvection was not found")
 
-        collapsed = self.src.replace(
-            pbody,
-            pbody.replace('if (phasePlateletFluxBasis_ != "content")',
-                          "if (false)", 1),
-            1)
-        self.assertNotEqual(collapsed, self.src, "nothing was mutated")
-        self.assertFalse(
-            legacy_path_is_called_through_not_reimplemented(collapsed),
-            "collapsing the legacy branch was not detected")
+        # S21: `collapsed` went with the legacy branch (S21A a25).
 
         unguarded_w = self.src.replace(
             pbody, pbody.replace("if (!contentFaceWeights_.valid())",
@@ -549,14 +439,17 @@ class PhaseWeightBasisSplit(unittest.TestCase):
             "extending the key to shell_ was not detected -- that is the "
             "bundled second change this split exists to prevent")
 
+        # S21: the old anchor, phaseConservativeConvection()'s delegating
+        # return, was deleted with that function (S21A b14). The same copy is
+        # now attempted in the kept caller, plateletContentConvection().
         copied = self.src.replace(
             "return phaseConservativeConvectionWith(carrier, f, "
-            "phaseWeights_());",
+            "contentFaceWeights_());",
             "return\n        fv::gaussConvectionScheme<scalar>\n        (\n"
             "            mesh_,\n            carrier,\n"
             "            tmp<surfaceInterpolationScheme<scalar>>\n"
             "            (\n                new suppliedWeightsScheme"
-            "(mesh_, phaseWeights_())\n            )\n"
+            "(mesh_, contentFaceWeights_())\n            )\n"
             "        ).fvmDiv(carrier, f);", 1)
         self.assertNotEqual(copied, self.src, "nothing was mutated")
         self.assertFalse(one_implementation_of_the_operator(copied),
@@ -594,8 +487,8 @@ class PhaseWeightBasisSplit(unittest.TestCase):
         self.assertFalse(content_face_weights_follow_the_matrix(rebuilt),
                          "a rebuilt capture was not detected")
 
-        silent = self.src.replace('Info<< "PHASE_CLOT_PLATELET_FLUX_CONFIG"',
-                                  'Info<< "PHASE_CLOT_PLATELET_FLUX_OFF"', 1)
+        silent = self.src.replace('" limiterBasis=content"',
+                                  '" limiterBasisOFF=content"', 1)
         self.assertNotEqual(silent, self.src, "nothing was mutated")
         self.assertFalse(both_configs_are_emitted(silent),
                          "renaming a config emit was not detected")

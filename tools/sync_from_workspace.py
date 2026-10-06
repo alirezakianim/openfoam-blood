@@ -86,7 +86,6 @@ UNIT_CHECKS = [
     ("check_scheme_coverage", []),
     ("check_stage2_case_generation", []),
     ("check_stage2_content_seeding", []),
-    ("check_stage3_gate_reaches_children", []),
     ("check_zero_diffusivity_safety", []),
     ("s16_offline_checks", ["self-test"]),
     ("s17_offline_checks", ["self-test"]),

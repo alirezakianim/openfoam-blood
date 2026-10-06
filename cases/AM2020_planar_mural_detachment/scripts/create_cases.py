@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the fifteen main-case children.
+"""Generate the main-case children (S21: the kept set only).
 
 
 Three series on one geometry: growth against flow rate, required bond strength
@@ -29,8 +29,118 @@ PER_TIME_DIR_GB = 19.5 / 1024.0
 OUTPUT_BUDGET_GB = 8.0
 
 
+# S21 section 1.2: the 78 options the solver now runs built in, at the raw
+# dictionary token every kept child used (audit rev. 2). The generator
+# writes none of them and refuses a control key that names one.
+BUILT_IN = {
+    'advectReleased': 'yes',
+    'beDetRenormalise': 'yes',
+    'beFluxConsistentGradU': 'yes',
+    'beRelaxBasis': 'networkAbsent',
+    'beStretchGradient': 'fluxConsistent',
+    'beTermDiagnostic': 'yes',
+    'beTraceFreeSource': 'no',
+    'blockCoupledLumen': 'eliminate',
+    'blockFaceInverse': 'faceAssembled',
+    'bondHoldCarrier': 'yes',
+    'bondHoldTaper': 'no',
+    'clotMechanics': 'yes',
+    'constitutiveModel': 'neoHookean',
+    'contentModel': 'yes',
+    'contentOperator': 'content',
+    'contentTransportScheme': 'fct',
+    'cplusOrder': 'shared',
+    'damageTransport': 'contentPartition',
+    'dragDriver': 'legacy',
+    'dragOccupancyBasis': 'intrinsic',
+    'elasticCoupling': 'implicitTangent',
+    'elasticStabilityStiffness': 'tangent',
+    'eulerianBrinkman': 'yes',
+    'eulerianMaterialFluxIsPhi': 'yes',
+    'eulerianSolid': 'yes',
+    'explicitStabilityBounds': 'on',
+    'faceConsistentElasticForce': 'no',
+    'fibreArithmetic': 'fieldUnits',
+    'fibreSlack': 'v1',
+    'finiteStrain': 'yes',
+    'frozenPendingPressure': 'none',
+    'fsiAitken': 'no',
+    'fsiSweepTrace': 'yes',
+    'growthClosure': 'reaction',
+    'interfaceDepletionModel': 'none',
+    'materialCarrierBlend': 'no',
+    'networkDamageProgressive': 'on',
+    'networkPressureDamage': 'tensile',
+    'networkPressureForce': 'faceGradient',
+    'networkPressureModel': 'convexExcess',
+    'networkPressureReference': 'deposited',
+    'networkRupture': 'fibreRelease',
+    'operatorAudit': 'no',
+    'operatorLocalisationAudit': 'no',
+    'permeabilityModel': 'kozenyCarmanSolid',
+    'phaseDeltaBasis': 'content',
+    'phaseFieldMaterialVelocity': 'yes',
+    'phaseFluidFractionBasis': 'content',
+    'phaseForceBasis': 'content',
+    'phaseGrowthDriver': 'transfer',
+    'phaseIndicatorBasis': 'content',
+    'phaseLimiterBasis': 'content',
+    'phaseMomentumFluxBasis': 'shared',
+    'phaseNormalBasis': 'content',
+    'phasePlateletFluxBasis': 'content',
+    'phaseWeightBasis': 'content',
+    'plateletBindLocalisation': 'interface',
+    'plateletCarrierArchive': 'no',
+    'plateletContentFormulation': 'yes',
+    'plateletContentModel': 'yes',
+    'plateletFluxConsistent': 'no',
+    'plateletFluxConvention': 'intrinsic',
+    'plateletOuterForceReject': 'no',
+    'plateletOuterTransactions': 'no',
+    'releasedCarrier': 'material',
+    'shearEnhancementModel': 'thresholdSaturating',
+    'skeletonDiffuseDomain': 'yes',
+    'skeletonFloorBasis': 'occupancy',
+    'skeletonMomentumForm': 'phaseContinuity',
+    'skeletonPressureForce': 'no',
+    'skeletonResidualDiagnostic': 'no',
+    'skeletonWallFace': 'zeroed',
+    'stressFaceTransmission': 'series',
+    'stronglyCoupledFSI': 'no',
+    'twoVelocitySkeleton': 'yes',
+    'unlocalisedPhaseWeightsAccepted': 'no',
+    'vnCapEnabled': 'no',
+    'wallPatchSplit': 'split',
+}
+
+
+# S21 group C1 (docket 20261005-1621, report 10, probes/se10-s21c1-deleted-keys.txt): the
+# 22 phaseClotProperties parameters whose last read the S21 passes deleted. The solver's
+# s21DeletedKeys table refuses each by name ("S21: deleted, no effect"), so the generator
+# writes none of them and refuses a control key that names one (camel or snake case),
+# together with the control keys that only fed them.
+DELETED_KEYS = frozenset({
+    "releasedAmbientQ", "releasedMaskDilation", "releasedMaskLimit", "releasedMaskSweeps",
+    "fsiNormProbeFraction", "fsiOmegaMax", "fsiOmegaMin", "fsiTolerance", "k1",
+    "materialCourant", "materialDeltaTMin", "nMaterialFloorSteps", "nFSICorrectors",
+    "nSkeletonCorrectors", "nStaggeredCorrectors", "nSkeletonDivergedSteps",
+    "skeletonDivergenceGrowth", "operatorAuditEvery", "phi0", "skeletonFixedPointTolerance",
+    "skeletonImplicitFactor", "skeletonUsBound",
+})
+assert len(DELETED_KEYS) == 22 and not DELETED_KEYS & set(BUILT_IN)
+# control keys whose only use was to write one of the 22 (pre-S21 create_cases.py)
+DELETED_CONTROL_KEYS = {
+    "material_courant": "materialCourant",
+    "operator_audit_every": "operatorAuditEvery",
+    "skeleton_implicit_factor": "skeletonImplicitFactor",
+}
+
+
 CASE = Path(__file__).resolve().parents[1]
-TEMPLATE = CASE.parent / "AM2020_straight_tube_growth_mechanics_smoke" / "template"
+# The main case owns its template (S21 section 3): the smoke template with its six
+# built-in entries (clotMechanics, shearEnhancementModel, permeabilityModel,
+# stronglyCoupledFSI, fsiAitken, fsiSweepTrace) deleted.
+TEMPLATE = CASE / "template"
 RUNS = CASE / "runs"
 
 MURAL = CASE.parent / "AM2020_mural_geometry_gate"
@@ -52,111 +162,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import apply_throat  # noqa: E402
 
 
-# The source-33 family: one replication child and the two stage-3 cost
-# children. They share a material, an operating point and a set of validation
-# checks; they differ only in geometry, window and the eulerianSolid switch.
-SOURCE33_SERIES = (
-    "source33_replication",
-    "eulerian_stage3_xu",
-    "eulerian_stage3_li",
-    "eulerian_diag_xu",
-    "eulerian_diag_li",
-    # Cloned from eulerian_diag_xu -- same material, same operating point, same
-    # unbreakable wall -- and differing only in the window. Declared a member
-    # of the family whose validation rules it follows, rather than exempted
-    # from the cohesive-bound check it correctly tripped.
-    "eulerian_drift_probe",
-    # Cloned from eulerian_diag_xu for the same reason and on the same terms:
-    # same material, same operating point, same unbreakable wall, differing in
-    # the window and (for two of the three children) in growth and G. A family
-    # member so it inherits the family's validation rather than being exempted
-    # from it.
-    "eulerian_saturation",
-    # Cloned from eulerian_saturation, which was cloned from eulerian_diag_xu:
-    # same material, same operating point, same unbreakable wall. A family
-    # member so it inherits the family's validation.
-    "eulerian_beterm",
-    # Cloned from eulerian_beterm on the same terms: same material, same
-    # operating point, same unbreakable wall, differing only in the be
-    # advection scheme, the timestep ceiling and the window.
-    "eulerian_spdfix",
-    # Cloned from eulerian_spdfix's bond_sat on the same terms: same material,
-    # same operating point, same be scheme, same window. What differs is the
-    # ANCHOR -- the release-support threshold and the bond-gated hold -- and
-    # for one child the adhesive strength. A family member so it inherits the
-    # family's validation rather than being exempted from it.
-    "eulerian_anchor",
-    "eulerian_seated",
-    # Cloned from eulerian_seated's sd_deep on the same terms: same seated
-    # core, same mesh, same tapered hold, same unbreakable wall. What differs
-    # is G -- restored to source 33's own 4/40 in st_xu, held at the inherited
-    # 40/400 in st_ctl as the control -- and the window. A family member so it
-    # inherits the family's validation rather than being exempted from it.
-    "eulerian_stiffness",
-    # Cloned from eulerian_stiffness's st_xu, byte for byte -- same sourced
-    # 4/40 material, same seated geometry, same window -- and differing in
-    # ONE switch, beDetRenormalise. A family member so it inherits the
-    # family's validation rather than being exempted from it.
-    "eulerian_detrenorm",
-    # Cloned from eulerian_detrenorm's dr_on, byte for byte -- same sourced
-    # 4/40 material, same seated geometry, same 24 ms window, same unbreakable
-    # bond, det renormalisation ON -- and differing in ONE integer,
-    # bondHoldDilation. Built on dr_on rather than st_xu because run
-    # 20260827-005457 withdrew st_xu/st_ctl as physics. A family member so it
-    # inherits the family's validation rather than being exempted from it.
-    "eulerian_anchor_depth",
-    # Cloned from eulerian_anchor_depth's ad_d20 (= dr_on), differing in
-    # growth_rate_multiplier and, for two of three children, in
-    # adhesive_strength_pa. THE FIRST SERIES TO RESTORE GROWTH: it had been 0.0
-    # in every seated child, so Dr Li's actual question had never been run.
-    # A family member so it inherits the family's validation.
-    "eulerian_growth_peel",
-    "eulerian_peel_propagation",
-    # Cloned from eulerian_growth_peel's gr_hold, byte for byte -- same 4/40
-    # material, same seated core, same 24 ms window, same unbreakable bond,
-    # same growth multiplier -- and differing in the MOMENTUM ANCHOR alone:
-    # eulerianBrinkman, and for two children the bond-hold keys it replaces.
-    # A family member so it inherits the family's validation rather than being
-    # exempted from it.
-    "eulerian_brinkman",
-    # Cloned from eulerian_brinkman's bk_soft and bk_on, byte for byte --
-    # Brinkman on, bond hold off, same 4/40 material, same seated core, same
-    # unbreakable bond -- and differing in ONE key, end_time_s, 24 -> 50 ms.
-    # A family member so it inherits the family's validation rather than being
-    # exempted from it.
-    "eulerian_core_fate",
-    # Cloned from eulerian_core_fate's cf_xu, byte for byte -- Brinkman on,
-    # bond hold off, seated core, unbreakable bond, source 33's 1e-14/1e-11
-    # permeabilities -- and differing in TWO keys: G_pa, the SHELL modulus,
-    # and the window, 50 -> 30 ms. Dr Li's 2026-09-01 request. A family member
-    # so it inherits the family's validation rather than being exempted from
-    # it, including the stiffness-contrast check its g40 child must declare an
-    # exception to.
-    "shell_modulus_sweep",
-    # Dr Li's 2026-09-01 occlusion request. A source-33 child in every respect
-    # that these checks cover -- same 4/40 Pa material, same 1e-11/1e-14
-    # permeabilities, seated core, growth multiplier 1000 -- and differing in
-    # the GEOMETRY (a narrowing channel) and the BOUNDARY CONDITION (pressure
-    # driven, because a fixed inlet velocity cannot show an occlusion). Listed
-    # here rather than branched, for the reason the family comment gives: a
-    # separate branch is how a series quietly acquires weaker validation than
-    # the one it was copied from.
-    "throat_occlusion",
-    # The lodged-embolus arm of the same study. Same material family, same
-    # operating point, same pressure-driven boundary condition, differing in
-    # WHERE the clot starts (inside the throat) and in waiving the core -- a
-    # detached fragment has no core by construction, because in source 33 the
-    # core is precisely the part that stays on the wall. Listed here so it
-    # inherits the family's validation rather than being exempted from it.
-    "throat_lodged",
-    # The EMBOLUS arm. Same material family and operating point again,
-    # differing in the bond strength (weak enough that every face fails) and
-    # in the solver term it exercises: the relative-velocity Brinkman drag
-    # added 2026-09-04, without which a released body carries no drag and
-    # cannot obstruct anything. Listed here so it inherits the family's
-    # validation rather than being exempted from it.
-    "throat_embolus",
-)
 
 
 def verify_linear_solvers_exist(
@@ -192,8 +197,7 @@ def verify_linear_solvers_exist(
     # did not, because the new field was added to the solver and not to this
     # list. Derived from the child's own flag now, so it cannot be forgotten
     # again for the next field the same way.
-    if eulerian_solid:
-        required.append("be")
+    required.append("be")
     # The Stage 1 content model solves two more fields. Added here at the same
     # time as the fields themselves, which is the step that was missed for
     # both `shell` and `be`. They are declared unconditionally in the template,
@@ -205,23 +209,18 @@ def verify_linear_solvers_exist(
     # S14: the rupture label, solved only under network_rupture
     # criticalStretch -- added in the same edit as the field, the step
     # `shell` and `be` each missed.
-    if rupture:
-        required.append("ruptured")
+    required.append("ruptured")
     # S16: the damage partition, solved (once damage exists) under
     # damage_transport contentPartition -- added in the same edit as the
     # fields.
-    if partition:
-        required += list(S16_PARTITION_FIELDS)
+    required += list(S16_PARTITION_FIELDS)
     # S17: the pending fibre's contents under fibreRelease, and the Vs
     # predictor under implicitTangent -- added in the same edit as the
     # solves.
-    if fibre:
-        required += list(S17_FIBRE_FIELDS)
-    if implicit_tangent:
-        required.append("Vs")
+    required += list(S17_FIBRE_FIELDS)
+    required.append("Vs")
     # S17b A1: V1's taut share
-    if slack_v1:
-        required += list(S17B_FIBRE_FIELDS)
+    required += list(S17B_FIBRE_FIELDS)
 
     text = solution.read_text()
     missing = [
@@ -306,283 +305,28 @@ def add_or_replace_entry(path: Path, key: str, value: object) -> None:
 
 
 
-# See validate_stage2_platelet: the largest uniform theta gain a Stage 2
-# child may deposit while the accepted transfer is unlocalised.
-UNLOCALISED_DEPOSITION_CEILING = 1e-3
 
 
-# S10 (2026-09-22): (child key, dictionary key, accepted values). The first
-# value of each is the solver's shipped default. Kept equal to the solver's
-# own refusals in its constructor (PHASE_CLOT_S10_CONFIG).
-S10_SWITCHES = (
-    ("network_pressure_reference", "networkPressureReference",
-     ("nominal", "deposited")),
-    ("content_transport_scheme", "contentTransportScheme",
-     ("upwind", "fct", "limitedLinear")),
-    ("released_carrier", "releasedCarrier",
-     ("rigidBody", "material")),
-)
 
 
-S11_SWITCHES = (
-    ("skeleton_momentum_form", "skeletonMomentumForm",
-     ("conservative", "phaseContinuity")),
-    ("block_face_inverse", "blockFaceInverse",
-     ("cellInverse", "faceAssembled")),
-    ("stress_face_transmission", "stressFaceTransmission",
-     ("linear", "series")),
-    ("network_pressure_force", "networkPressureForce",
-     ("stressDivergence", "faceGradient")),
-    ("be_relax_basis", "beRelaxBasis",
-     ("blood", "networkAbsent")),
-    ("explicit_stability_bounds", "explicitStabilityBounds",
-     ("off", "on")),
-)
 
 
-def s11_combination_refusal(child: dict) -> None:
-    """Refuse, for EVERY child, an S11 combination the solver refuses.
-
-    The same dependencies the solver's constructor enforces, checked here so
-    a wrong combination costs nothing instead of a VM boot. Each is a failure
-    that would otherwise ship silently, and the reason is stated with it
-    (research/designs/2026-09-23-S11-root-causes-em52.md).
-    """
-    cid = child["child_id"]
-    present = [k for k, _, _ in S11_SWITCHES if k in child]
-    convex = child.get("network_pressure_model") == "convexExcess"
-    if (present or convex) and not (
-        child.get("two_velocity_skeleton") and child.get("eulerian_solid")
-    ):
-        raise ValueError(
-            f"{cid}: the S11 switches act on the two-velocity Eulerian "
-            f"skeleton; they need two_velocity_skeleton and eulerian_solid."
-        )
-    if convex and child.get("network_pressure_reference") != "deposited":
-        raise ValueError(
-            f"{cid}: network_pressure_model convexExcess weights by the "
-            f"DEPOSITED occupancy thetaNetRef/phi_s0; it needs "
-            f"network_pressure_reference deposited."
-        )
-    if child.get("network_pressure_force") == "faceGradient":
-        if not convex:
-            raise ValueError(
-                f"{cid}: network_pressure_force faceGradient is a compact "
-                f"force and is well-posed only for a monotone partial "
-                f"pressure; it needs network_pressure_model convexExcess."
-            )
-        if child.get("explicit_stability_bounds") != "on":
-            raise ValueError(
-                f"{cid}: network_pressure_force faceGradient is explicit in "
-                f"the content; it needs explicit_stability_bounds on."
-            )
-    if child.get("be_relax_basis") == "networkAbsent" and not (
-        child.get("network_pressure_reference") == "deposited"
-        and child.get("block_face_inverse") == "faceAssembled"
-    ):
-        raise ValueError(
-            f"{cid}: be_relax_basis networkAbsent keeps the clot edge's "
-            f"strain, so it needs network_pressure_reference deposited and "
-            f"block_face_inverse faceAssembled (under cellInverse a "
-            f"clot-surface face carries the lumen's skeleton mobility)."
-        )
 
 
-S12_SWITCHES = (
-    ("drag_occupancy_basis", "dragOccupancyBasis",
-     ("legacy", "intrinsic")),
-)
 
 
-def s12_combination_refusal(child: dict, permeability_model: str) -> None:
-    """Refuse, for EVERY child, an S12 combination the solver refuses.
-
-    dragOccupancyBasis intrinsic gives a partial cell its network's OWN drag,
-    ind*(1-a)^2*nu/k_KC(a), weighted as the stress already is
-    (research/designs/2026-09-23-S12-intrinsic-occupancy-drag.md). Each
-    dependency is the solver constructor's, checked here so a wrong
-    combination costs nothing instead of a VM boot. `permeability_model` is
-    the child's RESOLVED value, the one written to the dictionary.
-    """
-    if child.get("drag_occupancy_basis", "legacy") != "intrinsic":
-        return
-    cid = child["child_id"]
-    if not (child.get("two_velocity_skeleton") and child.get("eulerian_solid")):
-        raise ValueError(
-            f"{cid}: drag_occupancy_basis intrinsic weights the drag of the "
-            f"two-velocity 2x2 block; it needs two_velocity_skeleton and "
-            f"eulerian_solid."
-        )
-    if not (child.get("network_pressure_reference") == "deposited"
-            and child.get("network_pressure_model") == "convexExcess"):
-        raise ValueError(
-            f"{cid}: drag_occupancy_basis intrinsic evaluates the "
-            f"permeability at the intrinsic density a = phi_s0 + theta - "
-            f"thetaNetRef, which exists only under network_pressure_reference "
-            f"deposited and is held inside (0, phiSMax) only by "
-            f"network_pressure_model convexExcess."
-        )
-    if permeability_model != "kozenyCarmanSolid":
-        raise ValueError(
-            f"{cid}: drag_occupancy_basis intrinsic re-evaluates the "
-            f"kozenyCarmanSolid law at a; permeability_model is "
-            f"{permeability_model!r}."
-        )
-    if float(child.get("skeleton_dilute_drag_rate", 0.0)) > 0:
-        raise ValueError(
-            f"{cid}: drag_occupancy_basis intrinsic gives every partial cell "
-            f"the network's own drag (1.008e7*ind 1/s in the shell); "
-            f"skeleton_dilute_drag_rate "
-            f"{child['skeleton_dilute_drag_rate']} would add the calibrated "
-            f"floor this basis retires (OI-31). Set it to 0."
-        )
 
 
 S13_SWITCHES = (
-    # "contentRatio": S18 C (R2b), networkPresence x theta/thetaNetRef
-    # (research/designs/2026-09-29-S18-...md section 2 C; DECISIONS).
     ("network_pressure_weight", "networkPressureWeight",
-     ("depositedOccupancy", "networkPresence", "contentRatio")),
-    ("be_stretch_gradient", "beStretchGradient",
-     ("cellGradient", "fluxConsistent")),
+     ("networkPresence", "contentRatio")),
 )
 
 
-def s13_combination_refusal(child: dict) -> None:
-    """Refuse, for EVERY child, an S13 combination the solver refuses.
-
-    research/designs/2026-09-23-S13-grid-scale-restoring.md. The two fixes of
-    run 20260923-135545's grid-scale mode: the convexExcess partial pressure
-    weighted by network PRESENCE (the excess is already partial; S11 counted
-    the occupancy twice), and be's stretch built from the flux that carries
-    be and the content.
-    """
-    cid = child["child_id"]
-    _npw = child.get("network_pressure_weight")
-    if _npw is not None and str(_npw) not in S13_SWITCHES[0][2]:
-        raise ValueError(
-            f"{cid}: network_pressure_weight {str(_npw)!r} is not one of "
-            f"{', '.join(S13_SWITCHES[0][2])}."
-        )
-    if _npw in ("networkPresence", "contentRatio"):
-        if child.get("network_pressure_model") != "convexExcess":
-            raise ValueError(
-                f"{cid}: network_pressure_weight {_npw} re-weights "
-                f"the convexExcess partial pressure; it needs "
-                f"network_pressure_model convexExcess."
-            )
-        if not float(child.get("residual_chi", 0.0)) > 0:
-            raise ValueError(
-                f"{cid}: network_pressure_weight {_npw} ramps to zero "
-                f"below residual_chi of deposited network, which keeps the "
-                f"lumen free of network pressure; residual_chi must be "
-                f"positive."
-            )
-    if (_npw == "contentRatio"
-            and child.get("network_pressure_reference") != "deposited"):
-        raise ValueError(
-            f"{cid}: network_pressure_weight contentRatio weights the intact "
-            f"network pressure by theta/thetaNetRef; it needs "
-            f"network_pressure_reference deposited (S18 section 2 C)."
-        )
-    if child.get("be_stretch_gradient") == "fluxConsistent" and not (
-        child.get("two_velocity_skeleton") and child.get("eulerian_solid")
-    ):
-        raise ValueError(
-            f"{cid}: be_stretch_gradient fluxConsistent builds be's stretch "
-            f"from the two-velocity skeleton flux; it needs "
-            f"two_velocity_skeleton and eulerian_solid."
-        )
 
 
-S14_SWITCHES = (
-    ("network_rupture", "networkRupture",
-     ("off", "criticalStretch", "progressiveDamage", "terminalRelease",
-      "fibreRelease")),
-    ("elastic_stability_stiffness", "elasticStabilityStiffness",
-     ("modulus", "tangent")),
-)
 
 
-def s14_combination_refusal(child: dict) -> None:
-    """Refuse, for EVERY child, an S14 combination the solver refuses.
-
-    research/designs/2026-09-23-S14-network-rupture.md: network ruptures at
-    the critical principal stretch (Tutwiler et al. 2020, source 28: 2.8),
-    and the elastic dt bound reads the stretch-dependent tangent stiffness.
-    """
-    cid = child["child_id"]
-    # A MISSPELT VALUE IS REPORTED AS A MISSPELT VALUE, first. Otherwise a
-    # typo in network_rupture would surface as "network_critical_stretch is
-    # silently inert" -- true, but the wrong reason, and it sends the reader
-    # to the wrong key.
-    for _key, _dict_key, _allowed in S14_SWITCHES:
-        if _key in child and str(child[_key]) not in _allowed:
-            raise ValueError(
-                f"{cid}: {_key} {str(child[_key])!r} is not one of "
-                f"{', '.join(_allowed)}."
-            )
-    tangent = child.get("elastic_stability_stiffness") == "tangent"
-    if tangent and child.get("explicit_stability_bounds") != "on":
-        raise ValueError(
-            f"{cid}: elastic_stability_stiffness tangent changes the number "
-            f"explicit_stability_bounds on bounds dt by; it needs "
-            f"explicit_stability_bounds on."
-        )
-    # S16: terminalRelease reads the rupture stretch too (it is lc); S17's
-    # fibreRelease is terminalRelease's event and release.
-    if "network_critical_stretch" in child and child.get(
-            "network_rupture") not in ("criticalStretch", "terminalRelease",
-                                       "fibreRelease"):
-        raise ValueError(
-            f"{cid}: network_critical_stretch is read only under "
-            f"network_rupture criticalStretch, terminalRelease or "
-            f"fibreRelease; set without them, it would be silently inert."
-        )
-    # S15: the two progressive-damage parameters (Kliuchnikov et al. 2025,
-    # source 32, Eq. 6) are read only under progressiveDamage -- and, S16,
-    # under terminalRelease with its progressive part on (refused as inert
-    # with it off in s16_combination_refusal).
-    for _k in ("network_damage_onset_stretch", "network_damage_stretch_scale"):
-        if _k in child and child.get("network_rupture") not in (
-                "progressiveDamage", "terminalRelease", "fibreRelease"):
-            raise ValueError(
-                f"{cid}: {_k} is read only under network_rupture "
-                f"progressiveDamage, terminalRelease or fibreRelease; set "
-                f"without them, it would be silently inert."
-            )
-    if child.get("network_rupture") == "progressiveDamage":
-        lf = float(child.get("network_damage_onset_stretch", 2.105))
-        dlf = float(child.get("network_damage_stretch_scale", 1.0))
-        if not (lf > 1 and dlf > 0):
-            raise ValueError(
-                f"{cid}: network_damage_onset_stretch {lf} must exceed 1 and "
-                f"network_damage_stretch_scale {dlf} must be positive "
-                f"(source 32 Eq. 6: 2.105 and 1.0)."
-            )
-    if child.get("network_rupture") == "criticalStretch":
-        lam = float(child.get("network_critical_stretch", 2.8))
-        if not lam > 1:
-            raise ValueError(
-                f"{cid}: network_critical_stretch {lam} is a principal "
-                f"stretch and must exceed 1 (source 28: 2.8)."
-            )
-    if child.get("network_rupture", "off") != "off":
-        mode = child.get("network_rupture")
-        if not (child.get("two_velocity_skeleton") and child.get("eulerian_solid")
-                and child.get("network_pressure_reference") == "deposited"
-                and child.get("be_relax_basis") == "networkAbsent"):
-            raise ValueError(
-                f"{cid}: network_rupture {mode} needs the two-velocity "
-                f"Eulerian skeleton, network_pressure_reference deposited and "
-                f"be_relax_basis networkAbsent."
-            )
-        if not tangent:
-            raise ValueError(
-                f"{cid}: network_rupture {mode} bounds the tangent stiffness "
-                f"of the network it acts on so that the dt bound can resolve "
-                f"it; it needs elastic_stability_stiffness tangent."
-            )
 
 
 S15_SWITCHES = (
@@ -591,287 +335,27 @@ S15_SWITCHES = (
 )
 
 
-def s15_combination_refusal(child: dict, core_shell: bool) -> None:
-    """Refuse, for EVERY child, an S15 material-label combination the solver
-    refuses. research/designs/2026-09-24-S15-composition-label-and-progressive-damage.md:
-    under contentComposition the core/shell label is thetaH/(thetaC + thetaH),
-    derived from the two transported contents, so it needs the content model
-    (the contents) and core_shell (a label to derive)."""
-    cid = child["child_id"]
-    for _key, _dict_key, _allowed in S15_SWITCHES:
-        if _key in child and str(child[_key]) not in _allowed:
-            raise ValueError(
-                f"{cid}: {_key} {str(child[_key])!r} is not one of "
-                f"{', '.join(_allowed)}."
-            )
-    if child.get("material_label_basis") == "contentComposition" and not (
-            child.get("content_model") and core_shell):
-        raise ValueError(
-            f"{cid}: material_label_basis contentComposition derives the "
-            f"core/shell label from the core and shell contents; it needs "
-            f"content_model true and a core_shell series."
-        )
 
 
-S16_SWITCHES = (
-    ("skeleton_floor_basis", "skeletonFloorBasis",
-     ("intactWeight", "occupancy")),
-    ("damage_transport", "damageTransport",
-     ("volumeFlux", "contentPartition")),
-    ("network_pressure_damage", "networkPressureDamage",
-     ("off", "tensile")),
-)
 
 # The damage partition's three fields (solver: thetaIntact_, thetaPending_,
 # thetaBroken_). Each needs a linear solver under contentPartition.
 S16_PARTITION_FIELDS = ("thetaIntact", "thetaPending", "thetaBroken")
 
 
-def s16_value_refusal(child: dict) -> None:
-    """The VALUE of every S16 key, for EVERY child, before any dependency of
-    any stage is checked -- so a misspelt value is reported as a misspelt
-    value and never as a missing prerequisite or an inert parameter."""
-    cid = child["child_id"]
-    _rupture_allowed = dict((k, a) for k, _d, a in S14_SWITCHES)["network_rupture"]
-    if "network_rupture" in child and str(child["network_rupture"]) not in _rupture_allowed:
-        raise ValueError(
-            f"{cid}: network_rupture {str(child['network_rupture'])!r} is not "
-            f"one of {', '.join(_rupture_allowed)}."
-        )
-    for _key, _dict_key, _allowed in S16_SWITCHES:
-        if _key in child and str(child[_key]) not in _allowed:
-            raise ValueError(
-                f"{cid}: {_key} {str(child[_key])!r} is not one of "
-                f"{', '.join(_allowed)}."
-            )
-    for _key in ("network_damage_progressive", "final_relaxation_unity"):
-        if _key in child and not isinstance(child[_key], bool):
-            raise ValueError(
-                f"{cid}: {_key} {child[_key]!r} must be true or false."
-            )
-    for _key in ("network_release_time_s", "wall_budget_h"):
-        if _key not in child:
-            continue
-        try:
-            _v = float(child[_key])
-        except (TypeError, ValueError):
-            raise ValueError(f"{cid}: {_key} {child[_key]!r} is not a number.")
-        if not (_v > 0 and math.isfinite(_v)):
-            raise ValueError(
-                f"{cid}: {_key} {_v} must be a positive, finite number "
-                + ("(the release time tau, seconds)." if _key.startswith("network")
-                   else "of hours (the stopAtClockTime writeNow budget).")
-            )
 
 
-def s16_combination_refusal(child: dict, series: dict) -> None:
-    """Refuse, for EVERY child, an S16 combination the solver refuses.
-
-    research/designs/2026-09-24-S16-timed-terminal-rupture.md section 4.
-    network_rupture terminalRelease: the target damage d* rises to 1 at the
-    rupture stretch lc (source 32 p. 355) and d relaxes to it over the release
-    time tau (source 63, waiver D4); it needs the damage carried as content,
-    the occupancy floor and the tensile pressure damage (F3). The VALUE of
-    each switch is checked before any dependency, and a parameter nothing
-    reads under the chosen switch is refused as silently inert.
-    """
-    cid = child["child_id"]
-    # 1. Values first -- repeated from s16_value_refusal(), which main()
-    # calls before every other stage's refusal, so this function is also
-    # safe to call on its own.
-    s16_value_refusal(child)
-    rupture = str(child.get("network_rupture", "off"))
-    # S17 A: fibreRelease is terminalRelease's event and release; every S16
-    # requirement applies to it.
-    terminal = rupture in ("terminalRelease", "fibreRelease")
-    progressive_on = bool(child.get("network_damage_progressive", True))
-    # 2. Inert parameters.
-    for _key in ("network_release_time_s", "network_damage_progressive"):
-        if _key in child and not terminal:
-            raise ValueError(
-                f"{cid}: {_key} is read only under network_rupture "
-                f"terminalRelease or fibreRelease; set without it, it would "
-                f"be silently inert."
-            )
-    if terminal and not progressive_on:
-        for _k in ("network_damage_onset_stretch",
-                   "network_damage_stretch_scale"):
-            if _k in child:
-                raise ValueError(
-                    f"{cid}: {_k} is read only by the progressive part; "
-                    f"with network_damage_progressive false it would be "
-                    f"silently inert."
-                )
-    floor_basis = str(child.get("skeleton_floor_basis", "intactWeight"))
-    transport = str(child.get("damage_transport", "volumeFlux"))
-    pressure = str(child.get("network_pressure_damage", "off"))
-    if rupture == "off" and (floor_basis != "intactWeight"
-                             or transport != "volumeFlux"
-                             or pressure != "off"):
-        raise ValueError(
-            f"{cid}: skeleton_floor_basis {floor_basis}, damage_transport "
-            f"{transport} and network_pressure_damage {pressure} act on the "
-            f"network damage d; network_rupture off has none, so each would "
-            f"be silently inert."
-        )
-    if floor_basis == "occupancy" and not series.get("skeleton_diffuse_domain"):
-        raise ValueError(
-            f"{cid}: skeleton_floor_basis occupancy moves the diffuse-domain "
-            f"floor off the damage; its series has no skeleton_diffuse_domain, "
-            f"so there is no floor and the switch would be silently inert."
-        )
-    if transport == "contentPartition":
-        if not child.get("content_model"):
-            raise ValueError(
-                f"{cid}: damage_transport contentPartition carries the damage "
-                f"as a partition of the network content on the content's own "
-                f"transport; it needs content_model true."
-            )
-        if str(child.get("content_transport_scheme", "upwind")) == "limitedLinear":
-            raise ValueError(
-                f"{cid}: damage_transport contentPartition is non-negative "
-                f"only on an M-matrix predictor; content_transport_scheme "
-                f"limitedLinear is not one (run 20260923-012704)."
-            )
-    # 3. terminalRelease: its parameters, then its three companions.
-    if terminal:
-        lam = float(child.get("network_critical_stretch", 2.8))
-        if not lam > 1:
-            raise ValueError(
-                f"{cid}: network_rupture {rupture}: "
-                f"network_critical_stretch {lam} is the rupture stretch lc and "
-                f"must exceed 1 (source 28: 2.8)."
-            )
-        tau = float(child.get("network_release_time_s", 3.3e-4))
-        if not (tau > 0 and math.isfinite(tau)):
-            raise ValueError(
-                f"{cid}: network_rupture {rupture}: "
-                f"network_release_time_s {tau} must be positive (3.3e-4 s, "
-                f"source 63, waiver D4)."
-            )
-        if progressive_on:
-            lf = float(child.get("network_damage_onset_stretch", 2.105))
-            dlf = float(child.get("network_damage_stretch_scale", 1.0))
-            if not (lf > 1 and dlf > 0):
-                raise ValueError(
-                    f"{cid}: network_damage_onset_stretch {lf} must exceed 1 "
-                    f"and network_damage_stretch_scale {dlf} must be positive "
-                    f"(source 32 Eq. 6: 2.105 and 1.0)."
-                )
-            if not lam > lf:
-                raise ValueError(
-                    f"{cid}: network_rupture {rupture} with the "
-                    f"progressive part on: network_critical_stretch {lam} must "
-                    f"exceed network_damage_onset_stretch {lf}. A rupture "
-                    f"stretch at or below the onset is buildable only "
-                    f"terminal-only: set network_damage_progressive false."
-                )
-        missing = [
-            f"{k} {v}" for k, v, ok in (
-                ("damage_transport", "contentPartition",
-                 transport == "contentPartition"),
-                ("skeleton_floor_basis", "occupancy",
-                 floor_basis == "occupancy"),
-                ("network_pressure_damage", "tensile", pressure == "tensile"),
-            ) if not ok
-        ]
-        if missing:
-            raise ValueError(
-                f"{cid}: network_rupture {rupture} releases a ruptured "
-                f"cell to zero stress, which holds only with "
-                f"{', '.join(missing)}."
-            )
 
 
-# S17 (2026-09-26): research/designs/2026-09-26-S17-frozen-release-implicit-
-# elastic-startup.md, revision 4, APPROVED. A is a network_rupture value
-# (fibreRelease); C is elastic_coupling; B is final_relaxation_unity with
-# n_correctors 6. (child key, dictionary key, accepted values); the first
-# value is the solver's shipped default.
-S17_SWITCHES = (
-    ("elastic_coupling", "elasticCoupling", ("explicit", "implicitTangent")),
-)
 # The Vs predictor's linear solver under implicitTangent: the matrix is an
 # M-matrix but asymmetric (bounded upwind convection), so a symmetric-only
 # solver is refused (design section 4). The first is the default.
 S17_VS_SOLVERS = ("smoothSolver", "PBiCGStab")
-S17_VS_SOLVERS_REFUSED = ("PCG", "PPCG", "PPCR")
 # The pending fibre's carried contents (solver thetaPendingB_, thetaPendingP_),
 # each needing a linear solver under fibreRelease.
 S17_FIBRE_FIELDS = ("thetaPendingB", "thetaPendingP")
-# The named discriminators (design section 6): the ONLY children allowed
-# final_relaxation_unity with n_correctors < 6.
-S17_DISCRIMINATORS = ("D1", "D2", "D2b", "D3", "D3b", "CB6", "CB4")
-# em65_G4_s16_final shipped in batch 57 with final_relaxation_unity and
-# nCorrectors 2, before this rule existed; it is the as-run datum the
-# discriminators are read against (H8), and it must regenerate byte-identical
-# (design section 5). It is the only child the rule does not cover.
-S17_FINAL_RELAXATION_GRANDFATHERED = ("em65_G4_s16_final",)
-S17_B_CORRECTORS = 6
 
 
-# The control check (design section 6, change 12): each CONTROL differs from
-# the production child it controls ONLY in its named switches, plus the run
-# controls it declares (the G 400 controls end at 2.5 ms and carry no wall
-# budget). Checked mechanically on BOTH the controls entry (every key) and the
-# generated child.json, at generation, so a control that drifts is never
-# launched. (control, production child, switches, run controls)
-S17_CONTROL_PAIRS = (
-    ("em69_G400_s17_noimpl", "em66_G400_s17", {"elastic_coupling"},
-     {"end_time_s", "wall_budget_h"}),
-    ("em68_G400_s17_law", "em66_G400_s17",
-     {"elastic_coupling", "final_relaxation_unity", "n_correctors"},
-     {"end_time_s", "wall_budget_h"}),
-    ("em70_G4_s17_noimpl", "em67_G4_s17", {"elastic_coupling"}, set()),
-)
-# The house rule that every NEW child equals its parent except in its new
-# keys, for the production children and the discriminators. Checked by
-# scripts/check_s17_fibre_release.py, NOT at generation: a legitimate edit of
-# a parent (dry_run.py's terminal-only acceptance test edits em63) must not
-# make the generator refuse the batch.
-S17_PARENT_PAIRS = (
-    ("em66_G400_s17", "em63_G400_s16",
-     {"network_rupture", "elastic_coupling", "final_relaxation_unity",
-      "n_correctors"}, set()),
-    ("em67_G4_s17", "em64_G4_s16",
-     {"network_rupture", "elastic_coupling", "final_relaxation_unity",
-      "n_correctors"}, {"wall_budget_h"}),
-    ("em68_G400_s17_law", "em63_G400_s16", {"network_rupture"},
-     {"end_time_s", "wall_budget_h"}),
-    ("s17_D1_nc3", "em65_G4_s16_final", {"n_correctors", "s17_discriminator"},
-     {"end_time_s"}),
-    ("s17_D2_nc4", "em65_G4_s16_final", {"n_correctors", "s17_discriminator"},
-     {"end_time_s"}),
-    ("s17_D2b_nc6", "em65_G4_s16_final", {"n_correctors", "s17_discriminator"},
-     {"end_time_s"}),
-    ("s17_D3_dt18", "em65_G4_s16_final", {"max_delta_t_s", "s17_discriminator"},
-     {"end_time_s"}),
-    ("s17_D3b_dt25", "em65_G4_s16_final",
-     {"max_delta_t_s", "s17_discriminator"}, {"end_time_s"}),
-    ("s17_CB6", "em66_G400_s17", {"s17_discriminator"},
-     {"end_time_s", "wall_budget_h"}),
-    ("s17_CB4", "s17_CB6", {"n_correctors", "s17_discriminator"}, set()),
-)
-# child.json keys each controls key surfaces as (flattened "a.b" paths).
-# ("s17" whole: the parent of a new child has no s17 block at all.)
-S17_SPEC_PATHS = {
-    "elastic_coupling": {"s17.elasticCoupling", "s17"},
-    "n_correctors": {"s17.nCorrectors", "s17"},
-    "final_relaxation_unity": {"final_relaxation_unity"},
-    "network_rupture": {"s16.networkRupture", "s16.releaseLaw",
-                        "s17.networkRupture", "s17.pendingForm", "s17"},
-    "s17_discriminator": {"s17.discriminator", "s17"},
-    "end_time_s": {"end_time_s"},
-    "wall_budget_h": {"wall_budget_h"},
-    "max_delta_t_s": {"s17.maxDeltaT"},
-    "fibre_slack": {"s17b.fibreSlack", "s17b"},
-    "fibre_arithmetic": {"s17b.fibreArithmetic", "s17b"},
-    "skeleton_wall_face": {"s17b.skeletonWallFace", "s17b"},
-    "frozen_pending_pressure": {"s18.frozenPendingPressure", "s18"},
-    "wall_patch_split": {"s18.wallPatchSplit", "s18"},
-    "cplus_order": {"s18.cplusOrder", "s18"},
-    "network_pressure_weight": {"s18.networkPressureWeight", "s18"},
-}
 
 
 def _flat_diff(a: dict, b: dict, prefix: str = "") -> set:
@@ -886,67 +370,8 @@ def _flat_diff(a: dict, b: dict, prefix: str = "") -> set:
     return out
 
 
-def s17_control_check(children: dict, specs: dict, pairs=None) -> None:
-    """Refuse a batch-58 (or, with pairs, batch-59) control that differs
-    from its reference outside its named switches and declared run controls
-    (S17 design section 6; S17b design section 3).
-
-    `children` is the WHOLE controls file; `specs` holds the child.json of
-    the children BUILT in this run (a series filter builds a subset). Two
-    halves, by construction (fix round 13c, docket 19):
-    - the controls-entry diff runs for EVERY pair, filtered or not;
-    - the child.json diff guards "a control that drifts is never launched",
-      so it applies when the CONTROL is built. A built control whose
-      reference is not built is refused: the pair cannot be checked, and
-      the filter must name the reference too. A control that is not built
-      is not launched; its child.json was checked when its own batch was
-      built, and only this half is skipped for it."""
-    where = ("S17 design section 6" if pairs is None
-             else "S17b design section 3")
-    for ctl, ref, switches, run in (S17_CONTROL_PAIRS if pairs is None else pairs):
-        if ctl not in children or ref not in children:
-            raise ValueError(
-                f"S17 control check: {ctl} or {ref} is missing from the "
-                f"controls; the pair cannot be checked.")
-        allowed = switches | run | {"child_id", "expectation"}
-        got = _flat_diff(children[ctl], children[ref])
-        extra = sorted(got - allowed)
-        if extra:
-            raise ValueError(
-                f"S17 control check: {ctl} differs from {ref} in "
-                f"{', '.join(extra)} -- beyond its named switches "
-                f"{', '.join(sorted(switches))} ({where}).")
-        missing = sorted(switches - got)
-        if missing:
-            raise ValueError(
-                f"S17 control check: {ctl} does not differ from {ref} in "
-                f"its named switch {', '.join(missing)}.")
-        if ctl not in specs:
-            continue
-        if ref not in specs:
-            raise ValueError(
-                f"S17 control check: the control {ctl} is being built but its "
-                f"reference {ref} is not, so {ctl}'s child.json cannot be "
-                f"checked against {ref}'s ({where}). Add {ref} to the filter.")
-        spec_allowed = {"child_id"}
-        for key in switches | run:
-            spec_allowed |= S17_SPEC_PATHS[key]
-        got_spec = _flat_diff(specs[ctl], specs[ref])
-        extra_spec = sorted(p for p in got_spec if p not in spec_allowed)
-        if extra_spec:
-            raise ValueError(
-                f"S17 control check: {ctl}'s child.json differs from {ref}'s "
-                f"in {', '.join(extra_spec)} ({where}).")
 
 
-# S17b (2026-09-27): research/designs/2026-09-27-S17b-slack-fibre-field-
-# units-wall-face.md, revision 2, APPROVED. (child key, dictionary key,
-# accepted values); the first is S17's behaviour.
-S17B_SWITCHES = (
-    ("fibre_slack", "fibreSlack", ("off", "v1")),
-    ("fibre_arithmetic", "fibreArithmetic", ("shipped", "fieldUnits")),
-    ("skeleton_wall_face", "skeletonWallFace", ("shipped", "zeroed")),
-)
 # V1's taut share, a new predictor field under fibre_slack v1.
 S17B_FIBRE_FIELDS = ("thetaTaut",)
 # Design section 8 amendment a: under fibre_slack v1 the pending content
@@ -961,97 +386,14 @@ S17B_FIXED_SWEEPS = 3
 S17B_FIXED_SWEEP_ENTRY = (
     "{ solver smoothSolver; smoother symGaussSeidel; tolerance 0; relTol 0; "
     f"minIter {S17B_FIXED_SWEEPS}; maxIter {S17B_FIXED_SWEEPS}; }}")
-S17B_FIXED_SWEEP_FIELDS = ("thetaPending", "thetaTaut", "thetaPendingB",
-                           "thetaPendingP")
-# The control check (design section 3): em73 controls C and em74 controls
-# A3 against em71; the parent rule as S17's (guard only).
-S17B_CONTROL_PAIRS = (
-    ("em73_G400_s17b_noimpl", "em71_G400_s17b", {"elastic_coupling"},
-     {"end_time_s", "wall_budget_h"}),
-    ("em74_G400_s17b_noA3", "em71_G400_s17b", {"skeleton_wall_face"},
-     {"end_time_s", "wall_budget_h"}),
-)
-S17B_PARENT_PAIRS = (
-    ("em71_G400_s17b", "em66_G400_s17",
-     {"fibre_slack", "fibre_arithmetic", "skeleton_wall_face"}, set()),
-    ("em72_G4_s17b", "em67_G4_s17",
-     {"fibre_slack", "fibre_arithmetic", "skeleton_wall_face"}, set()),
-    ("em73_G400_s17b_noimpl", "em69_G400_s17_noimpl",
-     {"fibre_slack", "fibre_arithmetic", "skeleton_wall_face"},
-     {"wall_budget_h"}),   # design section 8 e: 6 h stopAtClockTime
-)
 
 
-# S18, the soft stage (2026-09-29): research/designs/2026-09-29-S18-no-
-# frozen-pressure-content-weight-network-viscosity.md, rev. 10, APPROVED.
-# (child key, dictionary key, accepted values); the first is S17b's
-# behaviour. C (R2b) is network_pressure_weight contentRatio (S13's key).
-# D (R3), I and H are deferred to OI-44 and have no key here.
-S18_SWITCHES = (
-    ("frozen_pending_pressure", "frozenPendingPressure", ("shipped", "none")),
-    ("wall_patch_split", "wallPatchSplit", ("shipped", "split")),
-    ("cplus_order", "cplusOrder", ("shipped", "shared")),
-)
-# The parent rule (design section 4): em76 differs from em72 only in the
-# four S18 switches. Checked on the CONTROLS entries at generation, for
-# every build, filtered or not -- em72 need not be built (13c; the launch
-# filter of batch 60 is em76 alone).
-S18_PARENT_PAIRS = (
-    ("em76_G4_s18", "em72_G4_s17b",
-     {"frozen_pending_pressure", "wall_patch_split", "cplus_order",
-      "network_pressure_weight"}, set()),
-)
 
 
-def s18_value_refusal(child: dict) -> None:
-    cid = child["child_id"]
-    for _key, _dict_key, _allowed in S18_SWITCHES:
-        if _key in child and str(child[_key]) not in _allowed:
-            raise ValueError(
-                f"{cid}: {_key} {str(child[_key])!r} is not one of "
-                f"{', '.join(_allowed)}."
-            )
 
 
-def s18_combination_refusal(child: dict) -> None:
-    """Refuse, for EVERY child, an S18 combination the solver refuses
-    (design section 2): values first, then each switch's dependency."""
-    cid = child["child_id"]
-    s18_value_refusal(child)
-    named = [k for k, _d, a in S18_SWITCHES
-             if str(child.get(k, a[0])) != a[0]]
-    if named and child.get("network_rupture") != "fibreRelease":
-        raise ValueError(
-            f"{cid}: {', '.join(named)} act on the pending fibre (its frozen "
-            f"tension, its wall-patch split, its passengers); without "
-            f"network_rupture fibreRelease they would be silently inert "
-            f"(S18 section 2 A, B, E)."
-        )
 
 
-def s18_parent_check(children: dict) -> None:
-    """The S18 parent rule on the CONTROLS entries (never on child.json, so
-    it holds under any series filter): each child differs from its parent
-    only in its named switches, and in each of them."""
-    for ctl, ref, switches, run in S18_PARENT_PAIRS:
-        if ctl not in children:
-            continue
-        if ref not in children:
-            raise ValueError(
-                f"S18 parent check: {ctl}'s parent {ref} is missing from the "
-                f"controls.")
-        got = _flat_diff(children[ctl], children[ref])
-        extra = sorted(got - (switches | run | {"child_id", "expectation"}))
-        if extra:
-            raise ValueError(
-                f"S18 parent check: {ctl} differs from {ref} in "
-                f"{', '.join(extra)} -- beyond its named switches "
-                f"{', '.join(sorted(switches))} (S18 design section 4).")
-        missing = sorted(switches - got)
-        if missing:
-            raise ValueError(
-                f"S18 parent check: {ctl} does not differ from {ref} in its "
-                f"named switch {', '.join(missing)}.")
 
 
 # S18p, the em76 attribution probe (2026-10-01): research/designs/2026-10-01-
@@ -1069,31 +411,9 @@ S18P_PARENT_PAIRS = (
     ("em78_G4_s18p_ctl", "em76_G4_s18", {"proj_site_log"}, set()),
     ("em79_G4_s18p_Cnp", "em76_G4_s18",
      {"proj_site_log", "network_pressure_weight"}, set()),
-    ("em80_G4_s18p_Afz", "em76_G4_s18",
-     {"proj_site_log", "frozen_pending_pressure"}, set()),
-    ("em81_G4_s18p_Esh", "em76_G4_s18",
-     {"proj_site_log", "cplus_order"}, set()),
 )
 
 
-def s18p_combination_refusal(child: dict) -> None:
-    """Refuse, for EVERY child, what the solver refuses (S18p section 2):
-    an unknown value, and proj_site_log yes without the pending fibre,
-    under which neither counted projection runs (silently inert)."""
-    cid = child["child_id"]
-    for _key, _dict_key, _allowed in S18P_SWITCHES:
-        if _key in child and str(child[_key]) not in _allowed:
-            raise ValueError(
-                f"{cid}: {_key} {str(child[_key])!r} is not one of "
-                f"{', '.join(_allowed)}."
-            )
-    if (str(child.get("proj_site_log", "no")) == "yes"
-            and child.get("network_rupture") != "fibreRelease"):
-        raise ValueError(
-            f"{cid}: proj_site_log yes counts the P-LS projections of the "
-            f"pending fibre; without network_rupture fibreRelease neither "
-            f"site runs and it would be silently inert (S18p section 2)."
-        )
 
 
 def s18p_parent_check(children: dict) -> None:
@@ -1121,44 +441,8 @@ def s18p_parent_check(children: dict) -> None:
 
 
 
-# FSP, the free-shell flux-oscillation probe (2026-10-03): research/designs/
-# 2026-10-03-probe-fs-flux-oscillation.md, rev. 1 (Alireza: "Prepare it now",
-# docket research/investigations/20261003-0841-run000038-free-shell-live/).
-# Each child is fs_G4_kxu_v250 with end_time_s 4e-4 and wall_budget_h 1.0,
-# plus at most one key. Checked on the CONTROLS entries, for every build.
-FSP_PARENT_PAIRS = (
-    ("fsp_ctl", "fs_G4_kxu_v250", set(), {"end_time_s", "wall_budget_h"}),
-    ("fsp_k13", "fs_G4_kxu_v250", {"k0p_m2"}, {"end_time_s", "wall_budget_h"}),
-    ("fsp_dt15", "fs_G4_kxu_v250", {"max_delta_t_s"},
-     {"end_time_s", "wall_budget_h"}),
-    ("fsp_G40", "fs_G4_kxu_v250", {"G_pa"}, {"end_time_s", "wall_budget_h"}),
-)
 
 
-def fsp_parent_check(children: dict) -> None:
-    """FSP design section 2 on the CONTROLS entries: each child differs from
-    fs_G4_kxu_v250 only in its named key and run controls, and in each of
-    them. "_"-prefixed keys are commentary and are not compared."""
-    for ctl, ref, switches, run in FSP_PARENT_PAIRS:
-        if ctl not in children:
-            continue
-        if ref not in children:
-            raise ValueError(
-                f"FSP parent check: {ctl}'s parent {ref} is missing from "
-                f"the controls.")
-        got = {k for k in _flat_diff(children[ctl], children[ref])
-               if not k.startswith("_")}
-        extra = sorted(got - (switches | run | {"child_id", "expectation"}))
-        if extra:
-            raise ValueError(
-                f"FSP parent check: {ctl} differs from {ref} in "
-                f"{', '.join(extra)} -- beyond its named keys "
-                f"{', '.join(sorted(switches | run))} (FSP design section 2).")
-        missing = sorted((switches | run) - got)
-        if missing:
-            raise ValueError(
-                f"FSP parent check: {ctl} does not differ from {ref} in its "
-                f"named key {', '.join(missing)}.")
 
 # S19, the block-coupled step (2026-10-04): research/designs/2026-10-03-S19-
 # block-coupled-step.md, rev. 4, APPROVED by Alireza 2026-10-04 (docket
@@ -1170,39 +454,40 @@ S19_SWITCHES = (
     ("momentum_pressure_coupling", "momentumPressureCoupling",
      ("segregated", "blockCoupled")),
     ("network_viscosity", "networkViscosity", ("none", "kelvinVoigt")),
-    # S19b (research/designs/2026-10-04-S19b-lumen-elimination.md rev. 2,
-    # APPROVED by Alireza 2026-10-04, section 2.6): the lumen treatment under
-    # blockCoupled. Absent = eliminate (the solver's default); identityRows
-    # is S19a's system, the control. Refused outside blockCoupled.
-    ("block_coupled_lumen", "blockCoupledLumen", ("eliminate", "identityRows")),
 )
-S19_KEYS = ("momentum_pressure_coupling", "network_viscosity", "tau_v_s",
-            "block_coupled_lumen")
-# Section 6: batch 65. Each child is its parent plus its named keys only;
-# fsb_off is fsp_k13 with the key ABSENT (V1, bit-identical). Checked on the
-# CONTROLS entries, for every build. "_"-prefixed keys are commentary.
-S19_PARENT_PAIRS = (
-    ("fsb_off", "fsp_k13", set(), set()),
-    ("fsb_k13", "fsp_k13", {"momentum_pressure_coupling"}, set()),
-    ("fsb_G40", "fsp_G40", {"momentum_pressure_coupling"}, set()),
-    ("fsb_ctl", "fsp_ctl", {"momentum_pressure_coupling"}, set()),
-    ("fsb_ctl_r3", "fsb_ctl", {"network_viscosity"}, set()),
-    # S19b section 4 (batch 67): the control is fsb_k13 with identityRows.
-    ("fsb_k13_id", "fsb_k13", {"block_coupled_lumen"}, set()),
-)
+S19_KEYS = ("momentum_pressure_coupling", "network_viscosity", "tau_v_s")
 
 
-def s19_combination_refusal(child: dict) -> None:
-    """Refuse, for EVERY child, what the solver refuses (S19 sections 2 and
-    12): values first, then each switch's requirements, then keys that would
-    be silently inert."""
+def kept_option_refusal(child: dict, core_shell: bool) -> None:
+    """Refuse, for EVERY child, a value or combination of the eight options that
+    stay options (S21 section 1.2) which the solver refuses. The 78 built-in
+    options have no refusal here: builtin_control_refusal() refuses the key.
+    Each guard below is the shipped one with the built-in values substituted
+    (contentModel true, networkPressureModel convexExcess, networkPressureReference
+    deposited, eulerianSolid true, releasedCarrier material, elasticCoupling
+    implicitTangent, faceConsistentElasticForce false, networkRupture fibreRelease)."""
     cid = child["child_id"]
-    for _key, _dict_key, _allowed in S19_SWITCHES:
+    for _key, _dict_key, _allowed in (*S13_SWITCHES, *S15_SWITCHES, *S18P_SWITCHES,
+                                      *S19_SWITCHES):
         if _key in child and str(child[_key]) not in _allowed:
             raise ValueError(
                 f"{cid}: {_key} {str(child[_key])!r} is not one of "
                 f"{', '.join(_allowed)}."
             )
+    _npw = child.get("network_pressure_weight")
+    if _npw in ("networkPresence", "contentRatio") and not float(
+            child.get("residual_chi", 0.0)) > 0:
+        raise ValueError(
+            f"{cid}: network_pressure_weight {_npw} ramps to zero below "
+            f"residual_chi of deposited network, which keeps the lumen free of "
+            f"network pressure; residual_chi must be positive."
+        )
+    if child.get("material_label_basis") == "contentComposition" and not core_shell:
+        raise ValueError(
+            f"{cid}: material_label_basis contentComposition derives the "
+            f"core/shell label from the core and shell contents; it needs a "
+            f"core_shell series."
+        )
     if "tau_v_s" in child:
         _t = child["tau_v_s"]
         if isinstance(_t, bool) or not isinstance(_t, (int, float)) or not _t > 0:
@@ -1210,95 +495,98 @@ def s19_combination_refusal(child: dict) -> None:
                 f"{cid}: tau_v_s {_t!r} must be a positive number of seconds "
                 f"(eta_n = G tau_v/phi0; S19 section 12)."
             )
-    named = [k for k in S19_KEYS if k in child]
-    if named and not child.get("two_velocity_skeleton"):
-        raise ValueError(
-            f"{cid}: {', '.join(named)} act on the two-velocity block; "
-            f"without two_velocity_skeleton the key would be silently "
-            f"dropped (S19 section 2)."
-        )
     block = str(child.get("momentum_pressure_coupling", "segregated")) == "blockCoupled"
     r3 = str(child.get("network_viscosity", "none")) == "kelvinVoigt"
-    # R3 first, as the solver orders them, so each refusal is reachable.
     if r3 and not block:
         raise ValueError(
             f"{cid}: network_viscosity kelvinVoigt needs "
             f"momentum_pressure_coupling blockCoupled: R3 is unstable at the "
             f"design dt in every segregated placement (OI-44; S19 section 12)."
         )
-    if r3 and child.get("network_pressure_weight") == "contentRatio":
+    if r3 and _npw == "contentRatio":
         raise ValueError(
             f"{cid}: network_viscosity kelvinVoigt with "
             f"network_pressure_weight contentRatio is refused: C stays off "
             f"(S19 section 12)."
         )
-    if block:
-        if not child.get("eulerian_solid") or \
-                str(child.get("released_carrier", "rigidBody")) != "material":
-            raise ValueError(
-                f"{cid}: momentum_pressure_coupling blockCoupled needs "
-                f"eulerian_solid true and released_carrier material (S19 "
-                f"section 2)."
-            )
-        if child.get("network_pressure_weight") == "contentRatio":
-            raise ValueError(
-                f"{cid}: momentum_pressure_coupling blockCoupled with "
-                f"network_pressure_weight contentRatio is refused (S19 "
-                f"section 2; C off)."
-            )
-        if str(child.get("elastic_coupling", "explicit")) != "implicitTangent":
-            raise ValueError(
-                f"{cid}: momentum_pressure_coupling blockCoupled needs "
-                f"elastic_coupling implicitTangent (S19 section 2)."
-            )
-        if child.get("face_consistent_elastic_force"):
-            raise ValueError(
-                f"{cid}: momentum_pressure_coupling blockCoupled with "
-                f"face_consistent_elastic_force true is refused (S19 section 2)."
-            )
-        # block_face_inverse faceAssembled needs no refusal here: implicitTangent
-        # (above) needs fibreRelease, which needs be_relax_basis networkAbsent,
-        # which needs faceAssembled -- refused upstream, so an S19 refusal
-        # would be unreachable (dry run, solver-engineer 09). The solver
-        # refuses it at construction regardless.
+    if block and _npw == "contentRatio":
+        raise ValueError(
+            f"{cid}: momentum_pressure_coupling blockCoupled with "
+            f"network_pressure_weight contentRatio is refused (S19 section 2; "
+            f"C off)."
+        )
     if "tau_v_s" in child and not r3:
         raise ValueError(
             f"{cid}: tau_v_s is read only under network_viscosity "
             f"kelvinVoigt; without it the key would be silently inert (S19 "
             f"section 12)."
         )
-    if "block_coupled_lumen" in child and not block:
+
+
+# Keys the retired children used and no kept child sets; their read sites are deleted.
+RETIRED_CONTROL_KEYS = frozenset({
+    "linear_schemes", "platelet_solver_tolerance", "platelet_solver_maxiter",
+    "s17_discriminator", "unlocalised_deposition_accepted", "clot_in_throat",
+})
+
+
+def dictionary_key_refusal(props: Path) -> None:
+    """The written phaseClotProperties may carry no built-in option and no deleted
+    parameter, whatever put it there (template, a switch table, a child override):
+    the solver refuses each by name at construction (s21BuiltInKeys, s21DeletedKeys),
+    so a child carrying one would abort on Colab. Statements only; comments are not
+    entries."""
+    text = re.sub(r"//[^\n]*", "", props.read_text())
+    text = re.sub(r"(?s)/\*.*?\*/", "", text)
+    text = re.sub(r"(?s)FoamFile\s*\{.*?\}", "", text, count=1)
+    keys = re.findall(r"(?m)^\s*([A-Za-z]\w*)\s", text)
+    built = sorted(set(keys) & set(BUILT_IN))
+    dead = sorted(set(keys) & DELETED_KEYS)
+    if built or dead:
         raise ValueError(
-            f"{cid}: block_coupled_lumen is read only under "
-            f"momentum_pressure_coupling blockCoupled; without it the key "
-            f"would be silently inert (S19b section 2.6)."
-        )
+            f"{props}: the dictionary carries "
+            + (f"built-in option(s) {built} (S21 section 1.2) " if built else "")
+            + (f"deleted parameter(s) {dead} (s21DeletedKeys) " if dead else "")
+            + "which the solver refuses by name at construction; remove them from the "
+            "template or the writer.")
 
 
-def s19_parent_check(children: dict) -> None:
-    """S19 section 6 on the CONTROLS entries: each child differs from its
-    parent only in its named keys, and in each of them."""
-    for ctl, ref, switches, run in S19_PARENT_PAIRS:
-        if ctl not in children:
-            continue
-        if ref not in children:
-            raise ValueError(
-                f"S19 parent check: {ctl}'s parent {ref} is missing from "
-                f"the controls.")
-        got = {k for k in _flat_diff(children[ctl], children[ref])
-               if not k.startswith("_")}
-        extra = sorted(got - (switches | run | {"child_id", "expectation"}))
-        if extra:
-            raise ValueError(
-                f"S19 parent check: {ctl} differs from {ref} in "
-                f"{', '.join(extra)} -- beyond its named keys "
-                f"{', '.join(sorted(switches | run)) or '(none)'} (S19 design "
-                f"section 6).")
-        missing = sorted((switches | run) - got)
-        if missing:
-            raise ValueError(
-                f"S19 parent check: {ctl} does not differ from {ref} in its "
-                f"named key {', '.join(missing)}.")
+def builtin_control_refusal(controls: dict) -> None:
+    """A control key naming a built-in option is refused: it would be silently
+    inert (S21 section 1.2 and 3; pattern 7). The solver refuses the same keys
+    in a dictionary."""
+    camel = set(BUILT_IN)
+    snake = {re.sub(r"(?<=[a-z0-9])([A-Z])", lambda m: "_" + m.group(1).lower(), k).lower()
+             for k in camel}
+    deleted_snake = {re.sub(r"(?<=[a-z0-9])([A-Z])", lambda m: "_" + m.group(1).lower(), k).lower(): k
+                     for k in DELETED_KEYS}
+    where = [("child " + c["child_id"], c) for c in controls["children"]]
+    where += [("series " + n, s) for n, s in controls["series"].items()]
+    where += [(n, controls[n]) for n in ("coupling", "material_fixed", "growth_parameters")]
+    for label, block in where:
+        for key in block:
+            if key in RETIRED_CONTROL_KEYS:
+                raise ValueError(
+                    f"{label}: {key!r} was read only by a branch S21 deleted with the "
+                    f"retired children; it would be silently inert (S21 section 3).")
+            if key in DELETED_KEYS or key in deleted_snake or key in DELETED_CONTROL_KEYS:
+                name = (key if key in DELETED_KEYS else DELETED_CONTROL_KEYS.get(key)
+                        or deleted_snake[key])
+                raise ValueError(
+                    f"{label}: {key!r} names the deleted parameter {name}: S21 deleted its "
+                    f"last read and the solver refuses it by name (s21DeletedKeys); "
+                    f"remove the key (docket 20261005-1621 report 10).")
+            if key in camel or key in snake:
+                name = key if key in camel else next(
+                    k for k in camel
+                    if re.sub(r"(?<=[a-z0-9])([A-Z])", lambda m: "_" + m.group(1).lower(), k).lower() == key)
+                raise ValueError(
+                    f"{label}: {key!r} names the built-in option {name}, which the "
+                    f"solver runs at {BUILT_IN[name]!r} and no longer reads; "
+                    f"remove the key (S21 section 1.2)."
+                )
+
+
 
 
 # XU ET AL. 2017, FIGURE 5 (2026-09-30): research/designs/2026-09-29-case-
@@ -1356,15 +644,6 @@ def release_core_exempt_refusal(child: dict, series: dict) -> None:
             f"{cid}: release_core_exempt is ANDed with coreShell in both of its "
             f"readers (.C L8772, L11252); this series has no core, so it would "
             f"be silently inert.")
-    if not series.get("advect_released"):
-        raise ValueError(
-            f"{cid}: release_core_exempt is read by updateReleasedIndicator(), "
-            f"which returns before reading it when advect_released is off "
-            f"(.C L11142-11145); set without it, it would be silently inert.")
-    if not child.get("eulerian_solid"):
-        raise ValueError(
-            f"{cid}: release_core_exempt is written with the Eulerian anchor "
-            f"keys; a partitioned child would not carry it.")
 
 
 def series_plasma_refusal(name: str, series: dict) -> None:
@@ -1433,11 +712,6 @@ def xu_series_refusal(child: dict, series: dict, cohesive_bound: float) -> None:
             f"G_core_pa == G_pa; here it would be silently inert.")
     if child.get("Gc_j_m2") is not None or child.get("Gc_core_j_m2"):
         raise ValueError(f"{cid}: must not declare a toughness (Xu has none).")
-    if not series.get("advect_released"):
-        raise ValueError(
-            f"{cid}: advect_released must be true, or PHASE_CLOT_RELEASED is "
-            f"never printed (.C L11142-11145) and A4/P8 would read an absent "
-            f"line as zero (red team 05 #3).")
     if series.get("growth") is not False:
         raise ValueError(
             f"{cid}: growth must be declared false; Xu's clot is predefined "
@@ -1455,9 +729,9 @@ def xu_series_refusal(child: dict, series: dict, cohesive_bound: float) -> None:
         raise ValueError(
             f"{cid}: release_core_exempt must be declared false: nothing about "
             f"the core is enforced (Alireza, 2026-09-29).")
-    if not (child.get("bond_hold_carrier") is True
+    if not (True
             and child.get("bond_hold_dilation") == 4
-            and child.get("bond_hold_taper") is False):
+            and True):
         raise ValueError(
             f"{cid}: the held layer must be the solver default as em72 "
             f"(bond_hold_carrier true, bond_hold_dilation 4, bond_hold_taper "
@@ -1492,17 +766,22 @@ def xu_series_refusal(child: dict, series: dict, cohesive_bound: float) -> None:
 FSF_RUN_KEYS = {"end_time_s", "wall_budget_h", "write_interval_s",
                 "frame_interval_s", "frame_fields"}
 FSF_PARENT_PAIRS = (
-    ("fsf_G40_klo_v250", "fs_G40_klo_v250",
-     {"momentum_pressure_coupling", "network_viscosity", "tau_v_s",
-      "clot_override"}, FSF_RUN_KEYS),
-    ("fsf_G4_kxu_v250", "fs_G4_kxu_v250",
-     {"momentum_pressure_coupling", "network_viscosity", "tau_v_s",
-      "clot_override"}, FSF_RUN_KEYS),
-    # The pair takes the main children's output plan too (CE ruling on
-    # report 03): frames every 0.2 ms, one full write at endTime 2 ms.
-    ("fsb_G40_klo_rest", "fs_G40_klo_v250", {"momentum_pressure_coupling"},
+    # The two retired batch-63 parents (fs_G4_kxu_v250, fs_G40_klo_v250) are gone; the
+    # kept free-shell children are checked against each other and against BATCH 69.
+    ("fsb_G40_klo_rest", "fs_G40_klo_rest_seg", {"momentum_pressure_coupling"}, set()),
+    # BATCH 69 (design 2026-10-05-case-loose-40ms-r3-pair rev. 4 section 1): the
+    # batch-68 loose child at 40 ms, a 22.0 h clock budget and nothing else.
+    ("fsf_G4_kxu_r3_40", "fsf_G4_kxu_v250", set(), {"end_time_s", "wall_budget_h"}),
+    ("fsf_G4_kxu_nor3_40", "fsf_G4_kxu_r3_40", {"network_viscosity", "tau_v_s"}, set()),
+    # V21-8: the seeded q < 0 child (S20 V5), 20 steps, no frames.
+    ("fsf_G4_kxu_seedq", "fsf_G4_kxu_v250", {"seed_theta_peak"},
      FSF_RUN_KEYS),
-    ("fs_G40_klo_rest_seg", "fs_G40_klo_v250", set(), FSF_RUN_KEYS),
+    # V21-7: the identity twins, the parent with a 0.5 ms window.
+    ("em78_id", "em78_G4_s18p_ctl", set(), {"end_time_s", "write_interval_s", "wall_budget_h"}),
+    ("xu5_id", "xu5_g250", set(), {"end_time_s", "wall_budget_h"}),
+    # V21-6 (S21 section 1.1, CE amendment of docket 20261005-1621 report 07): the 0.2 ms window
+    # as a twin, because the runner has no end-time cap. Frames are the parent's.
+    ("fsf_id", "fsf_G4_kxu_v250", set(), {"end_time_s", "write_interval_s", "wall_budget_h"}),
 )
 
 
@@ -1732,11 +1011,6 @@ def free_shell_series_refusal(child: dict, series: dict) -> None:
             f"its readers; this series has no core, so it must be omitted, "
             f"not declared."
         )
-    if not series.get("advect_released"):
-        raise ValueError(
-            f"{cid}: advect_released must be true, or a released clot is "
-            f"never advected and 'free from step 1' has no mechanism."
-        )
 
 
 def xu_parent_check(children: dict) -> None:
@@ -1756,12 +1030,15 @@ def xu_parent_check(children: dict) -> None:
                 f"Xu parent check: {cid} differs from {XU_PARENT} in "
                 f"{', '.join(extra)} -- beyond the keys the design changes "
                 f"(design section 1).")
-    for cid in xu[1:]:
-        extra = sorted(_flat_diff(children[cid], children[xu[0]])
+    # xu5_id is the V21-7 identity twin of xu5_g250 (S21 section 1.1): it differs from the
+    # parent only in its window, which the parent comparison above already bounds.
+    sib = [c for c in xu if c != "xu5_id"]
+    for cid in sib[1:]:
+        extra = sorted(_flat_diff(children[cid], children[sib[0]])
                        - XU_SIBLINGS_DIFFER_IN)
         if extra:
             raise ValueError(
-                f"Xu parent check: {cid} differs from {xu[0]} in "
+                f"Xu parent check: {cid} differs from {sib[0]} in "
                 f"{', '.join(extra)}; the four children differ only in the "
                 f"shear rate (BRIEF: one variable).")
 
@@ -1827,301 +1104,16 @@ def dome_floors(child_id: str, g: dict, clot: dict) -> dict:
             "c_min_wall_row": c_wall, "c_min_top_row": c_top}
 
 
-def s17b_value_refusal(child: dict) -> None:
-    cid = child["child_id"]
-    for _key, _dict_key, _allowed in S17B_SWITCHES:
-        if _key in child and str(child[_key]) not in _allowed:
-            raise ValueError(
-                f"{cid}: {_key} {str(child[_key])!r} is not one of "
-                f"{', '.join(_allowed)}."
-            )
 
 
-def s17b_combination_refusal(child: dict) -> None:
-    """Refuse, for EVERY child, an S17b combination the solver refuses
-    (design section 2): values first, then each switch's dependency."""
-    cid = child["child_id"]
-    s17b_value_refusal(child)
-    if (str(child.get("fibre_slack", "off")) == "v1"
-            and child.get("network_rupture") != "fibreRelease"):
-        raise ValueError(
-            f"{cid}: fibre_slack v1 acts on the pending share's fibre; it "
-            f"needs network_rupture fibreRelease (design A1)."
-        )
-    if (str(child.get("fibre_arithmetic", "shipped")) == "fieldUnits"
-            and child.get("damage_transport") != "contentPartition"):
-        raise ValueError(
-            f"{cid}: fibre_arithmetic fieldUnits assembles the partition and "
-            f"fibre predictors in field units; without damage_transport "
-            f"contentPartition there are none, so it would be silently inert "
-            f"(design A2)."
-        )
-    if (str(child.get("skeleton_wall_face", "shipped")) == "zeroed"
-            and not child.get("two_velocity_skeleton")):
-        raise ValueError(
-            f"{cid}: skeleton_wall_face zeroed acts on the two-velocity "
-            f"block's Vs and U reconstructs; without two_velocity_skeleton it "
-            f"would be silently inert (design A3)."
-        )
 
 
-def s17_value_refusal(child: dict) -> None:
-    """The VALUE of every S17 key, for EVERY child, before any dependency."""
-    cid = child["child_id"]
-    for _key, _dict_key, _allowed in S17_SWITCHES:
-        if _key in child and str(child[_key]) not in _allowed:
-            raise ValueError(
-                f"{cid}: {_key} {str(child[_key])!r} is not one of "
-                f"{', '.join(_allowed)}."
-            )
-    if "vs_linear_solver" in child:
-        _v = str(child["vs_linear_solver"])
-        if _v in S17_VS_SOLVERS_REFUSED:
-            raise ValueError(
-                f"{cid}: vs_linear_solver {_v} is symmetric-only; the Vs "
-                f"matrix under elastic_coupling implicitTangent is an M-matrix "
-                f"but asymmetric (bounded upwind convection): use "
-                f"{' or '.join(S17_VS_SOLVERS)}."
-            )
-        if _v not in S17_VS_SOLVERS:
-            raise ValueError(
-                f"{cid}: vs_linear_solver {_v!r} is not one of "
-                f"{', '.join(S17_VS_SOLVERS)}."
-            )
-    if "n_correctors" in child:
-        _n = child["n_correctors"]
-        if isinstance(_n, bool) or not isinstance(_n, int) or _n < 1:
-            raise ValueError(
-                f"{cid}: n_correctors {_n!r} must be a positive integer (the "
-                f"PISO corrector count)."
-            )
-    if "s17_discriminator" in child and str(child["s17_discriminator"]) \
-            not in S17_DISCRIMINATORS:
-        raise ValueError(
-            f"{cid}: s17_discriminator {child['s17_discriminator']!r} is not "
-            f"one of {', '.join(S17_DISCRIMINATORS)}."
-        )
 
 
-def s17_combination_refusal(child: dict, series: dict, coupling: dict) -> None:
-    """Refuse, for EVERY child, an S17 combination the solver refuses
-    (design section 4), values first, then dependencies, then inert keys."""
-    cid = child["child_id"]
-    s17_value_refusal(child)
-    rupture = str(child.get("network_rupture", "off"))
-    fibre = rupture == "fibreRelease"
-    coupling_mode = str(child.get("elastic_coupling", "explicit"))
-    implicit = coupling_mode == "implicitTangent"
-    if fibre and not child.get("be_det_renormalise"):
-        raise ValueError(
-            f"{cid}: network_rupture fibreRelease needs be_det_renormalise "
-            f"true: guarantee (iii) is stated for the renormalised "
-            f"(isochoric) model, and the solver calls it NOT A DEFAULT "
-            f"(design section 4)."
-        )
-    if implicit and not fibre:
-        raise ValueError(
-            f"{cid}: elastic_coupling implicitTangent needs network_rupture "
-            f"fibreRelease: Gamma_t >= 0 is the linearisation of the fibre "
-            f"form's non-negative loading tangent (design section 4)."
-        )
-    if implicit and str(child.get("stress_face_transmission", "linear")) != "series":
-        raise ValueError(
-            f"{cid}: elastic_coupling implicitTangent linearises the SERIES "
-            f"face stress (Gamma_t,f = series(w)_f interp(gD G k_eff)_f "
-            f"dt/rho); stress_face_transmission series is required."
-        )
-    if "vs_linear_solver" in child and not implicit:
-        raise ValueError(
-            f"{cid}: vs_linear_solver is read only under elastic_coupling "
-            f"implicitTangent (the Vs predictor); set without it, it would be "
-            f"silently inert."
-        )
-    n_corr = int(child.get("n_correctors", coupling["nCorrectors"]))
-    disc = child.get("s17_discriminator")
-    if (child.get("final_relaxation_unity") and n_corr < S17_B_CORRECTORS
-            and disc is None
-            and cid not in S17_FINAL_RELAXATION_GRANDFATHERED):
-        raise ValueError(
-            f"{cid}: final_relaxation_unity with nCorrectors {n_corr}: the "
-            f"70-row throat's spectral radius is 1.21-1.27 at 4 and 0.97-1.01 "
-            f"at 5 (docket 10); B is nCorrectors {S17_B_CORRECTORS}. Fewer is "
-            f"allowed only in a named discriminator (s17_discriminator)."
-        )
-    if disc is not None and not child.get("final_relaxation_unity"):
-        raise ValueError(
-            f"{cid}: s17_discriminator {disc} reads the Final-1 start-up; "
-            f"without final_relaxation_unity it would be silently inert."
-        )
 
 
-def s10_combination_refusal(child: dict) -> None:
-    """Refuse, for EVERY child, an S10 key the build could not honour.
-
-    Called from the loop over all children, NOT from the two-velocity block
-    that writes the keys. A refusal placed inside that block could never
-    fire for a child that sets a key WITHOUT two_velocity_skeleton -- the key
-    would simply not be written, and the child would run the shipped
-    behaviour under a name that claims the fix (the guard-inside-the-block
-    defect of 2026-09-04).
-    """
-    present = [k for k, _, _ in S10_SWITCHES if k in child]
-    if present and not child.get("two_velocity_skeleton"):
-        raise ValueError(
-            f"{child['child_id']}: {', '.join(present)} "
-            f"{'is' if len(present) == 1 else 'are'} only written on the "
-            f"two-velocity path; without two_velocity_skeleton the key would "
-            f"be silently dropped and the child would run the shipped "
-            f"behaviour."
-        )
-    if child.get("network_pressure_reference") == "deposited" and not (
-        child.get("content_model")
-        and child.get("phase_force_basis") == "content"
-    ):
-        raise ValueError(
-            f"{child['child_id']}: network_pressure_reference deposited "
-            f"measures compaction as theta - thetaNetRef, so it needs "
-            f"content_model true and phase_force_basis 'content'. The solver "
-            f"refuses the same combination at construction."
-        )
-    if (child.get("content_transport_scheme", "upwind") != "upwind"
-            and not child.get("content_model")):
-        raise ValueError(
-            f"{child['child_id']}: content_transport_scheme "
-            f"{child['content_transport_scheme']} is the operator of the "
-            f"content equation and needs content_model true."
-        )
 
 
-def validate_phase_weight_basis(child: dict) -> None:
-    """The C1/C2 weight basis, validated on EVERY child.
-
-    Deliberately NOT part of validate_stage2_platelet(), which returns early
-    when platelet_content_model is false. This key changes the momentum and
-    pressure weights, so a misspelling -- or a 'content' basis on a child with
-    no content model -- has to fail here, on the machine that can fix it,
-    rather than after a Colab boot. The solver validates the same two words
-    for the same reason; this is the cheap copy of that refusal.
-    """
-    cid = child.get("child_id")
-    localisation = str(child.get("platelet_bind_localisation", "uniform"))
-
-    basis = str(child.get("phase_weight_basis", "legacy"))
-    if basis not in ("legacy", "content"):
-        raise SystemExit(
-            "child %s: phase_weight_basis must be 'legacy' or 'content'; "
-            "found %r" % (cid, basis)
-        )
-
-    # ---- THE FORCE BASIS ----
-    #
-    # Separate key from the weight basis, so each migration stays a one-key
-    # diff. It moves networkPressure()'s argument and the ISOTROPIC elastic
-    # term only; the deviatoric weight stays max(chi, floor) and must never
-    # follow it -- chi reaches 1.0022 where theta reaches 0.450977, so
-    # substituting there rescales the deviatoric stress by theta_ref and drops
-    # the floor. That is what run 20260905-191135 died of.
-    force = str(child.get("phase_force_basis", "legacy"))
-    if force not in ("legacy", "content"):
-        raise SystemExit(
-            "child %s: phase_force_basis must be 'legacy' or 'content'; "
-            "found %r" % (cid, force)
-        )
-    if force == "content":
-        if not child.get("platelet_content_model", False):
-            raise SystemExit(
-                "child %s: phase_force_basis 'content' requires "
-                "platelet_content_model true." % (cid,)
-            )
-        if basis != "content":
-            raise SystemExit(
-                "child %s: phase_force_basis 'content' requires "
-                "phase_weight_basis 'content'. Content forces against legacy "
-                "weights disagree about the solid fraction inside a single "
-                "momentum equation, which is worse than either basis used "
-                "consistently." % (cid,)
-            )
-
-    # ---- THE INDICATOR BASIS ----
-    #
-    # A THIRD key, and it is not a synonym for either of the two above. The
-    # indicator is theta/theta_ref, not theta: the eleven inline chi sites are
-    # consumers of a marker in [0, ~1], not of a volume fraction, so writing
-    # theta at them would rescale the deviatoric elastic stress, the damage
-    # driver, the Kres ramp, the isSkel threshold and the bond hold by 0.45.
-    #
-    # Checked BEFORE the `basis != "content"` early return below, because the
-    # indicator has nothing to do with the weight basis and a child may move
-    # one without the other. Putting it after that return is exactly the trap
-    # this function was extracted from validate_stage2_platelet() to avoid.
-    indicator = str(child.get("phase_indicator_basis", "legacy"))
-    if indicator not in ("legacy", "content"):
-        raise SystemExit(
-            "child %s: phase_indicator_basis must be 'legacy' or 'content'; "
-            "found %r" % (cid, indicator)
-        )
-    if indicator == "content":
-        if not child.get("platelet_content_model", False):
-            raise SystemExit(
-                "child %s: phase_indicator_basis 'content' requires "
-                "platelet_content_model true." % (cid,)
-            )
-        if float(child.get("skeleton_volume_fraction", 0.0)) <= 0:
-            raise SystemExit(
-                "child %s: phase_indicator_basis 'content' divides by "
-                "skeleton_volume_fraction, which is %r."
-                % (cid, child.get("skeleton_volume_fraction"))
-            )
-        # A DIFFERENT MECHANISM FROM THE WEIGHT REFUSAL, not a copy of it.
-        # Kres and isSkel both switch off above residual_chi; unlocalised
-        # deposition grows lumen content linearly toward it. Measured
-        # 4.18e-05 (indicator 9.29e-05) at 0.4 ms against a threshold of
-        # 1e-02 -- 108x of margin at the measurement, but the main case runs
-        # 75x longer and linear extrapolation lands within a factor of 1.4.
-        if (localisation != "interface"
-                and not child.get("platelet_transport_only", False)
-                and float(child.get("platelet_bind_rate", 0.0)) > 0
-                and not child.get("unlocalised_phase_weights_accepted",
-                                  False)):
-            raise SystemExit(
-                "child %s: phase_indicator_basis 'content' with an "
-                "unlocalised accepted transfer grows lumen content toward "
-                "the residual_chi threshold, above which Kres and the isSkel "
-                "clamp both switch off in the lumen. Set "
-                "platelet_bind_localisation 'interface', or set "
-                "unlocalised_phase_weights_accepted true with a recorded "
-                "reason." % (cid,)
-            )
-
-    if basis != "content":
-        return
-
-    if not child.get("platelet_content_model", False):
-        raise SystemExit(
-            "child %s: phase_weight_basis 'content' requires "
-            "platelet_content_model true -- without it nothing solves "
-            "thetaC/thetaH and the momentum weights would be frozen at "
-            "their initialisation." % (cid,)
-        )
-
-    # THE ORDERING CONSTRAINT, MEASURED. A uniform bind rate deposits in every
-    # cell, so theta is nonzero throughout the lumen: 4.18e-05 in all 19119
-    # lumen cells of run 20260915-073208, where solidFraction() is exactly 0.
-    # Using that as a momentum weight puts a force where the skeleton diagonal
-    # is only Kres ~ 67 1/s against 3.3e+05 inside the clot. Run
-    # 20260905-191135 died of a lumen weight of 1e-04. With the interface
-    # localiser the same cells carry 2.66e-13.
-    if (localisation != "interface"
-            and not child.get("platelet_transport_only", False)
-            and float(child.get("platelet_bind_rate", 0.0)) > 0
-            and not child.get("unlocalised_phase_weights_accepted", False)):
-        raise SystemExit(
-            "child %s: phase_weight_basis 'content' with an unlocalised "
-            "accepted transfer puts solid in every lumen cell and then uses "
-            "it as a momentum weight. Set platelet_bind_localisation "
-            "'interface', or set unlocalised_phase_weights_accepted true "
-            "with a recorded reason." % (cid,)
-        )
 
 
 def validate_stage2_platelet(child: dict, content_operator: str) -> None:
@@ -2132,33 +1124,10 @@ def validate_stage2_platelet(child: dict, content_operator: str) -> None:
     crash, they produce a clean-looking null.
     """
     cid = child.get("child_id")
-    if not child.get("platelet_content_model", False):
-        if child.get("platelet_flux_convention") is not None:
-            raise SystemExit(
-                "child %s: platelet_flux_convention is set but "
-                "platelet_content_model is not -- no platelet equation "
-                "would be solved" % (cid,)
-            )
-        return
 
-    if not child.get("content_model", False):
-        raise SystemExit(
-            "child %s: platelet_content_model requires content_model true -- "
-            "the platelet porosity is eps = 1 - (thetaC + thetaH) and those "
-            "fields are not solved otherwise" % (cid,)
-        )
 
-    if content_operator == "matched" and not child.get(
-            "platelet_transport_only", False):
-        raise SystemExit(
-            "child %s: contentOperator `matched` carries the legacy growth "
-            "source and platelet_content_model adds the accepted transfer. "
-            "Both would deposit solid and the inventory would STILL balance, "
-            "because each is internally paired. Use content_operator "
-            "`content`, or set platelet_transport_only true." % (cid,)
-        )
 
-    convention = str(child.get("platelet_flux_convention", "undeclared"))
+    convention = str('intrinsic')
     if convention not in ("intrinsic", "superficial"):
         raise SystemExit(
             "child %s: platelet_flux_convention must be 'intrinsic' or "
@@ -2195,7 +1164,7 @@ def validate_stage2_platelet(child: dict, content_operator: str) -> None:
     # Validated against the same explicit list the solver validates, because a
     # child whose manifest claims "interface" but whose spelling slipped would
     # run the unlocalised path and be read as a localiser that did not work.
-    localisation = str(child.get("platelet_bind_localisation", "uniform"))
+    localisation = str('interface')
     if localisation not in ("uniform", "interface"):
         raise SystemExit(
             "child %s: platelet_bind_localisation must be 'uniform' or "
@@ -2244,27 +1213,6 @@ def validate_stage2_platelet(child: dict, content_operator: str) -> None:
     # is zero away from the interface). It still applies, unchanged, to every
     # "uniform" child, and that is now the only mode it can reach.
     end_time = float(child.get("end_time_s", 0.0))
-    if (localisation == "uniform" and end_time > 0
-            and not child.get("unlocalised_deposition_accepted", False)):
-        uniform_gain = (
-            float(child.get("platelet_yield_m3", 1e-17))
-            * float(child.get("platelet_bind_rate", 0.0))
-            * end_time
-            * float(child["platelet_number_density_m3"])
-        )
-        if uniform_gain > UNLOCALISED_DEPOSITION_CEILING:
-            raise SystemExit(
-                "child %s: the accepted transfer has no spatial localiser, "
-                "and this configuration would deposit theta ~ %.3e uniformly "
-                "over the run -- above the %.0e ceiling, and comparable to "
-                "the 7.41e-03 C1 discrepancy it is supposed to measure. The "
-                "deposition is FASTEST IN THE LUMEN, so this would not be "
-                "clot growth. Repair the localiser (interfaceDelta_ and kEff "
-                "already exist; see the coupling spec section 6a), lower "
-                "lambda, or set unlocalised_deposition_accepted true with a "
-                "recorded reason." % (cid, uniform_gain,
-                                      UNLOCALISED_DEPOSITION_CEILING)
-            )
 
 
 def write_platelet_number_density(case: Path, value: float, inlet_value: float) -> None:
@@ -2326,6 +1274,7 @@ def main() -> int:
     fixed = controls["material_fixed"]
     growth = controls["growth_parameters"]
     series_spec = controls["series"]
+    builtin_control_refusal(controls)
 
     # The Allrun must derive its child list from runs/matrix.json. A hard-coded
     # list is what silently skipped two of the finite-strain gate's children in
@@ -2353,20 +1302,9 @@ def main() -> int:
                 f"series {name} declares {spec['children']} children, found {found}"
             )
 
-    # The three axes must actually be swept, or the "competition" has no data.
-    req = [c for c in controls["children"] if c["series"] == "required_strength"]
-    for axis, key in (("flow", "wall_shear_rate_1_s"), ("stiffness", "G_pa"),
-                      ("porosity", "k0p_m2")):
-        if len({c[key] for c in req}) < 2:
-            raise ValueError(
-                f"the required-strength series does not vary {axis} ({key}); "
-                f"the PI's competition needs all three"
-            )
-
     # Wall condition and strength must agree, and -- since run 20260810-212211
     # -- any child that must MEASURE a traction has to carry the adhesion
     # condition, because a fixedValue patch emits no PHASE_CLOT_DEBOND at all.
-    unbreakable = controls["series"]["required_strength"]["unbreakable_strength_pa"]
     cohesive_bound = controls["adhesive_strength"]["upper_bound_pa"]
     for _name, _spec in series_spec.items():
         series_plasma_refusal(_name, _spec)
@@ -2390,33 +1328,7 @@ def main() -> int:
         if child["series"] in FREE_SHELL_SERIES:
             free_shell_series_refusal(child, spec)
         frame_output_refusal(child, spec)
-        # S16 values first: a misspelt S16 value must not surface as some
-        # other stage's missing prerequisite.
-        s16_value_refusal(child)
-        s17_value_refusal(child)
-        s17b_value_refusal(child)
-        s18_value_refusal(child)
-        s10_combination_refusal(child)
-        s11_combination_refusal(child)
-        # The RESOLVED permeability model, child -> series -> axis, exactly
-        # as the permeabilityModel entry below is written: throat_embolus
-        # itself declares `constant` and the two-velocity children override it.
-        s13_combination_refusal(child)
-        s14_combination_refusal(child)
-        s15_combination_refusal(child, bool(spec.get("core_shell")))
-        s16_combination_refusal(child, spec)
-        s17_combination_refusal(child, spec, coupling)
-        s17b_combination_refusal(child)
-        s18_combination_refusal(child)
-        s18p_combination_refusal(child)
-        s19_combination_refusal(child)
-        s12_combination_refusal(
-            child,
-            child.get(
-                "permeability_model",
-                spec.get("permeability_model", controls["porosity_axis"]["model"]),
-            ),
-        )
+        kept_option_refusal(child, bool(spec.get("core_shell")))
 
         # Only the cohesive-tear series may set its own toughness, and it is
         # explicitly a SWEEP that reports how far below physiology it had to
@@ -2447,7 +1359,7 @@ def main() -> int:
         # its unbreakable one for the wrong reason.
         if child["series"] in XU_SERIES:
             continue
-        if child["series"] in SOURCE33_SERIES:
+        if child["series"] == "throat_embolus":
             if welded:
                 raise ValueError(
                     f"{child['child_id']}: must use clotWallAdhesion. A "
@@ -2478,7 +1390,7 @@ def main() -> int:
             # flux that moves c -- and on nothing else. A child that lowers the
             # strength without one is refused exactly as before.
             anchored = (
-                bool(child.get("bond_hold_carrier", False))
+                bool(True)
                 and int(child.get("bond_hold_dilation", -1)) >= 0
             )
             if (
@@ -2504,37 +1416,11 @@ def main() -> int:
                     f"core_shell_waiver, with the arithmetic -- silence here "
                     f"reads as an oversight and is treated as one."
                 )
-            if not spec.get("advect_released"):
-                raise ValueError(
-                    f"{child['child_id']}: advect_released must be ON, or a "
-                    f"piece that tears off has no advective term and sits in "
-                    f"place instead of embolising"
-                )
             if not spec["growth"]:
                 raise ValueError(
                     f"{child['child_id']}: growth must be ON in this series. "
                     f"It exists because Dr Li asked to see deformation and "
                     f"detachment AS THE CLOT GROWS."
-                )
-            if spec.get("permeability_model") != "constant":
-                raise ValueError(
-                    f"{child['child_id']}: this series must use the `constant` "
-                    f"permeability model. Under kozenyCarman the clot's "
-                    f"realised permeability is the numerical floor "
-                    f"(2.22e-16 m2, measured in every bulk-clot cell of run "
-                    f"20260814-055141) and k0p has no effect at all, so the "
-                    f"core/shell permeability contrast this child rests on "
-                    f"would not exist."
-                )
-            if not spec.get("phase_field_material_velocity"):
-                raise ValueError(
-                    f"{child['child_id']}: phase_field_material_velocity must "
-                    f"be ON. Without it the phase field is advected by the "
-                    f"FLUID flux, which the Brinkman penalty drives to zero "
-                    f"inside the clot, so the clot cannot move however far its "
-                    f"skeleton deforms -- and the only way material could "
-                    f"leave would be the damage variable erasing it, which is "
-                    f"the manufactured tear this series exists to stop doing."
                 )
             if spec.get("core_shell"):
                 for key in ("G_core_pa", "k0p_core_m2"):
@@ -2645,124 +1531,6 @@ def main() -> int:
                     f"the physiological alpha this clot grows 1.9e-9 m over "
                     f"the run -- a four-hundredth of a cell -- so 'growth is "
                     f"on' would be true and invisible at the same time."
-                )
-            continue
-
-        # The series-specific diagnosis comes FIRST. The generic
-        # welded-but-carries-a-strength check below is also true when a
-        # required-strength child is mis-wired, and it would report the
-        # symptom ("a strength is set") instead of the cause ("this child has
-        # to measure a traction and a fixedValue patch reports none").
-        # THE COHESIVE-TEAR SERIES inverts the demonstration series: the wall
-        # must NOT fail, so that the only way out is through the body. Every
-        # check below is a way that inversion can be silently undone.
-        if child["series"] == "cohesive_tear":
-            if welded:
-                raise ValueError(
-                    f"{child['child_id']}: a cohesive-tear child must use "
-                    f"clotWallAdhesion. A fixedValue patch emits no "
-                    f"PHASE_CLOT_DEBOND, so the run could not PROVE the wall "
-                    f"held -- and 'the wall held' is the control on the whole "
-                    f"experiment."
-                )
-            if child["adhesive_strength_pa"] != spec["unbreakable_strength_pa"]:
-                raise ValueError(
-                    f"{child['child_id']}: must be unbreakable at "
-                    f"{spec['unbreakable_strength_pa']} Pa. Any breakable bond "
-                    f"reproduces the whole-body sliding Dr Li rejected."
-                )
-            if child["adhesive_strength_pa"] <= cohesive_bound:
-                raise ValueError(
-                    f"{child['child_id']}: 'unbreakable' must exceed the "
-                    f"cohesive bound {cohesive_bound} Pa"
-                )
-            if spec["growth"]:
-                raise ValueError(
-                    f"{child['child_id']}: growth must be OFF in this series. "
-                    f"Growth moves the surface while the tear is being "
-                    f"located, which makes 'where did it break' unanswerable."
-                )
-            if not spec.get("advect_released"):
-                raise ValueError(
-                    f"{child['child_id']}: advect_released must be ON, or the "
-                    f"piece that tears off has no advective term and sits in "
-                    f"place instead of embolising"
-                )
-            # The deliberately non-physiological toughness must be DECLARED on
-            # the child and must be on the declared ladder. A child that
-            # silently inherits the physiological Gc would never tear, and the
-            # series would report "no cohesive failure" as though that were
-            # the measurement rather than a mis-wiring.
-            ladder = controls["cohesive_tear_axis"]["Gc_j_m2"]
-            if child.get("Gc_j_m2") is None:
-                raise ValueError(
-                    f"{child['child_id']}: must declare its own Gc_j_m2. "
-                    f"Inheriting the physiological "
-                    f"{fixed['Gc_j_m2']} J/m2 gives a margin of ~5900 and the "
-                    f"child would silently report no tear."
-                )
-            if child["Gc_j_m2"] not in ladder:
-                raise ValueError(
-                    f"{child['child_id']}: Gc {child['Gc_j_m2']} is not on the "
-                    f"declared ladder {ladder}"
-                )
-            if child["Gc_j_m2"] >= fixed["Gc_j_m2"]:
-                raise ValueError(
-                    f"{child['child_id']}: Gc must be BELOW the physiological "
-                    f"{fixed['Gc_j_m2']} J/m2; this series exists to measure "
-                    f"how far below"
-                )
-            continue
-
-        if child["series"] == "required_strength":
-            if welded:
-                raise ValueError(
-                    f"{child['child_id']}: a required-strength child must use "
-                    f"clotWallAdhesion. A fixedValue patch reports no traction, "
-                    f"which returned null for all nine of them in run "
-                    f"20260810-212211."
-                )
-            if child["adhesive_strength_pa"] != unbreakable:
-                raise ValueError(
-                    f"{child['child_id']}: must be unbreakable at "
-                    f"{unbreakable} Pa. A breakable bond caps its own reported "
-                    f"peak at its strength, because peakTraction is measured "
-                    f"over still-bonded faces only."
-                )
-            if child["adhesive_strength_pa"] <= cohesive_bound:
-                raise ValueError(
-                    f"{child['child_id']}: 'unbreakable' must exceed the "
-                    f"cohesive bound {cohesive_bound} Pa, or the bond could "
-                    f"still fail during the measurement"
-                )
-            continue
-
-        # A DEFORMATION child measures how far the clot bends while it is
-        # still attached. Two ways that measurement can be silently ruined,
-        # both refused here rather than discovered in the output.
-        if child["series"] == "deformation":
-            if welded:
-                raise ValueError(
-                    f"{child['child_id']}: a deformation child must use "
-                    f"clotWallAdhesion, so the traction driving the "
-                    f"deformation is reported alongside it"
-                )
-            if child["adhesive_strength_pa"] != spec["unbreakable_strength_pa"]:
-                raise ValueError(
-                    f"{child['child_id']}: must be unbreakable at "
-                    f"{spec['unbreakable_strength_pa']} Pa. At arterial shear "
-                    f"the traction is 13-106 Pa; any breakable bond debonds in "
-                    f"the first steps and the clot detaches before it deforms, "
-                    f"so the run would measure the wrong thing entirely."
-                )
-            arterial = controls["deformation_axis"]["wall_shear_rate_1_s"]
-            if child["wall_shear_rate_1_s"] not in arterial:
-                raise ValueError(
-                    f"{child['child_id']}: shear rate "
-                    f"{child['wall_shear_rate_1_s']} 1/s is not on the "
-                    f"deformation axis {arterial}. This series exists to leave "
-                    f"the venous range; a venous rate here would reproduce the "
-                    f"0.53% strain it was built to escape."
                 )
             continue
 
@@ -3031,54 +1799,6 @@ def main() -> int:
                         f"interface widths, below the 3.0 floor, and "
                         f"rests_on_wall is not declared"
                     )
-            elif series.get("clot_in_throat"):
-                # THE LODGED-EMBOLUS PLACEMENT, and a DIFFERENT guard rather
-                # than a weakened one. Run 20260903-114913 measured why this
-                # series exists: a clot that travels to the throat arrives as
-                # a 2.0-2.6 um film, and sqrt(k) = 3.16 um at Xu's
-                # permeability, so the deposit is thinner than the Brinkman
-                # screening length and is hydraulically close to invisible.
-                # Placing the fragment in the throat separates the HYDRAULIC
-                # question (what does a lodged clot do to the flow) from the
-                # TRANSPORT question (can one get there), which are coupled
-                # through k in opposite directions and cannot both be
-                # satisfied at one permeability.
-                #
-                # It must sit ENTIRELY inside the prismatic throat. A clot
-                # overlapping the taper would be cut by the sloping wall and
-                # its fill fraction would not be the number the prediction was
-                # made for -- the same reason the journey children must be
-                # clear of the narrowing.
-                if clot_x_min < x2:
-                    raise ValueError(
-                        f"{child_id}: a lodged clot starts at x = "
-                        f"{clot_x_min:.3g} m but the throat only begins at "
-                        f"{x2:.3g} m; it would be cut by the taper wall"
-                    )
-                if clot_x_max > g["channel_length_m"]:
-                    raise ValueError(
-                        f"{child_id}: a lodged clot reaches x = "
-                        f"{clot_x_max:.3g} m, past the outlet at "
-                        f"{g['channel_length_m']:.3g} m"
-                    )
-                # THE LUMEN MUST BE RESOLVED. The clot top and the far wall
-                # each carry a tanh interface of width epsilonC. If the gap
-                # they leave is not several interface widths the two profiles
-                # overlap, the "open" lumen never reaches c = +1, and the
-                # measured fill fraction is an artefact of epsilonC rather
-                # than of the clot. Three widths is the floor this project
-                # holds elsewhere (the shell-annulus check above).
-                gap = hth - clot["height_m"]
-                widths = gap / g["interface_width_m"]
-                if widths < 3.0:
-                    raise ValueError(
-                        f"{child_id}: a {clot['height_m']:.3g} m clot in a "
-                        f"{hth:.3g} m throat leaves a {gap:.3g} m lumen = "
-                        f"{widths:.2f} interface widths, below the 3.0 floor. "
-                        f"At epsilonC = {g['interface_width_m']:.3g} m the "
-                        f"tallest resolvable clot here is "
-                        f"{hth - 3.0 * g['interface_width_m']:.3g} m."
-                    )
             else:
                 # The clot must start in the FULL-HEIGHT section. If the taper
                 # began under the clot, the initialised clot would be cut by
@@ -3218,13 +1938,11 @@ def main() -> int:
             # sigmaD is only written by solveSkeleton(), which the Eulerian
             # path never calls, so an Eulerian child pointed at it has an
             # inert failure criterion.
-            "eulerian_solid": bool(child.get("eulerian_solid", False)),
+            "eulerian_solid": bool(True),
             # Whether the clot was carried by its own skeleton velocity or by
             # the fluid. It changes what the phase field MEANS, so it is
             # recorded next to the result rather than left in the case files.
-            "two_velocity_skeleton": bool(
-                child.get("two_velocity_skeleton", False)
-            ),
+            "two_velocity_skeleton": True,
             # FREE WALLS (design 2026-10-02-case-free-shell-throat, rev. 3,
             # S5/S7.3). Series-level only, so every existing child -- which
             # omits both -- keeps the implicit-latch bottom entry and the
@@ -3275,7 +1993,7 @@ def main() -> int:
         # there depend on it. It used to be defined a hundred lines below its
         # first use, which is a NameError waiting for the first child that
         # sets it.
-        eulerian_solid = bool(child.get("eulerian_solid", False))
+        eulerian_solid = bool(True)
 
         # READ AND CHECKED HERE, OUTSIDE the `if eulerian_solid:` block below.
         # This guard first went inside it, where it was unreachable in exactly
@@ -3285,13 +2003,7 @@ def main() -> int:
         # eulerian_solid" -- which is the entire reason the negative test was
         # written before the guard was trusted. A check that cannot fail has
         # not passed.
-        two_velocity = bool(child.get("two_velocity_skeleton", False))
-        if two_velocity and not eulerian_solid:
-            raise ValueError(
-                f"{child_id}: two_velocity_skeleton requires eulerian_solid. "
-                f"Vs is built from be through elasticStress(), and the "
-                f"partitioned path solves for a displacement skeleton instead."
-            )
+        two_velocity = bool(True)
 
         props = case / "constant" / "phaseClotProperties"
         growing = bool(series["growth"])
@@ -3329,17 +2041,8 @@ def main() -> int:
         # while being absent from the equation there -- so a child that wanted
         # a rigid obstruction and left mechanics ON would get no obstruction
         # and a plausible-looking clotPenalty field to go with it.
-        mechanics_on = bool(series.get("clot_mechanics", True))
-        if not mechanics_on and series.get("growth"):
-            raise ValueError(
-                f"{child_id}: clot_mechanics is off but growth is on. The "
-                f"rigid path holds the clot stationary; growing it there "
-                f"means the obstruction changes shape during the very "
-                f"measurement it is the independent variable of."
-            )
+        mechanics_on = bool(True)
         for key, value in {
-            "clotMechanics": "yes" if mechanics_on else "no",
-            "stronglyCoupledFSI": "no" if eulerian_solid else "yes",
             # DIFFUSION OFF, and it exists because gate_a_exact failed at
             # 3.04e-3 (run 20260822-085149) after the carrier fix took the
             # deviation from 0.0211 to 0.00304 -- a real 7x, and not the
@@ -3385,7 +2088,6 @@ def main() -> int:
                 0.0 if child.get("adhesion_off")
                 else (growth["k0_m_s"] if growing else 0.0)
             ),
-            "k1": 0.0 if child.get("adhesion_off") else growth["k1"],
             # MOBILITY OFF makes c purely advected, so q satisfies its own
             # conservation law and w == 1 is EXACT rather than approximate.
             # With mobility on it is only approximate -- gate B, reported not
@@ -3416,7 +2118,6 @@ def main() -> int:
             "G": child["G_pa"],
             "poissonRatio": fixed["poissonRatio"],
             "k0p": child["k0p_m2"],
-            "phi0": fixed["phi0"],
             "etaRes": fixed["etaRes"],
             "DgDetach": fixed["DgDetach"],
             "Gc": child.get("Gc_j_m2") or fixed["Gc_j_m2"],
@@ -3425,34 +2126,10 @@ def main() -> int:
             # the keys and keeps material_fixed byte for byte.
             "rho": series.get("rho_kg_m3", fixed["rho_kg_m3"]),
             "nu": series.get("nu_m2_s", fixed["nu_m2_s"]),
-            "nSkeletonCorrectors": coupling["nSkeletonCorrectors"],
-            "skeletonFixedPointTolerance": coupling["skeletonFixedPointTolerance"],
-            "nFSICorrectors": 1 if eulerian_solid else coupling["nFSICorrectors"],
-            "fsiTolerance": coupling["fsiTolerance"],
             "fsiRelaxation": coupling["fsiRelaxation"],
         }.items():
             replace_entry(props, key, value)
 
-        # PERMEABILITY MODEL: per CHILD, then per series, then the porosity
-        # axis's, so nothing that does not ask moves. source33_replication asks
-        # for `constant` because kozenyCarman's clot permeability is the
-        # numerical floor rather than k0p -- see the series' own
-        # _why_constant_permeability.
-        #
-        # THE CHILD LEVEL WAS ADDED 2026-09-05 for `kozenyCarmanSolid`, which
-        # is a property of the two-velocity SOLVER path rather than of the
-        # throat_embolus series -- em_2vel needs it and its four siblings
-        # (th_hold, th_break, em_free, em_freeG40) must not move.
-        replace_entry(
-            props,
-            "permeabilityModel",
-            child.get(
-                "permeability_model",
-                series.get(
-                    "permeability_model", controls["porosity_axis"]["model"]
-                ),
-            ),
-        )
 
         # CORE/SHELL MATERIAL. Off by default; when off the solver's blend is
         # the identity and every material field is uniform and equal to the
@@ -3504,22 +2181,7 @@ def main() -> int:
             }.items():
                 add_or_replace_entry(props, key, value)
 
-        # THE PHASE FIELD MOVES WITH ITS MATERIAL. Off by default, and off
-        # means the previous advection exactly.
-        add_or_replace_entry(
-            props,
-            "phaseFieldMaterialVelocity",
-            "yes" if series.get("phase_field_material_velocity", False) else "no",
-        )
 
-        # DIFFUSE-DOMAIN SKELETON WEIGHTING. Off by default, and off means the
-        # assembled matrix is bit-for-bit the one every completed run used.
-        add_or_replace_entry(
-            props,
-            "skeletonDiffuseDomain",
-            "yes" if series.get("skeleton_diffuse_domain", False) else "no",
-        )
-        replace_entry(props, "fsiAitken", "yes" if coupling["fsiAitken"] else "no")
         # THE TWO PLATELET FORMULATIONS ARE ALTERNATIVES, never both. The
         # solver refuses the combination; this keeps the dictionaries from ever
         # expressing it. Derivation: research/designs/
@@ -3537,39 +2199,8 @@ def main() -> int:
         # that reaches 1.3e-5 in the clot core, a 77000x amplifier. The six
         # children that WANT the w branch pin it to false explicitly, so the
         # default no longer decides anything by accident.
-        content_form = bool(child.get("platelet_content_formulation", True))
-        add_or_replace_entry(
-            props, "plateletContentFormulation", "yes" if content_form else "no"
-        )
-        add_or_replace_entry(
-            props, "plateletFluxConsistent", "no" if content_form else "yes"
-        )
+        content_form = bool(True)
 
-        # TERM-BY-TERM BUDGET FOR THE w EQUATION. Off by default because it
-        # costs eight extra matrix assemblies per audited step. Run
-        # 20260819-030512 left exactly one question standing -- int(q*w) grows
-        # 8.28x under an equation whose only source is a SINK, with growth
-        # entirely off -- and three proposed mechanisms for the w runaway have
-        # already been falsified by measurement. This machinery already existed
-        # in the solver and had never been switched on.
-        #
-        # add_or_replace_entry, NOT the replace_entry dict above: these keys are
-        # not in the template, and that dict's writer deliberately refuses keys
-        # the template never declared. The refusal fired on the first attempt
-        # here and was correct.
-        add_or_replace_entry(
-            props,
-            "operatorAudit",
-            "yes" if child.get("operator_audit", False) else "no",
-        )
-        add_or_replace_entry(
-            props,
-            "operatorAuditEvery",
-            int(child.get("operator_audit_every", 20)),
-        )
-        add_or_replace_entry(
-            props, "finiteStrain", "yes" if fixed["finiteStrain"] else "no"
-        )
         # CONSTITUTIVE LAW, written for every child so it is recorded rather
         # than inherited from whatever the solver default happens to be. The
         # source-33 child asks for neoHookean because a 4 Pa shell at 1000 1/s
@@ -3578,19 +2209,7 @@ def main() -> int:
         # Verified equivalent to St Venant-Kirchhoff at small strain by the
         # constitutive twins of the elastic-slab gate, run 20260815-072849:
         # both landed on max|Us| = 5.096e-12 m against a closed form.
-        constitutive_model = series.get("constitutive_model", "stVenantKirchhoff")
-        if constitutive_model not in ("stVenantKirchhoff", "neoHookean"):
-            raise ValueError(
-                f"{child_id}: constitutive_model {constitutive_model!r} is not "
-                f"known; use stVenantKirchhoff or neoHookean"
-            )
-        if constitutive_model == "neoHookean" and not fixed["finiteStrain"]:
-            raise ValueError(
-                f"{child_id}: constitutive_model neoHookean requires "
-                f"finiteStrain; the solver refuses this combination too, but "
-                f"catching it here costs nothing"
-            )
-        add_or_replace_entry(props, "constitutiveModel", constitutive_model)
+        constitutive_model = 'neoHookean'
 
         # THE EULERIAN SOLID SWITCH -- stage 3 of
         # research/designs/AM2020_eulerian_solid_plan.md.
@@ -3606,1069 +2225,456 @@ def main() -> int:
         # stronglyCoupledFSI would be asking for a coupling between a field and
         # itself; the solver has its own FatalError for that, and refusing here
         # names the child.
-        if eulerian_solid:
-            if not fixed["finiteStrain"]:
-                raise ValueError(
-                    f"{child_id}: eulerian_solid requires finiteStrain. The "
-                    f"whole point of transporting be is finite kinematics, and "
-                    f"the solver's constructor validates this before it ever "
-                    f"consults eulerianSolid -- so the child would die at "
-                    f"construction in under a second, which is exactly how the "
-                    f"first six children of the stage-2 gate were lost."
-                )
-            # This looked in series["strongly_coupled_fsi"], which does not
-            # exist -- the flag lives in controls["coupling"] -- so the guard
-            # could never fire and run 20260817-223437 went out with
-            # stronglyCoupledFSI on and 60 FSI correctors. Not fatal there, but
-            # it would have priced the speedup against the wrong configuration.
-            # It is now a WARNING plus an override rather than a refusal,
-            # because the FSI settings are shared with every other child in
-            # this case and refusing would make the two mutually exclusive.
-            if coupling.get("stronglyCoupledFSI"):
-                # State the number actually written. Saying "forcing to 1" on a
-                # child that is deliberately running 5 would make the console
-                # log disagree with the dictionary, and the console log is what
-                # gets read when a run is being explained months later.
-                outer_note = child.get("n_outer_correctors")
-                # WHY the FSI iteration goes, and it is NOT the same reason on
-                # the two paths. On the one-velocity Eulerian path there is no
-                # relative motion to iterate on at all. On the two-velocity
-                # path there certainly is -- that is the whole point of it --
-                # but the exchange is solved MONOLITHICALLY, by the per-cell
-                # 2x2 block in correctPressure(), not by a partitioned outer
-                # sweep. Saying "one velocity" about a two-velocity child would
-                # be false in the console log that gets read months later.
-                reason = (
-                    "The fluid/skeleton exchange is solved monolithically by "
-                    "the 2x2 block, not by a partitioned outer sweep"
-                    if two_velocity else
-                    "One velocity means there is no fluid/skeleton relative "
-                    "motion to iterate on, and iterating it anyway is what "
-                    "the reformulation exists to remove"
-                )
-                print(
-                    f"  {child_id}: eulerianSolid -- forcing stronglyCoupledFSI "
-                    f"off and nFSICorrectors to 1. {reason}. "
-                    f"nOuterCorrectors = "
-                    + (f"{int(outer_note)} (PER-CHILD OVERRIDE, not the "
-                       f"Eulerian default of 1)" if outer_note is not None
-                       else "1")
-                )
+        # PICARD SWEEPS OF THE EXPLICIT STRETCH TERM, written explicitly so
+        # the value a run used is in its own dictionary rather than being
+        # the solver's default. Run 20260817-234636 showed three is not
+        # always enough here: beSweepChange grew from 3.8e-16 to 7.9e-4
+        # over the run, i.e. the iteration stopped converging as the clot
+        # reached stretch 4.6. The diagnostic sweeps this.
         add_or_replace_entry(
-            props, "eulerianSolid", "yes" if eulerian_solid else "no"
+            props, "beCorrectors", int(child.get("be_correctors", 3))
         )
-        if eulerian_solid:
-            # PICARD SWEEPS OF THE EXPLICIT STRETCH TERM, written explicitly so
-            # the value a run used is in its own dictionary rather than being
-            # the solver's default. Run 20260817-234636 showed three is not
-            # always enough here: beSweepChange grew from 3.8e-16 to 7.9e-4
-            # over the run, i.e. the iteration stopped converging as the clot
-            # reached stretch 4.6. The diagnostic sweeps this.
-            add_or_replace_entry(
-                props, "beCorrectors", int(child.get("be_correctors", 3))
-            )
-            # PROJECT THE TRACE OUT OF THE STRETCH SOURCE. det(be) must be
-            # exactly 1 for any isochoric deformation, and d(ln det be)/dt =
-            # 2 tr(L), so it is conserved iff tr(L) = 0. Run 20260818-081527
-            # measured |tr L|/|L| up to 1.0 in the clot bulk while |div phi|
-            # stayed at 3.3e-8: the face flux is solenoidal and the
-            # cell-centred gradient is not. det(be) reached 4.24 and neither
-            # ten Picard sweeps nor a quarter time step moved it.
-            #
-            # Off by default so the A/B is a real comparison and not an
-            # assertion.
-            add_or_replace_entry(
-                props,
-                "beTraceFreeSource",
-                "yes" if child.get("be_trace_free_source", False) else "no",
-            )
-            # ONE VELOCITY MEANS ONE FLUX. Under eulerianSolid the phase field
-            # was being advected by a chi-blend of phi_ and a flux rebuilt from
-            # the cell-centred vs -- a construction that belongs to the
-            # PARTITIONED formulation, where the skeleton really does move at a
-            # different velocity. On this path it is two defects: the rebuilt
-            # flux is not divergence-free (run 20260818-125909 measured its
-            # divergence at 527 1/s in the clot against |div phi| <= 8e-6), and
-            # vs is the Eulerian derivative of a passive Us rather than the
-            # material velocity, which is why vsMax exceeded max|U| in three of
-            # four children. Defaults ON: it is written explicitly here so the
-            # value a run used is in its own dictionary, and so the A/B can
-            # turn it off.
-            # Build the stretch term's velocity gradient by Gauss on a face
-            # velocity whose normal component is exactly phi_/|Sf|, so its
-            # trace is div(phi) and machine zero by construction. Written
-            # explicitly so the value a run used is in its own dictionary.
-            # Rescale be by det^(-1/3) each step. A BAND-AID and named one:
-            # it restores the volume without undoing the advective smearing
-            # that destroyed it. Default OFF so the det gate cannot pass
-            # forever on a masked drift.
-            add_or_replace_entry(
-                props,
-                "beDetRenormalise",
-                "yes" if child.get("be_det_renormalise", False) else "no",
-            )
-            # Apply the elastic force through the FACE flux instead of as a
-            # cell-centred source inside UEqn.H(). Default OFF so every
-            # existing child keeps the behaviour it was measured with, and
-            # written explicitly so the value a run used is in its own
-            # dictionary rather than inferred from a solver default.
-            #
-            # This is the A/B for the momentum-force imbalance: cell-centred
-            # tr(grad U) is 240-527 1/s in the clot while div(phi) is 6e-6,
-            # eight orders, scaling 1400x with G while divPhiMax stays flat.
-            # Rationale and the two dead rival explanations are on
-            # faceConsistentElasticForce_ in phaseClotAxisymmetricFluid.H.
-            add_or_replace_entry(
-                props,
-                "faceConsistentElasticForce",
-                "yes"
-                if child.get("face_consistent_elastic_force", False)
-                else "no",
-            )
-            add_or_replace_entry(
-                props,
-                "beFluxConsistentGradU",
-                "yes" if child.get("be_flux_consistent_grad_u", True) else "no",
-            )
-            add_or_replace_entry(
-                props,
-                "beTermDiagnostic",
-                "yes" if child.get("be_term_diagnostic", False) else "no",
-            )
-            add_or_replace_entry(
-                props,
-                "eulerianMaterialFluxIsPhi",
-                "yes" if child.get("eulerian_material_flux_is_phi", True)
-                else "no",
-            )
 
-            # THE ANCHOR AND THE RELEASE TEST. All four default to the
-            # historical behaviour, so a child that names none of them is
-            # bit-for-bit what it was before 2026-08-24. Written
-            # UNCONDITIONALLY once any of them is on any child of the series,
-            # so a run's own dictionary always states which anchor it had --
-            # the sigmaD failure was invisible precisely because the case file
-            # said nothing about it.
-            add_or_replace_entry(
-                props,
-                "releaseSupportLimit",
-                f"{float(child.get('release_support_limit', 0.0)):.12g}",
-            )
-            add_or_replace_entry(
-                props,
-                "bondHoldDilation",
-                str(int(child.get("bond_hold_dilation", -1))),
-            )
-            add_or_replace_entry(
-                props,
-                "bondHoldPenalty",
-                f"{float(child.get('bond_hold_penalty', 0.0)):.12g}",
-            )
-            add_or_replace_entry(
-                props,
-                "bondHoldCarrier",
-                "yes" if child.get("bond_hold_carrier", False) else "no",
-            )
-            add_or_replace_entry(
-                props,
-                "bondHoldTaper",
-                "yes" if child.get("bond_hold_taper", False) else "no",
-            )
-            # THE CORE EXEMPTION, written ONLY when the child names it, so
-            # every other dictionary is byte-identical and keeps the solver
-            # default (true, .C L724-726). The Xu series turns it off
-            # (Alireza, 2026-09-29: nothing about the core is enforced).
-            # Refused beforehand where it would be inert
-            # (release_core_exempt_refusal).
-            if "release_core_exempt" in child:
-                add_or_replace_entry(
-                    props,
-                    "releaseCoreExempt",
-                    "yes" if child["release_core_exempt"] else "no",
-                )
-
-            # THE BRINKMAN DRAG, GATED ON RELEASE. Off by default, so every
-            # child that predates it assembles the same matrix and no passed
-            # gate moves. See research/designs/
-            # AM2020_stage1_brinkman_implementation_plan.md.
-            #
-            # REFUSED HERE AS WELL AS IN THE SOLVER, and deliberately twice.
-            # The solver's FatalError costs a VM boot and an OpenFOAM restore
-            # to discover; this one costs nothing and names the child. Without
-            # advect_released the release mask is identically zero, the drag
-            # acts on detached material too, and the run would answer a
-            # question about a model that pins emboli in the lab frame.
-            brinkman = bool(child.get("eulerian_brinkman", False))
-            if brinkman and not series.get("advect_released", False):
-                raise ValueError(
-                    f"{child_id}: eulerian_brinkman requires the series' "
-                    f"advect_released. updateReleasedIndicator() returns with "
-                    f"released = 0 everywhere when advectReleased is off, so "
-                    f"the drag would hold a fully detached embolus in place -- "
-                    f"the exact objection the release gate exists to answer."
-                )
-            add_or_replace_entry(
-                props, "eulerianBrinkman", "yes" if brinkman else "no"
-            )
-
-            # TWO-VELOCITY SKELETON. The clot gets its own velocity, so the
-            # phase field and be ride the SKELETON rather than the fluid, and
-            # div(sigma_e) moves out of the fluid momentum equation into the
-            # skeleton balance.
-            #
-            # REQUIRES eulerianBrinkman, and the reason is structural rather
-            # than stylistic: the drag pair that becomes dragCoeff*(U - Vs) is
-            # assembled inside the eulerianBrinkman block. Without it the phase
-            # field would ride the skeleton while the fluid drag still pinned U
-            # toward the LABORATORY frame -- the two halves of the change
-            # disagreeing with each other, which is worse than neither.
-            # two_velocity was read and checked against eulerian_solid above.
-            if two_velocity and not brinkman:
-                raise ValueError(
-                    f"{child_id}: two_velocity_skeleton requires "
-                    f"eulerian_brinkman. The relative-velocity drag pair "
-                    f"dragCoeff*(U - Vs) is assembled inside the "
-                    f"eulerianBrinkman block, so without it the phase field "
-                    f"would be carried by the skeleton while the fluid was "
-                    f"still dragged toward the lab frame."
-                )
-            add_or_replace_entry(
-                props,
-                "twoVelocitySkeleton",
-                "yes" if two_velocity else "no",
-            )
-
-            if two_velocity:
-                # THE SKELETON VOLUME FRACTION, and it is the largest
-                # uncertainty in the two-velocity formulation.
-                #
-                # chi = 1 - q is an INDICATOR, not a volume fraction: measured
-                # on run 20260904-214345, the median clot cell has q = 0.0066
-                # and 71.7% of clot cells have q < 0.05. Using chi as phi_s
-                # would leave phi_f ~ 0.007 -- blood essentially absent from
-                # the clot -- which contradicts the permeability model that
-                # lets blood seep through it.
-                #
-                # 0.01 is anchored, not guessed: He, Kim & Ku (source 23)
-                # report Wufsus et al. (2013) measuring a 1% platelet volume
-                # fraction at k = 1.1e-2 um2 = 1.1e-14 m2, and k0pcore here is
-                # 1e-14 m2. Written per child so a sweep over it is a
-                # dictionary change, not a code change.
-                add_or_replace_entry(
-                    props,
-                    "skeletonVolumeFraction",
-                    repr(float(child.get("skeleton_volume_fraction", 0.01))),
-                )
-                # Vanishing-phase regularisation for the skeleton row of the
-                # 2x2 block. OpenFOAM calls it residualAlpha; Du & Fogelson
-                # describe the same fix as "temporarily increasing theta_b by a
-                # small positive constant".
-                add_or_replace_entry(
-                    props,
-                    "residualPhiS",
-                    repr(float(child.get("residual_phi_s", 1e-4))),
-                )
-                # ANCHOR-INVARIANT SUPPORT for that regularisation. 0 = off,
-                # and off is byte-for-byte the previous behaviour.
-                #
-                # residualPhiS is an ABSOLUTE threshold on phi_s, but
-                # phi_s = chi*skeletonVolumeFraction, so the band it covers
-                # shrinks as the anchor rises. Run 20260906-101812 measured
-                # every one of the top 100 cells by |Vs| sitting at c > 0.99
-                # with Kres = 0 -- the regularisation had switched itself off
-                # in exactly the cells that were running away, because at
-                # phi_s0 = 0.45 the diffuse tail of c puts phi_s at 1.7e-04,
-                # above the 1e-4 threshold. At phi_s0 = 0.10 the same tail
-                # gives 3.8e-05 and Kres still fires.
-                #
-                # residual_chi measures the same ramp on chi instead, rescaled
-                # so the PEAK is still residualPhiS/deltaT. Region changes,
-                # strength does not.
-                add_or_replace_entry(
-                    props,
-                    "residualChi",
-                    repr(float(child.get("residual_chi", 0.0))),
-                )
-                # THE DILUTE DRAG FLOOR, K >= k1*chi, in 1/s. Zero = off, and
-                # off reproduces every earlier child bit-for-bit.
-                #
-                # Kozeny-Carman is a PACKED-BED correlation and this solver
-                # evaluates it two decades below its range. Measured on run
-                # 20260907-111028, binning by chi: |Vs|/max|U| is 1.00 where
-                # compliance (elastic weight / total drag rate) is at or below
-                # ~1e-05 and 3.4-3.9 in chi = 0.005-0.1 where it reaches
-                # 3.0e-04. The floor pins compliance at exactly 1/k1 wherever
-                # it binds, so the peak cannot re-form somewhere else -- which
-                # widening residualChi (factor 2.2, measured) cannot do.
-                # Full table and the rejected alternatives are on
-                # skeletonDiluteDragRate_ in the solver header.
-                # SURFACE EROSION -- the only route by which this clot can
-                # let go. Bulk fracture is physically unreachable here
-                # (Gc/G = 1.39 m against a 40 um clot; Dg reached 6.4e-06 of
-                # 1.0 after 7.9 ms on run 20260908-010836), wall peel arrests
-                # once the remaining bonds unload (utilisation 0.985 -> 0.389),
-                # and the release criterion is a connectivity flood fill that
-                # cannot sever a connected tail. So the clot stretches without
-                # bound. Threshold sourced to 1.75-3.0 Pa: Xu (33) balance the
-                # accumulation and detachment coefficients at 500 1/s = 1.75 Pa
-                # and Wu (15) give tau_emb = 30 dyn/cm2 = 3.0 Pa = 865 1/s.
-                # THIS CASE RUNS AT 1000 1/s. The RATE is unsourced and swept,
-                # exactly as adhesiveStrength is. Zero = off and reproduces
-                # every earlier child byte for byte.
-                add_or_replace_entry(
-                    props,
-                    "clotErosionRate",
-                    repr(float(child.get("clot_erosion_rate", 0.0))),
-                )
-                add_or_replace_entry(
-                    props,
-                    "clotErosionTauPa",
-                    repr(float(child.get("clot_erosion_tau_pa", 3.0))),
-                )
-                add_or_replace_entry(
-                    props,
-                    "skeletonDiluteDragRate",
-                    repr(float(child.get("skeleton_dilute_drag_rate", 0.0))),
-                )
-                # THE MATERIAL CARRIER, and it is the defect that killed
-                # every two-velocity run on record.
-                #
-                # The two-velocity branch carried c and shell on the RAW
-                # skeleton flux phiSkelOwn_ over the whole domain, including
-                # pure blood, where that flux is the skeleton row of a 2x2
-                # block held up only by the Kres regularisation. Run
-                # 20260908-010836 measured |Vs| = 0.0386 m/s -- 110% of
-                # max|U| -- in a lumen cell with chi = 4.03e-11.
-                #
-                # The record across preflight/ is unambiguous:
-                #   carrier = phi_ (one-velocity):        9 children, 9 done.
-                #   carrier = phiSkelOwn_ (two-velocity): 14 children,
-                #     14 failed -- 13 SIGFPE inside advectMaterialLabel(),
-                #     1 (cub_rchi) inert, its clot centroid flat to four
-                #     digits from 14.7 to 30 ms while reporting 8.96 mm/s.
-                #
-                # Blending to phi_ as chi -> 0 is not a new construction: the
-                # one-velocity branch has always built its carrier that way.
-                # Inside the clot chi -> 1 and nothing changes, so the clot
-                # still rides its own skeleton.
-                #
-                # DEFAULT OFF as of 2026-09-08, on Codex's recommendation,
-                # made twice and resisted twice. It is an EXPERIMENTAL
-                # intervention with no isolated evidence: Batch 25 ran it, but
-                # bundled with three other changes, and the returned assessor
-                # rejected both children outright (children_admissible = 0,
-                # c_bound/wp/vs gates all false). "It completed" is not
-                # validation when the completed state is inadmissible.
-                #
-                # Turning the default off discards nothing. Both Batch 25
-                # children set material_carrier_blend explicitly in
-                # mainCaseControls.json, so their configuration is unchanged
-                # and reproducible; only children that never named the key are
-                # affected, and none of those has run with it.
-                add_or_replace_entry(
-                    props,
-                    "materialCarrierBlend",
-                    "yes" if child.get("material_carrier_blend", False) else "no",
-                )
-                # STAGE 1 CONTENT MODEL. Default OFF for the same reason
-                # materialCarrierBlend is: twelve returned two-velocity
-                # children never name the key, and an ON default would hand
-                # them a model they never ran.
-                add_or_replace_entry(
-                    props,
-                    "contentModel",
-                    "yes" if child.get("content_model", False) else "no",
-                )
-                # WHICH OPERATOR solveContentComponents() ASSEMBLES.
-                #
-                # `content` is the shipped Stage 1 model: upwind, no sources.
-                # `matched` is the T2a identity test: the captured
-                # phaseWeights_ plus the mapped source
-                # theta_ref*(-0.5*laplacian(mobility,muC) + 0.5*Vn*gradPhase),
-                # which makes it the exact conservative image of the legacy
-                # chi equation.
-                #
-                # VALIDATED HERE AS WELL AS IN THE SOLVER. The solver's
-                # lookupOrDefault returns "content" for a misspelling just as
-                # it does for a missing key, so the solver fatals on an
-                # unknown word -- but that costs a Colab boot to discover.
-                # Refusing it at generation costs nothing and fails on the
-                # machine that can fix it.
-                content_operator = str(child.get("content_operator", "content"))
-                if content_operator not in ("content", "matched"):
-                    raise SystemExit(
-                        "child %s: content_operator must be 'content' or "
-                        "'matched', found %r"
-                        % (child.get("child_id"), content_operator)
-                    )
-                add_or_replace_entry(props, "contentOperator", content_operator)
-                # ---- STAGE 2: THE ACCEPTED-TRANSFER GROWTH PATH ----
-                #
-                # This is the SECOND way solid enters the content, and the one
-                # a search for assignments to thetaH_ cannot see: it is written
-                # through an output parameter of
-                # plateletContent::applyAcceptedTransfer(). The first is the
-                # `matched` source above.
-                #
-                # THE TWO ARE MUTUALLY EXCLUSIVE and the solver refuses the
-                # combination outright, because both deposit solid and the
-                # inventory still balances -- each is internally paired, so
-                # nothing downstream catches it. Refused here as well, for the
-                # reason the contentOperator validation above gives: a Colab
-                # boot is an expensive place to learn this.
-                platelet_content = bool(
-                    child.get("platelet_content_model", False)
-                )
-                platelet_transport_only = bool(
-                    child.get("platelet_transport_only", False)
-                )
-                # ---- STAGE 2: THE ACCEPTED-TRANSFER GROWTH PATH ----
-                #
-                # The SECOND way solid enters the content, and the one a
-                # search for assignments to thetaH_ cannot see: it is written
-                # through an output parameter of
-                # plateletContent::applyAcceptedTransfer(). The first is the
-                # `matched` source above, and the two are mutually exclusive.
-                validate_phase_weight_basis(child)
-                validate_stage2_platelet(child, content_operator)
-                if platelet_content:
-                    add_or_replace_entry(
-                        props,
-                        "plateletFluxConvention",
-                        str(child["platelet_flux_convention"]),
-                    )
-                    add_or_replace_entry(
-                        props,
-                        "plateletBindRate",
-                        repr(float(child.get("platelet_bind_rate", 0.0))),
-                    )
-                    add_or_replace_entry(
-                        props,
-                        "plateletDiffusivity",
-                        repr(float(child.get("platelet_diffusivity", 0.0))),
-                    )
-                    add_or_replace_entry(
-                        props,
-                        "plateletBindLocalisation",
-                        str(child.get("platelet_bind_localisation",
-                                      "uniform")),
-                    )
-                    if "platelet_adhesion_speed" in child:
-                        add_or_replace_entry(
-                            props,
-                            "plateletAdhesionSpeed",
-                            repr(float(child["platelet_adhesion_speed"])),
-                        )
-                    add_or_replace_entry(
-                        props,
-                        "phaseWeightBasis",
-                        str(child.get("phase_weight_basis", "legacy")),
-                    )
-                    add_or_replace_entry(
-                        props,
-                        "phaseForceBasis",
-                        str(child.get("phase_force_basis", "legacy")),
-                    )
-                    add_or_replace_entry(
-                        props,
-                        "phaseIndicatorBasis",
-                        str(child.get("phase_indicator_basis", "legacy")),
-                    )
-                    # OI-6. DEFAULTS TO "legacy", UNLIKE phaseDeltaBasis
-                    # below, and the default is FORCED rather than chosen:
-                    # "shared" is refused by the solver without
-                    # phaseWeightBasis content + contentModel +
-                    # twoVelocitySkeleton, and most children of this case have
-                    # none of the three. A "shared" default here would abort
-                    # every legacy child at startup. The solver's own fallback
-                    # is "legacy" too, by the same two-place rule.
-                    add_or_replace_entry(
-                        props,
-                        "phaseMomentumFluxBasis",
-                        str(child.get("phase_momentum_flux_basis", "legacy")),
-                    )
-                    # S6a. DEFAULTS TO "legacy" for the same reason as
-                    # phaseMomentumFluxBasis: "content" is refused without
-                    # contentModel, and it redefines q -- which 53 sites read
-                    # -- so a default flip would silently change the physics
-                    # of every archived child. The solver's fallback is
-                    # "legacy" too, by the two-place rule.
-                    add_or_replace_entry(
-                        props,
-                        "phaseFluidFractionBasis",
-                        # S7. WAS "legacy". S6c-2 REFUSES "legacy" here, so
-                        # the old fallback made OMISSION fatal -- 201 cases
-                        # omit these keys and aborted at construction.
-                        # Flipped with the solver's own fallback in the same
-                        # change, per the two-place rule. A child with the
-                        # content model off is NOT revived by this: "content"
-                        # is refused there too, and OI-24 records that such a
-                        # child has no legal value for this key at all.
-                        str(child.get("phase_fluid_fraction_basis", "content")),
-                    )
-                    # S6b-1 and S6b-2. BOTH DEFAULT TO "legacy", and both
-                    # are written unconditionally by the two-place rule.
-                    #
-                    # phaseLimiterBasis picks the field
-                    # phaseFieldFaceWeights() evaluates the limiter on; its
-                    # weights reach the c equation, shell_ and Wp, so a
-                    # default flip would change three equations in every
-                    # archived child at once.
-                    #
-                    # phasePlateletFluxBasis picks the face values Wp is
-                    # advected with. Both are refused by the solver without
-                    # phaseFluidFractionBasis content, which most children of
-                    # this case do not set, so a "content" default here would
-                    # abort them at startup. The solver's fallbacks are
-                    # "legacy" too.
-                    add_or_replace_entry(
-                        props,
-                        "phaseLimiterBasis",
-                        # S7. WAS "legacy". S6c-2 REFUSES "legacy" here, so
-                        # the old fallback made OMISSION fatal -- 201 cases
-                        # omit these keys and aborted at construction.
-                        # Flipped with the solver's own fallback in the same
-                        # change, per the two-place rule. A child with the
-                        # content model off is NOT revived by this: "content"
-                        # is refused there too, and OI-24 records that such a
-                        # child has no legal value for this key at all.
-                        str(child.get("phase_limiter_basis", "content")),
-                    )
-                    add_or_replace_entry(
-                        props,
-                        "phasePlateletFluxBasis",
-                        str(child.get("phase_platelet_flux_basis", "legacy")),
-                    )
-                    # DEFAULTS TO "content", UNLIKE THE THREE ABOVE.
-                    # Alireza, 2026-09-16: the new method is the default.
-                    # The solver's own fallback for phaseDeltaBasis is
-                    # "content" too -- they had to move together, because this
-                    # generator writes the key unconditionally and so the
-                    # solver default is otherwise never reached on this case.
-                    # A child that wants the c-derived surface delta must say
-                    # phase_delta_basis "legacy" explicitly; the S3 control is
-                    # the reason that value still exists.
-                    add_or_replace_entry(
-                        props,
-                        "phaseDeltaBasis",
-                        str(child.get("phase_delta_basis", "content")),
-                    )
-                    # S6c-1. DEFAULTS TO "legacy", and unlike phaseDeltaBasis
-                    # it must stay that way until the instrument has spoken.
-                    # normal_ is the LAST live consumer of c: it reaches the
-                    # physics only through shearPa_ -> adhesionEnhancement_
-                    # -> adhesionSpeed_ -> Vn_, and that path is clamped to
-                    # exactly 1 while shearRate < gammaLow. Whether the clamp
-                    # holds on the current parameters is NOT yet measured --
-                    # the 782 1/s figure behind the 2026-09-16 deferral is
-                    # from an older run and shearRate is neither written nor
-                    # logged by em43. PHASE_CLOT_NORMAL_BASIS measures it.
-                    # Written unconditionally by the two-place rule; the
-                    # solver's own fallback is "legacy" too.
-                    add_or_replace_entry(
-                        props,
-                        "phaseNormalBasis",
-                        # S7. WAS "legacy". S6c-2 REFUSES "legacy" here, so
-                        # the old fallback made OMISSION fatal -- 201 cases
-                        # omit these keys and aborted at construction.
-                        # Flipped with the solver's own fallback in the same
-                        # change, per the two-place rule. A child with the
-                        # content model off is NOT revived by this: "content"
-                        # is refused there too, and OI-24 records that such a
-                        # child has no legal value for this key at all.
-                        str(child.get("phase_normal_basis", "content")),
-                    )
-                    # S4. DEFAULTS TO "transfer", for the same reason and by
-                    # the same two-place rule as phaseDeltaBasis above: the
-                    # solver's own fallback is "transfer" too, and this
-                    # generator writes the key unconditionally, so flipping
-                    # only the solver would have been cosmetic on this case.
-                    # A child that wants the Stefan front must say
-                    # phase_growth_driver "front" explicitly; em36 is pinned
-                    # to it because its JSON entry must keep describing the
-                    # run that exists.
-                    cid = child.get("child_id")
-                    growth_driver = str(
-                        child.get("phase_growth_driver", "transfer")
-                    )
-                    if growth_driver not in ("front", "transfer"):
-                        raise SystemExit(
-                            "child %s: phase_growth_driver must be 'front' or "
-                            "'transfer'; found %r" % (cid, growth_driver)
-                        )
-                    if growth_driver == "transfer":
-                        # Each of these is refused by the solver too. They are
-                        # repeated here because the generator runs locally and
-                        # the solver runs in Colab: catching it here costs
-                        # seconds, catching it there costs a VM boot and a
-                        # packaged binary.
-                        if not child.get("platelet_content_model", False):
-                            raise SystemExit(
-                                "child %s: phase_growth_driver 'transfer' "
-                                "requires platelet_content_model true -- it "
-                                "removes the Stefan front and replaces it "
-                                "with a transfer nothing would compute, so "
-                                "the clot would never grow while every "
-                                "balance still closed." % (cid,)
-                            )
-                        if float(
-                            child.get("skeleton_volume_fraction", 0.0)
-                        ) <= 0:
-                            raise SystemExit(
-                                "child %s: phase_growth_driver 'transfer' "
-                                "divides by skeleton_volume_fraction, which "
-                                "is %r. The conversion is "
-                                "dc = -(2/theta_ref)*dtheta."
-                                % (cid, child.get("skeleton_volume_fraction"))
-                            )
-                        if str(
-                            child.get("phase_delta_basis", "content")
-                        ) != "content":
-                            raise SystemExit(
-                                "child %s: phase_growth_driver 'transfer' "
-                                "requires phase_delta_basis 'content'. S3 "
-                                "must precede S4, or the theta clot grows on "
-                                "the geometry of the c clot it replaces."
-                                % (cid,)
-                            )
-                        if content_operator == "matched":
-                            raise SystemExit(
-                                "child %s: phase_growth_driver 'transfer' is "
-                                "incompatible with content_operator "
-                                "'matched' -- the matched operator maps the c "
-                                "equation's Stefan front into theta, and "
-                                "'transfer' removes that front, so theta "
-                                "would be sourced twice." % (cid,)
-                            )
-                    add_or_replace_entry(
-                        props, "phaseGrowthDriver", growth_driver
-                    )
-                    if child.get("unlocalised_phase_weights_accepted", False):
-                        add_or_replace_entry(
-                            props,
-                            "unlocalisedPhaseWeightsAccepted",
-                            "yes",
-                        )
-                    if "platelet_yield_m3" in child:
-                        add_or_replace_entry(
-                            props,
-                            "plateletYield",
-                            repr(float(child["platelet_yield_m3"])),
-                        )
-                    if platelet_transport_only:
-                        add_or_replace_entry(
-                            props, "plateletTransportOnly", "yes"
-                        )
-                    write_platelet_number_density(
-                        case,
-                        float(child["platelet_number_density_m3"]),
-                        float(child.get(
-                            "platelet_inlet_density_m3",
-                            child["platelet_number_density_m3"])),
-                    )
-                    # nP IS SOLVED, so it needs a linear solver, and
-                    # solvePlateletContent calls nEqn.flux() for the boundary
-                    # inventory, which needs fluxRequired. Neither is in the
-                    # shared template -- no previous main-case child ran the
-                    # platelet equation. Both were missing from run
-                    # 20260915-062201; the restart contract fatalled first, so
-                    # they would have been the next two failures, one run each.
-                    # NO div SCHEME IS NEEDED: plateletContent::transportEqn
-                    # builds explicit upwind weights rather than looking one
-                    # up (.C:7098-7101).
-                    solution = case / "system" / "fvSolution"
-                    solution_text = solution.read_text()
-                    if not re.search(r"(?m)^\s*nP\s*$", solution_text):
-                        entry = (
-                            "    nP\n"
-                            "    {\n"
-                            "        solver smoothSolver;\n"
-                            "        smoother symGaussSeidel;\n"
-                            "        tolerance 1e-12;\n"
-                            "        relTol 0;\n"
-                            "    }\n"
-                            "    nPFinal\n"
-                            "    {\n"
-                            "        $nP;\n"
-                            "        relTol 0;\n"
-                            "    }\n"
-                        )
-                        patched, count = re.subn(
-                            r"(?m)^\}\n\nPIMPLE", entry + "}\n\nPIMPLE",
-                            solution_text, count=1)
-                        if count != 1:
-                            raise SystemExit(
-                                "child %s: could not place the nP solver entry "
-                                "in fvSolution -- the `}\\n\\nPIMPLE` anchor "
-                                "the template has always had is gone, and a "
-                                "silent skip would fatal in Colab"
-                                % (child.get("child_id"),)
-                            )
-                        solution.write_text(patched)
-                    schemes = case / "system" / "fvSchemes"
-                    schemes_text = schemes.read_text()
-                    if "fluxRequired" not in schemes_text:
-                        schemes.write_text(
-                            schemes_text.rstrip("\n")
-                            + "\n\n// nEqn.flux() supplies the measured "
-                              "boundary inventory flux.\nfluxRequired\n{\n"
-                              "    default no;\n    nP;\n}\n"
-                        )
-                    elif not re.search(r"fluxRequired\s*\{[^}]*\bnP\s*;",
-                                       schemes_text, re.S):
-                        raise SystemExit(
-                            "child %s: fvSchemes already has a fluxRequired "
-                            "block that does not name nP; merging it blindly "
-                            "could drop an entry another field needs."
-                            % (child.get("child_id"),)
-                        )
-                add_or_replace_entry(
-                    props,
-                    "plateletContentModel",
-                    "yes" if platelet_content else "no",
-                )
-                # Declared volume per bound platelet-equivalent. Inert while
-                # kinetics are off -- Stage 1 multiplies nothing by it -- so
-                # the placeholder cannot silently acquire authority before it
-                # is sourced.
-                add_or_replace_entry(
-                    props, "vP", repr(float(child.get("v_p_m3", 1e-17)))
-                )
-                # THE Vn CAP, DISPROVED AND DEFAULTED OFF.
-                # Batch 25 (run 20260908-061511, em_2vel_carrier) fired it
-                # 2,505,301 times and cUnder still peaked at 1.47179651851
-                # (c = -2.47179651851) at t = 0.01826716418; the pre-registered
-                # pass condition was
-                # qNegCells = 0 and it failed by every sample. It also cannot
-                # work in principle: with chi = 1, div(v_s) = -100 1/s and
-                # G = 0, implicit Euler gives c = -1.000298552, so compression
-                # alone leaves the bound with no growth at all.
-                add_or_replace_entry(
-                    props,
-                    "vnCapEnabled",
-                    "yes" if child.get("vn_cap_enabled", False) else "no",
-                )
-                # THE NETWORK PRESSURE. Run 20260905-113709 conserved the
-                # clot to 2.4e-05 and then drove c to -2.74 at STEP 4: phi_s
-                # nearly doubled and nothing in the model could object,
-                # because elasticStress() is dev(be) only and `be` is an
-                # INCOMPRESSIBLE neo-Hookean with det(be) = 1 enforced -- the
-                # constitutive model had no bulk modulus anywhere.
-                #
-                # p_n = K_n*(phi_s - phi_s0)/(phi_s_max - phi_s), Cogan & Guy
-                # Eq. 19. K_n = networkPressureCoeff * gD * G: the default of
-                # 1.0 introduces NO new number, since a cross-linked gel's
-                # bulk modulus is of the same order as its shear modulus and
-                # reusing GField_ inherits the core/shell contrast. Anchored,
-                # not fitted -- written per child so it can be swept.
-                add_or_replace_entry(
-                    props,
-                    "networkPressureCoeff",
-                    repr(float(child.get("network_pressure_coeff", 1.0))),
-                )
-                # Close packing, where p_n diverges. 0.6 is Du & Fogelson
-                # Eq. 2.25's theta_b_max, after Wufsus et al. 2013 -- the same
-                # paper skeletonVolumeFraction is anchored to.
-                #
-                # READ THIS BEFORE REUSING 0.6: it is the anchor of their DRAG
-                # coefficient xi(theta_b), not of a pressure, and Cogan & Guy
-                # -- the source the pressure law is taken from -- prescribe a
-                # CUBIC with a double root at phi_n = 0 rather than a pole
-                # anywhere. See research/literature/AM.2020.0056-19/
-                # NETWORK_COMPACTION_AUDIT.md. phiSMax is UNUSED when
-                # networkPressureModel is cubic; it is still written so the
-                # dictionary records what the run was configured with.
-                add_or_replace_entry(
-                    props,
-                    "phiSMax",
-                    repr(float(child.get("phi_s_max", 0.6))),
-                )
-                # poleAtMax (default, the shipped law) or cubic. The pole form
-                # applies a finite suction wherever there is a trace of
-                # network, because p_n(0) = -K_n*phi_s0/phi_s_max is not zero;
-                # run 20260905-223740 measured 88 diffuse-edge cells above
-                # max|U| at phi_s0 = 0.10, one at |Vs|/|U| = 646. The cubic has
-                # a double root at phi_s = 0 and the fringe term falls from
-                # O(phi_s) to O(phi_s^3). Default left at poleAtMax so no
-                # existing child moves.
-                #
-                # poleCubic, ADDED 2026-09-21, is the cubic multiplied by
-                # (phiSMax - phi_s0)/(phiSMax - phi_s): the double root at
-                # zero AND a pole at close packing. Both shipped laws have
-                # exactly one of those and each lost a run for want of the
-                # other -- poleAtMax SIGFPE at t = 9.71e-05 s
-                # (20260906-210336), cubic phiSOverNominal 1.1913 and still
-                # accelerating at 4e-03 s (20260921-072935) once k0p moved to
-                # Xu's values and the Darcy load rose two decades. Properties
-                # and pricing in scripts/check_network_pressure_law.py.
-                #
-                # REFUSED HERE AS WELL AS IN THE SOLVER. The solver
-                # FatalErrors on an unknown name, which costs a VM boot; a
-                # typo should not. The set is asserted equal to the solver's
-                # by check_network_pressure_law.py so the two cannot drift.
-                _npm = str(child.get("network_pressure_model", "poleAtMax"))
-                if _npm not in ("poleAtMax", "cubic", "poleCubic",
-                                "convexExcess"):
-                    raise SystemExit(
-                        f"create_cases.py: {child['child_id']}: "
-                        f"network_pressure_model {_npm!r} is not one of "
-                        f"poleAtMax, cubic, poleCubic, convexExcess."
-                    )
-                add_or_replace_entry(props, "networkPressureModel", _npm)
-
-                # S10 (2026-09-22): the three root-cause switches, see
-                # research/designs/2026-09-22-S10-root-causes-em49.md. Each is
-                # written ONLY when the child names it, so every existing
-                # child's dictionary stays byte-identical and the solver's
-                # shipped defaults apply. Refused here as well as in the
-                # solver, for the reason given above: a typo should cost
-                # nothing, not a VM boot.
-                for _key, _dict_key, _allowed in S10_SWITCHES:
-                    if _key not in child:
-                        continue
-                    _val = str(child[_key])
-                    if _val not in _allowed:
-                        raise SystemExit(
-                            f"create_cases.py: {child['child_id']}: {_key} "
-                            f"{_val!r} is not one of {', '.join(_allowed)}."
-                        )
-                    add_or_replace_entry(props, _dict_key, _val)
-
-                # S11 (2026-09-23): the six root-cause switches of run
-                # 20260923-031942 (research/designs/2026-09-23-S11-root-
-                # causes-em52.md). Same contract as S10: written only when
-                # the child names them, refused here on a typo.
-                for _key, _dict_key, _allowed in S11_SWITCHES:
-                    if _key not in child:
-                        continue
-                    _val = str(child[_key])
-                    if _val not in _allowed:
-                        raise SystemExit(
-                            f"create_cases.py: {child['child_id']}: {_key} "
-                            f"{_val!r} is not one of {', '.join(_allowed)}."
-                        )
-                    add_or_replace_entry(props, _dict_key, _val)
-
-                # S12 (2026-09-23): the drag weighted as the stress already
-                # is, occupancy x intrinsic (research/designs/2026-09-23-
-                # S12-intrinsic-occupancy-drag.md). Same contract: written
-                # only when the child names it, so every earlier child's
-                # dictionary is byte-identical; refused here on a typo.
-                for _key, _dict_key, _allowed in S12_SWITCHES:
-                    if _key not in child:
-                        continue
-                    _val = str(child[_key])
-                    if _val not in _allowed:
-                        raise SystemExit(
-                            f"create_cases.py: {child['child_id']}: {_key} "
-                            f"{_val!r} is not one of {', '.join(_allowed)}."
-                        )
-                    add_or_replace_entry(props, _dict_key, _val)
-
-                # S13 (2026-09-23): the grid-scale restoring of run
-                # 20260923-135545 (research/designs/2026-09-23-S13-grid-scale-
-                # restoring.md). Same contract as S10-S12.
-                for _key, _dict_key, _allowed in S13_SWITCHES:
-                    if _key not in child:
-                        continue
-                    _val = str(child[_key])
-                    if _val not in _allowed:
-                        raise SystemExit(
-                            f"create_cases.py: {child['child_id']}: {_key} "
-                            f"{_val!r} is not one of {', '.join(_allowed)}."
-                        )
-                    add_or_replace_entry(props, _dict_key, _val)
-
-                # S14 (2026-09-23): rupture at the critical stretch, and the
-                # tangent elastic bound (research/designs/2026-09-23-S14-
-                # network-rupture.md). Same contract as S10-S13; the stretch
-                # is written only with the switch that reads it.
-                for _key, _dict_key, _allowed in S14_SWITCHES:
-                    if _key not in child:
-                        continue
-                    _val = str(child[_key])
-                    if _val not in _allowed:
-                        raise SystemExit(
-                            f"create_cases.py: {child['child_id']}: {_key} "
-                            f"{_val!r} is not one of {', '.join(_allowed)}."
-                        )
-                    add_or_replace_entry(props, _dict_key, _val)
-                if child.get("network_rupture") == "criticalStretch":
-                    add_or_replace_entry(
-                        props, "networkCriticalStretch",
-                        repr(float(child.get("network_critical_stretch", 2.8))),
-                    )
-                if child.get("network_rupture") == "progressiveDamage":
-                    add_or_replace_entry(
-                        props, "networkDamageOnsetStretch",
-                        repr(float(child.get("network_damage_onset_stretch", 2.105))),
-                    )
-                    add_or_replace_entry(
-                        props, "networkDamageStretchScale",
-                        repr(float(child.get("network_damage_stretch_scale", 1.0))),
-                    )
-
-                # S16 (2026-09-24): terminal rupture with a timed release,
-                # the damage carried as content, the occupancy floor and the
-                # tensile pressure damage (research/designs/2026-09-24-S16-
-                # timed-terminal-rupture.md). Same contract as S10-S15: every
-                # key is written only when the child names it (or, for the
-                # terminalRelease parameters, only with the switch that reads
-                # them), so every earlier child's dictionary is byte-identical.
-                # Refused beforehand by s16_value_refusal and
-                # s16_combination_refusal, for every child.
-                if child.get("network_rupture") in ("terminalRelease",
-                                                    "fibreRelease"):
-                    _prog = bool(child.get("network_damage_progressive", True))
-                    add_or_replace_entry(
-                        props, "networkCriticalStretch",
-                        repr(float(child.get("network_critical_stretch", 2.8))),
-                    )
-                    add_or_replace_entry(
-                        props, "networkReleaseTime",
-                        repr(float(child.get("network_release_time_s", 3.3e-4))),
-                    )
-                    add_or_replace_entry(
-                        props, "networkDamageProgressive",
-                        "on" if _prog else "off",
-                    )
-                    if _prog:
-                        add_or_replace_entry(
-                            props, "networkDamageOnsetStretch",
-                            repr(float(child.get(
-                                "network_damage_onset_stretch", 2.105))),
-                        )
-                        add_or_replace_entry(
-                            props, "networkDamageStretchScale",
-                            repr(float(child.get(
-                                "network_damage_stretch_scale", 1.0))),
-                        )
-                for _key, _dict_key, _allowed in S16_SWITCHES:
-                    if _key not in child:
-                        continue
-                    _val = str(child[_key])
-                    if _val not in _allowed:
-                        raise SystemExit(
-                            f"create_cases.py: {child['child_id']}: {_key} "
-                            f"{_val!r} is not one of {', '.join(_allowed)}."
-                        )
-                    add_or_replace_entry(props, _dict_key, _val)
-                # S17 (2026-09-26): the implicit tangent coupling. Written only
-                # when the child names it, so every earlier child is
-                # byte-identical; refused beforehand by s17_value_refusal and
-                # s17_combination_refusal, for every child.
-                for _key, _dict_key, _allowed in S17_SWITCHES:
-                    if _key not in child:
-                        continue
-                    _val = str(child[_key])
-                    if _val not in _allowed:
-                        raise SystemExit(
-                            f"create_cases.py: {child['child_id']}: {_key} "
-                            f"{_val!r} is not one of {', '.join(_allowed)}."
-                        )
-                    add_or_replace_entry(props, _dict_key, _val)
-                # S17b (2026-09-27): slack fibres, field-unit arithmetic, the
-                # wall face. Same contract: written only when named.
-                for _key, _dict_key, _allowed in S17B_SWITCHES:
-                    if _key not in child:
-                        continue
-                    _val = str(child[_key])
-                    if _val not in _allowed:
-                        raise SystemExit(
-                            f"create_cases.py: {child['child_id']}: {_key} "
-                            f"{_val!r} is not one of {', '.join(_allowed)}."
-                        )
-                    add_or_replace_entry(props, _dict_key, _val)
-                # S18 (2026-09-29): A, B and E. Same contract: written only
-                # when named (C is networkPressureWeight, written with S13).
-                for _key, _dict_key, _allowed in S18_SWITCHES:
-                    if _key not in child:
-                        continue
-                    _val = str(child[_key])
-                    if _val not in _allowed:
-                        raise SystemExit(
-                            f"create_cases.py: {child['child_id']}: {_key} "
-                            f"{_val!r} is not one of {', '.join(_allowed)}."
-                        )
-                    add_or_replace_entry(props, _dict_key, _val)
-                # S18p (2026-10-01): the log-only probe. Same contract:
-                # written only when named, so every earlier dictionary is
-                # identical.
-                for _key, _dict_key, _allowed in S18P_SWITCHES:
-                    if _key not in child:
-                        continue
-                    _val = str(child[_key])
-                    if _val not in _allowed:
-                        raise SystemExit(
-                            f"create_cases.py: {child['child_id']}: {_key} "
-                            f"{_val!r} is not one of {', '.join(_allowed)}."
-                        )
-                    add_or_replace_entry(props, _dict_key, _val)
-                # S19 (2026-10-04): the block-coupled step and R3. Same
-                # contract: written only when named, so every earlier
-                # dictionary is identical (an absent key is the shipped step).
-                for _key, _dict_key, _allowed in S19_SWITCHES:
-                    if _key not in child:
-                        continue
-                    _val = str(child[_key])
-                    if _val not in _allowed:
-                        raise SystemExit(
-                            f"create_cases.py: {child['child_id']}: {_key} "
-                            f"{_val!r} is not one of {', '.join(_allowed)}."
-                        )
-                    add_or_replace_entry(props, _dict_key, _val)
-                if "tau_v_s" in child:
-                    add_or_replace_entry(props, "networkViscosityTau",
-                                         float(child["tau_v_s"]))
-
-        # The Courant bound on the MIXTURE MATERIAL velocity that advects c.
-        # maxCo bounds the fluid, which is the wrong velocity here: run
-        # 20260815-182036 held the fluid inside 0.5 while vsCourant climbed to
-        # 1.45, because the skeleton was moving seven times faster than the
-        # flow. Written explicitly rather than left to the solver default, so
-        # the value a run used is in its own dictionary.
+        # THE ANCHOR AND THE RELEASE TEST. All four default to the
+        # historical behaviour, so a child that names none of them is
+        # bit-for-bit what it was before 2026-08-24. Written
+        # UNCONDITIONALLY once any of them is on any child of the series,
+        # so a run's own dictionary always states which anchor it had --
+        # the sigmaD failure was invisible precisely because the case file
+        # said nothing about it.
         add_or_replace_entry(
             props,
-            "materialCourant",
-            f"{float(series.get('material_courant', 0.5)):.16g}",
+            "releaseSupportLimit",
+            f"{float(child.get('release_support_limit', 0.0)):.12g}",
         )
-        # The implicit stabiliser is raised for the ARTERIAL children. Run
-        # 20260811-051109 lost deform_s2000, _s4000 and _s8000 to SIGFPE inside
-        # solveSkeleton(): at that load the finite-strain geometric term stops
-        # being a contraction against an operator sized for the material
-        # stiffness alone. Raising K does not change the converged answer --
-        # the two laplacians it sits between cancel identically -- so this is a
-        # stabiliser, not a fudge. Whether it is ENOUGH is unknown; the
-        # divergence guard in the solver reports the answer either way.
-        #
-        # Keyed off the series declaring a map rather than off the series NAME:
-        # the demonstration child moved to an arteriolar rate too, and hard-
-        # wiring this to "deformation" would have silently left it at the
-        # venous factor of 1 at 1500 1/s, which is the load that produced the
-        # SIGFPEs in the first place.
-        implicit_factor = coupling["skeletonImplicitFactor"]
-        if "skeleton_implicit_factor" in series:
-            key = str(int(child["wall_shear_rate_1_s"]))
-            if key not in series["skeleton_implicit_factor"]:
-                raise ValueError(
-                    f"{child['child_id']}: series '{child['series']}' declares "
-                    f"skeleton_implicit_factor but has no entry for {key} 1/s. "
-                    f"Falling back to the default of "
-                    f"{coupling['skeletonImplicitFactor']} at arterial load is "
-                    f"how deform_s2000/_s4000/_s8000 were lost to SIGFPE in run "
-                    f"20260811-051109; refused rather than defaulted."
-                )
-            implicit_factor = series["skeleton_implicit_factor"][key]
-        add_or_replace_entry(props, "skeletonImplicitFactor", implicit_factor)
-
-        # THE PRESSURE FORCE ON THE SKELETON, absent until run
-        # 20260811-051109. On wherever deformation or detachment is the
-        # measurement; off for the growth series, which is only fitting an
-        # interface speed and whose published result must not move.
         add_or_replace_entry(
-            props, "skeletonPressureForce",
-            "yes" if series.get("skeleton_pressure_force", False) else "no",
+            props,
+            "bondHoldDilation",
+            str(int(child.get("bond_hold_dilation", -1))),
         )
+        add_or_replace_entry(
+            props,
+            "bondHoldPenalty",
+            f"{float(child.get('bond_hold_penalty', 0.0)):.12g}",
+        )
+        # THE CORE EXEMPTION, written ONLY when the child names it, so
+        # every other dictionary is byte-identical and keeps the solver
+        # default (true, .C L724-726). The Xu series turns it off
+        # (Alireza, 2026-09-29: nothing about the core is enforced).
+        # Refused beforehand where it would be inert
+        # (release_core_exempt_refusal).
+        if "release_core_exempt" in child:
+            add_or_replace_entry(
+                props,
+                "releaseCoreExempt",
+                "yes" if child["release_core_exempt"] else "no",
+            )
+
+        # THE BRINKMAN DRAG, GATED ON RELEASE. Off by default, so every
+        # child that predates it assembles the same matrix and no passed
+        # gate moves. See research/designs/
+        # AM2020_stage1_brinkman_implementation_plan.md.
+        #
+        # REFUSED HERE AS WELL AS IN THE SOLVER, and deliberately twice.
+        # The solver's FatalError costs a VM boot and an OpenFOAM restore
+        # to discover; this one costs nothing and names the child. Without
+        # advect_released the release mask is identically zero, the drag
+        # acts on detached material too, and the run would answer a
+        # question about a model that pins emboli in the lab frame.
+        brinkman = bool(True)
+
+
+        # THE SKELETON VOLUME FRACTION, and it is the largest
+        # uncertainty in the two-velocity formulation.
+        #
+        # chi = 1 - q is an INDICATOR, not a volume fraction: measured
+        # on run 20260904-214345, the median clot cell has q = 0.0066
+        # and 71.7% of clot cells have q < 0.05. Using chi as phi_s
+        # would leave phi_f ~ 0.007 -- blood essentially absent from
+        # the clot -- which contradicts the permeability model that
+        # lets blood seep through it.
+        #
+        # 0.01 is anchored, not guessed: He, Kim & Ku (source 23)
+        # report Wufsus et al. (2013) measuring a 1% platelet volume
+        # fraction at k = 1.1e-2 um2 = 1.1e-14 m2, and k0pcore here is
+        # 1e-14 m2. Written per child so a sweep over it is a
+        # dictionary change, not a code change.
+        add_or_replace_entry(
+            props,
+            "skeletonVolumeFraction",
+            repr(float(child.get("skeleton_volume_fraction", 0.01))),
+        )
+        # Vanishing-phase regularisation for the skeleton row of the
+        # 2x2 block. OpenFOAM calls it residualAlpha; Du & Fogelson
+        # describe the same fix as "temporarily increasing theta_b by a
+        # small positive constant".
+        add_or_replace_entry(
+            props,
+            "residualPhiS",
+            repr(float(child.get("residual_phi_s", 1e-4))),
+        )
+        # ANCHOR-INVARIANT SUPPORT for that regularisation. 0 = off,
+        # and off is byte-for-byte the previous behaviour.
+        #
+        # residualPhiS is an ABSOLUTE threshold on phi_s, but
+        # phi_s = chi*skeletonVolumeFraction, so the band it covers
+        # shrinks as the anchor rises. Run 20260906-101812 measured
+        # every one of the top 100 cells by |Vs| sitting at c > 0.99
+        # with Kres = 0 -- the regularisation had switched itself off
+        # in exactly the cells that were running away, because at
+        # phi_s0 = 0.45 the diffuse tail of c puts phi_s at 1.7e-04,
+        # above the 1e-4 threshold. At phi_s0 = 0.10 the same tail
+        # gives 3.8e-05 and Kres still fires.
+        #
+        # residual_chi measures the same ramp on chi instead, rescaled
+        # so the PEAK is still residualPhiS/deltaT. Region changes,
+        # strength does not.
+        add_or_replace_entry(
+            props,
+            "residualChi",
+            repr(float(child.get("residual_chi", 0.0))),
+        )
+        # THE DILUTE DRAG FLOOR, K >= k1*chi, in 1/s. Zero = off, and
+        # off reproduces every earlier child bit-for-bit.
+        #
+        # Kozeny-Carman is a PACKED-BED correlation and this solver
+        # evaluates it two decades below its range. Measured on run
+        # 20260907-111028, binning by chi: |Vs|/max|U| is 1.00 where
+        # compliance (elastic weight / total drag rate) is at or below
+        # ~1e-05 and 3.4-3.9 in chi = 0.005-0.1 where it reaches
+        # 3.0e-04. The floor pins compliance at exactly 1/k1 wherever
+        # it binds, so the peak cannot re-form somewhere else -- which
+        # widening residualChi (factor 2.2, measured) cannot do.
+        # Full table and the rejected alternatives are on
+        # skeletonDiluteDragRate_ in the solver header.
+        # SURFACE EROSION -- the only route by which this clot can
+        # let go. Bulk fracture is physically unreachable here
+        # (Gc/G = 1.39 m against a 40 um clot; Dg reached 6.4e-06 of
+        # 1.0 after 7.9 ms on run 20260908-010836), wall peel arrests
+        # once the remaining bonds unload (utilisation 0.985 -> 0.389),
+        # and the release criterion is a connectivity flood fill that
+        # cannot sever a connected tail. So the clot stretches without
+        # bound. Threshold sourced to 1.75-3.0 Pa: Xu (33) balance the
+        # accumulation and detachment coefficients at 500 1/s = 1.75 Pa
+        # and Wu (15) give tau_emb = 30 dyn/cm2 = 3.0 Pa = 865 1/s.
+        # THIS CASE RUNS AT 1000 1/s. The RATE is unsourced and swept,
+        # exactly as adhesiveStrength is. Zero = off and reproduces
+        # every earlier child byte for byte.
+        add_or_replace_entry(
+            props,
+            "clotErosionRate",
+            repr(float(child.get("clot_erosion_rate", 0.0))),
+        )
+        add_or_replace_entry(
+            props,
+            "clotErosionTauPa",
+            repr(float(child.get("clot_erosion_tau_pa", 3.0))),
+        )
+        add_or_replace_entry(
+            props,
+            "skeletonDiluteDragRate",
+            repr(float(child.get("skeleton_dilute_drag_rate", 0.0))),
+        )
+        # WHICH OPERATOR solveContentComponents() ASSEMBLES.
+        #
+        # `content` is the shipped Stage 1 model: upwind, no sources.
+        # `matched` is the T2a identity test: the captured
+        # phaseWeights_ plus the mapped source
+        # theta_ref*(-0.5*laplacian(mobility,muC) + 0.5*Vn*gradPhase),
+        # which makes it the exact conservative image of the legacy
+        # chi equation.
+        #
+        # VALIDATED HERE AS WELL AS IN THE SOLVER. The solver's
+        # lookupOrDefault returns "content" for a misspelling just as
+        # it does for a missing key, so the solver fatals on an
+        # unknown word -- but that costs a Colab boot to discover.
+        # Refusing it at generation costs nothing and fails on the
+        # machine that can fix it.
+        content_operator = str('content')
+        # ---- STAGE 2: THE ACCEPTED-TRANSFER GROWTH PATH ----
+        #
+        # This is the SECOND way solid enters the content, and the one
+        # a search for assignments to thetaH_ cannot see: it is written
+        # through an output parameter of
+        # plateletContent::applyAcceptedTransfer(). The first is the
+        # `matched` source above.
+        #
+        # THE TWO ARE MUTUALLY EXCLUSIVE and the solver refuses the
+        # combination outright, because both deposit solid and the
+        # inventory still balances -- each is internally paired, so
+        # nothing downstream catches it. Refused here as well, for the
+        # reason the contentOperator validation above gives: a Colab
+        # boot is an expensive place to learn this.
+        platelet_content = bool(
+            True
+        )
+        platelet_transport_only = bool(
+            child.get("platelet_transport_only", False)
+        )
+        # ---- STAGE 2: THE ACCEPTED-TRANSFER GROWTH PATH ----
+        #
+        # The SECOND way solid enters the content, and the one a
+        # search for assignments to thetaH_ cannot see: it is written
+        # through an output parameter of
+        # plateletContent::applyAcceptedTransfer(). The first is the
+        # `matched` source above, and the two are mutually exclusive.
+        validate_stage2_platelet(child, content_operator)
+        add_or_replace_entry(
+            props,
+            "plateletBindRate",
+            repr(float(child.get("platelet_bind_rate", 0.0))),
+        )
+        add_or_replace_entry(
+            props,
+            "plateletDiffusivity",
+            repr(float(child.get("platelet_diffusivity", 0.0))),
+        )
+        if "platelet_adhesion_speed" in child:
+            add_or_replace_entry(
+                props,
+                "plateletAdhesionSpeed",
+                repr(float(child["platelet_adhesion_speed"])),
+            )
+        # S4. DEFAULTS TO "transfer", for the same reason and by
+        # the same two-place rule as phaseDeltaBasis above: the
+        # solver's own fallback is "transfer" too, and this
+        # generator writes the key unconditionally, so flipping
+        # only the solver would have been cosmetic on this case.
+        # A child that wants the Stefan front must say
+        # phase_growth_driver "front" explicitly; em36 is pinned
+        # to it because its JSON entry must keep describing the
+        # run that exists.
+        cid = child.get("child_id")
+        growth_driver = str(
+            'transfer'
+        )
+        if float(
+            child.get("skeleton_volume_fraction", 0.0)
+        ) <= 0:
+            raise SystemExit(
+                "child %s: phase_growth_driver 'transfer' "
+                "divides by skeleton_volume_fraction, which "
+                "is %r. The conversion is "
+                "dc = -(2/theta_ref)*dtheta."
+                % (cid, child.get("skeleton_volume_fraction"))
+            )
+        if "platelet_yield_m3" in child:
+            add_or_replace_entry(
+                props,
+                "plateletYield",
+                repr(float(child["platelet_yield_m3"])),
+            )
+        if platelet_transport_only:
+            add_or_replace_entry(
+                props, "plateletTransportOnly", "yes"
+            )
+        write_platelet_number_density(
+            case,
+            float(child["platelet_number_density_m3"]),
+            float(child.get(
+                "platelet_inlet_density_m3",
+                child["platelet_number_density_m3"])),
+        )
+        # nP IS SOLVED, so it needs a linear solver, and
+        # solvePlateletContent calls nEqn.flux() for the boundary
+        # inventory, which needs fluxRequired. Neither is in the
+        # shared template -- no previous main-case child ran the
+        # platelet equation. Both were missing from run
+        # 20260915-062201; the restart contract fatalled first, so
+        # they would have been the next two failures, one run each.
+        # NO div SCHEME IS NEEDED: plateletContent::transportEqn
+        # builds explicit upwind weights rather than looking one
+        # up (.C:7098-7101).
+        solution = case / "system" / "fvSolution"
+        solution_text = solution.read_text()
+        if not re.search(r"(?m)^\s*nP\s*$", solution_text):
+            entry = (
+                "    nP\n"
+                "    {\n"
+                "        solver smoothSolver;\n"
+                "        smoother symGaussSeidel;\n"
+                "        tolerance 1e-12;\n"
+                "        relTol 0;\n"
+                "    }\n"
+                "    nPFinal\n"
+                "    {\n"
+                "        $nP;\n"
+                "        relTol 0;\n"
+                "    }\n"
+            )
+            patched, count = re.subn(
+                r"(?m)^\}\n\nPIMPLE", entry + "}\n\nPIMPLE",
+                solution_text, count=1)
+            if count != 1:
+                raise SystemExit(
+                    "child %s: could not place the nP solver entry "
+                    "in fvSolution -- the `}\\n\\nPIMPLE` anchor "
+                    "the template has always had is gone, and a "
+                    "silent skip would fatal in Colab"
+                    % (child.get("child_id"),)
+                )
+            solution.write_text(patched)
+        schemes = case / "system" / "fvSchemes"
+        schemes_text = schemes.read_text()
+        if "fluxRequired" not in schemes_text:
+            schemes.write_text(
+                schemes_text.rstrip("\n")
+                + "\n\n// nEqn.flux() supplies the measured "
+                  "boundary inventory flux.\nfluxRequired\n{\n"
+                  "    default no;\n    nP;\n}\n"
+            )
+        elif not re.search(r"fluxRequired\s*\{[^}]*\bnP\s*;",
+                           schemes_text, re.S):
+            raise SystemExit(
+                "child %s: fvSchemes already has a fluxRequired "
+                "block that does not name nP; merging it blindly "
+                "could drop an entry another field needs."
+                % (child.get("child_id"),)
+            )
+        # Declared volume per bound platelet-equivalent. Inert while
+        # kinetics are off -- Stage 1 multiplies nothing by it -- so
+        # the placeholder cannot silently acquire authority before it
+        # is sourced.
+        add_or_replace_entry(
+            props, "vP", repr(float(child.get("v_p_m3", 1e-17)))
+        )
+        # THE NETWORK PRESSURE. Run 20260905-113709 conserved the
+        # clot to 2.4e-05 and then drove c to -2.74 at STEP 4: phi_s
+        # nearly doubled and nothing in the model could object,
+        # because elasticStress() is dev(be) only and `be` is an
+        # INCOMPRESSIBLE neo-Hookean with det(be) = 1 enforced -- the
+        # constitutive model had no bulk modulus anywhere.
+        #
+        # p_n = K_n*(phi_s - phi_s0)/(phi_s_max - phi_s), Cogan & Guy
+        # Eq. 19. K_n = networkPressureCoeff * gD * G: the default of
+        # 1.0 introduces NO new number, since a cross-linked gel's
+        # bulk modulus is of the same order as its shear modulus and
+        # reusing GField_ inherits the core/shell contrast. Anchored,
+        # not fitted -- written per child so it can be swept.
+        add_or_replace_entry(
+            props,
+            "networkPressureCoeff",
+            repr(float(child.get("network_pressure_coeff", 1.0))),
+        )
+        # Close packing, where p_n diverges. 0.6 is Du & Fogelson
+        # Eq. 2.25's theta_b_max, after Wufsus et al. 2013 -- the same
+        # paper skeletonVolumeFraction is anchored to.
+        #
+        # READ THIS BEFORE REUSING 0.6: it is the anchor of their DRAG
+        # coefficient xi(theta_b), not of a pressure, and Cogan & Guy
+        # -- the source the pressure law is taken from -- prescribe a
+        # CUBIC with a double root at phi_n = 0 rather than a pole
+        # anywhere. See research/literature/AM.2020.0056-19/
+        # NETWORK_COMPACTION_AUDIT.md. phiSMax is UNUSED when
+        # networkPressureModel is cubic; it is still written so the
+        # dictionary records what the run was configured with.
+        add_or_replace_entry(
+            props,
+            "phiSMax",
+            repr(float(child.get("phi_s_max", 0.6))),
+        )
+        # poleAtMax (default, the shipped law) or cubic. The pole form
+        # applies a finite suction wherever there is a trace of
+        # network, because p_n(0) = -K_n*phi_s0/phi_s_max is not zero;
+        # run 20260905-223740 measured 88 diffuse-edge cells above
+        # max|U| at phi_s0 = 0.10, one at |Vs|/|U| = 646. The cubic has
+        # a double root at phi_s = 0 and the fringe term falls from
+        # O(phi_s) to O(phi_s^3). Default left at poleAtMax so no
+        # existing child moves.
+        #
+        # poleCubic, ADDED 2026-09-21, is the cubic multiplied by
+        # (phiSMax - phi_s0)/(phiSMax - phi_s): the double root at
+        # zero AND a pole at close packing. Both shipped laws have
+        # exactly one of those and each lost a run for want of the
+        # other -- poleAtMax SIGFPE at t = 9.71e-05 s
+        # (20260906-210336), cubic phiSOverNominal 1.1913 and still
+        # accelerating at 4e-03 s (20260921-072935) once k0p moved to
+        # Xu's values and the Darcy load rose two decades. Properties
+        # and pricing in scripts/check_network_pressure_law.py.
+        #
+        # REFUSED HERE AS WELL AS IN THE SOLVER. The solver
+        # FatalErrors on an unknown name, which costs a VM boot; a
+        # typo should not. The set is asserted equal to the solver's
+        # by check_network_pressure_law.py so the two cannot drift.
+        _npm = str('convexExcess')
+
+
+
+
+        # S13 (2026-09-23): the grid-scale restoring of run
+        # 20260923-135545 (research/designs/2026-09-23-S13-grid-scale-
+        # restoring.md). Same contract as S10-S12.
+        for _key, _dict_key, _allowed in S13_SWITCHES:
+            if _key not in child:
+                continue
+            _val = str(child[_key])
+            if _val not in _allowed:
+                raise SystemExit(
+                    f"create_cases.py: {child['child_id']}: {_key} "
+                    f"{_val!r} is not one of {', '.join(_allowed)}."
+                )
+            add_or_replace_entry(props, _dict_key, _val)
+
+
+        # S16 (2026-09-24): terminal rupture with a timed release,
+        # the damage carried as content, the occupancy floor and the
+        # tensile pressure damage (research/designs/2026-09-24-S16-
+        # timed-terminal-rupture.md). Same contract as S10-S15: every
+        # key is written only when the child names it (or, for the
+        # terminalRelease parameters, only with the switch that reads
+        # them), so every earlier child's dictionary is byte-identical.
+        # Refused beforehand by s16_value_refusal and
+        # s16_combination_refusal, for every child.
+        _prog = bool(True)
+        add_or_replace_entry(
+            props, "networkCriticalStretch",
+            repr(float(child.get("network_critical_stretch", 2.8))),
+        )
+        add_or_replace_entry(
+            props, "networkReleaseTime",
+            repr(float(child.get("network_release_time_s", 3.3e-4))),
+        )
+        add_or_replace_entry(
+            props, "networkDamageOnsetStretch",
+            repr(float(child.get(
+                "network_damage_onset_stretch", 2.105))),
+        )
+        add_or_replace_entry(
+            props, "networkDamageStretchScale",
+            repr(float(child.get(
+                "network_damage_stretch_scale", 1.0))),
+        )
+        # S18p (2026-10-01): the log-only probe. Same contract:
+        # written only when named, so every earlier dictionary is
+        # identical.
+        for _key, _dict_key, _allowed in S18P_SWITCHES:
+            if _key not in child:
+                continue
+            _val = str(child[_key])
+            if _val not in _allowed:
+                raise SystemExit(
+                    f"create_cases.py: {child['child_id']}: {_key} "
+                    f"{_val!r} is not one of {', '.join(_allowed)}."
+                )
+            add_or_replace_entry(props, _dict_key, _val)
+        # S19 (2026-10-04): the block-coupled step and R3. Same
+        # contract: written only when named, so every earlier
+        # dictionary is identical (an absent key is the shipped step).
+        for _key, _dict_key, _allowed in S19_SWITCHES:
+            if _key not in child:
+                continue
+            _val = str(child[_key])
+            if _val not in _allowed:
+                raise SystemExit(
+                    f"create_cases.py: {child['child_id']}: {_key} "
+                    f"{_val!r} is not one of {', '.join(_allowed)}."
+                )
+            add_or_replace_entry(props, _dict_key, _val)
+        if "tau_v_s" in child:
+            add_or_replace_entry(props, "networkViscosityTau",
+                                 float(child["tau_v_s"]))
+
+
         # ON only for the demonstration series. Everywhere else the bond never
         # fails, so `released` would be identically zero -- but an fvm::div
         # with a zero flux still enters the matrix, and the growth and
@@ -4690,24 +2696,11 @@ def main() -> int:
         # `advecting` still records the SERIES intent, because Allrun reads it
         # from matrix.json to decide whether a child gets a transport stage at
         # all. What changes is that the dictionary the PEEL runs with says no.
-        advecting = bool(series.get("advect_released", False))
-        add_or_replace_entry(
-            props, "advectReleased", "yes" if advecting else "no"
-        )
+        advecting = bool(True)
         for key, value in {
-            "shearEnhancementModel": growth["shearEnhancementModel"],
             "gammaLow": growth["gammaLow_1_s"],
             "gammaHigh": growth["gammaHigh_1_s"],
             "enhancementMax": growth["enhancementMax"],
-            # THE GROWTH CLOSURE, written explicitly on every child from
-            # 2026-09-02. The solver DEFAULTS to "gradient" so that an old
-            # dictionary reproduces an old run byte for byte; nothing here may
-            # rely on that default, because a child that silently fell back to
-            # it would be a different model reported under the same name.
-            "growthClosure": growth.get("growthClosure", "reaction"),
-            "interfaceDepletionModel": growth.get(
-                "interfaceDepletionModel", "none"
-            ),
         }.items():
             add_or_replace_entry(props, key, value)
 
@@ -5004,26 +2997,25 @@ def main() -> int:
         #     wrapped in the very loop the reformulation removes -- and the
         #     speedup is the number this stage exists to produce. The slab
         #     gate that qualified the formulation ran nOuterCorrectors 1.
-        if eulerian_solid:
-            for key, block in {
-                "Us": "solver smoothSolver; smoother symGaussSeidel; "
-                      "tolerance 1e-12; relTol 0;",
-                "be": "solver PBiCGStab; preconditioner DILU; "
-                      "tolerance 1e-12; relTol 0;",
-            }.items():
-                for name in (key, key + "Final"):
-                    text = solution.read_text()
-                    pattern = re.compile(
-                        rf"(?m)^(\s*){re.escape(name)}\s*\{{[^}}]*\}}"
+        for key, block in {
+            "Us": "solver smoothSolver; smoother symGaussSeidel; "
+                  "tolerance 1e-12; relTol 0;",
+            "be": "solver PBiCGStab; preconditioner DILU; "
+                  "tolerance 1e-12; relTol 0;",
+        }.items():
+            for name in (key, key + "Final"):
+                text = solution.read_text()
+                pattern = re.compile(
+                    rf"(?m)^(\s*){re.escape(name)}\s*\{{[^}}]*\}}"
+                )
+                if not pattern.search(text):
+                    raise ValueError(
+                        f"{child_id}: no {name} block to replace in "
+                        f"{solution}; the template changed shape"
                     )
-                    if not pattern.search(text):
-                        raise ValueError(
-                            f"{child_id}: no {name} block to replace in "
-                            f"{solution}; the template changed shape"
-                        )
-                    solution.write_text(
-                        pattern.sub(rf"\g<1>{name} {{ {block} }}", text, count=1)
-                    )
+                solution.write_text(
+                    pattern.sub(rf"\g<1>{name} {{ {block} }}", text, count=1)
+                )
 
         # 1 is the default on the Eulerian path for the reason in (3), but it
         # is now overridable per child. Run 20260818-081527 left a live
@@ -5037,14 +3029,7 @@ def main() -> int:
         # arm rather than being assumed away.
         outer = child.get("n_outer_correctors")
         if outer is None:
-            outer = 1 if eulerian_solid else coupling["nOuterCorrectors"]
-        elif not eulerian_solid:
-            raise ValueError(
-                f"{child_id}: n_outer_correctors is an Eulerian-path override; "
-                f"on the partitioned path nOuterCorrectors is the shared FSI "
-                f"number and setting it per child would silently desynchronise "
-                f"this child from every other one it is compared against."
-            )
+            outer = 1
         replace_entry(solution, "nOuterCorrectors", int(outer))
         # S17 B (design 2B): the PISO corrector count per child -- 6 with
         # final_relaxation_unity, 2-4 in the named discriminators. Absent,
@@ -5053,49 +3038,6 @@ def main() -> int:
                       int(child.get("n_correctors", coupling["nCorrectors"])))
         mural_gen.replace_relaxation(solution, "p", coupling["pRelaxation"])
         mural_gen.replace_relaxation(solution, "U", coupling["URelaxation"])
-        # UNLIMITED LINEAR CONVECTION, BOTH EQUATIONS, AS A DIAGNOSTIC.
-        #
-        # gate_a_nodiff (run 20260822-100024) left |Wp - q| at 2.27e-4 with
-        # D = k = alpha = mobility = 0, Euler ddt, the SAME stored flux and a
-        # guard-verified token-identical `bounded Gauss vanLeer` on both
-        # equations, starting from Wp = q exactly. Step 1 is exact; ~1.3e-6 is
-        # injected per step from step 2 and accumulates linearly. 7528 of
-        # 12500 cells stay bit-identical, so it is not a global mismatch.
-        #
-        # The remaining suspect is the LIMITER: vanLeer weights are computed
-        # from the transported field -- from c in one equation and from Wp in
-        # the other. The argument that this is safe rests on the limiter ratio
-        # being invariant under the affine map q = 0.5*(c+1). The measurement
-        # contradicts that argument, and OpenFOAM's scalar limiter internals
-        # cannot be read on this machine, so it is TESTED rather than guessed.
-        #
-        # `linear` weights are field-independent, hence provably identical for
-        # c and Wp. If the deviation collapses to machine precision the limiter
-        # is the cause; if it survives, the cause is outside the convection
-        # operator entirely. Both entries are rewritten TOGETHER from one flag
-        # -- they cannot desynchronise, and verify_platelet_carrier_scheme()
-        # below still enforces token-identity afterwards.
-        #
-        # Unlimited linear on a sharp interface WILL oscillate. That is
-        # acceptable for a 1e-3 s diagnostic and c bounds are reported. This is
-        # not a configuration any production run may use.
-        if child.get("linear_schemes"):
-            schemes = case / "system" / "fvSchemes"
-            text = schemes.read_text()
-            # Only the c entry now. The Wp equation has no scheme of its own
-            # -- it reuses c's captured weights -- so changing c changes BOTH
-            # sides by construction, which is what this probe wanted all along
-            # and now gets for free.
-            for name in ("div(phiReleased,c)",):
-                text, n = re.subn(
-                    rf"(?m)^(\s*{re.escape(name)}\s+)[^;]+;",
-                    lambda m: f"{m.group(1)}bounded Gauss linear;", text, count=1,
-                )
-                if n != 1:
-                    raise ValueError(
-                        f"{schemes}: linear_schemes could not rewrite {name}"
-                    )
-            schemes.write_text(text)
 
         # THE be ADVECTION SCHEME. Rewritten PER CHILD rather than in the
         # template, because the template is shared with
@@ -5148,76 +3090,7 @@ def main() -> int:
                     f"{got.group(1).strip() if got else None!r}"
                 )
 
-        # LINEAR-SOLVER FLOOR PROBE. Tightens ONLY the c and w solvers.
-        #
-        # gate_a_nodiff landed at |Wp - q| = 2.589e-11 against a 1e-11 limit
-        # (run 20260823-002216) with the limiter fix in and D = 0, i.e. with
-        # nothing left that is known to be wrong. Accumulated linear-solver
-        # error over 395 steps at `tolerance 1e-12` could plausibly account for
-        # it, which would make 1e-11 too tight -- but relaxing a limit because
-        # it has become inconvenient is the exact pattern that hid this defect
-        # for four runs. So it is MEASURED instead.
-        #
-        # THE FIRST ATTEMPT AT THIS PROBE MEASURED NOTHING, run 20260823-010445.
-        # `gate_a_tol` asked for 1e-14 and got 2.5894e-11 against the 1e-12
-        # control's 2.5893e-11. The reason is that the REQUESTED TOLERANCE WAS
-        # NEVER BINDING: smoothSolver goes from an initial residual of 3.2e-04
-        # to a FINAL residual of 3.2e-15 in three iterations, overshooting 1e-12
-        # by three orders, and 1e-14 lands inside the same jump -- identical
-        # iteration counts, final residuals 3.19962e-15 against 3.19928e-15.
-        # Fifth test in this project set up where the mechanism under test could
-        # not act. Read the ACHIEVED residual before choosing a tolerance.
-        #
-        # The corrected probe asks for a tolerance BELOW the achieved 3e-15 and
-        # caps the iteration count, so Gauss-Seidel sweeps to its own round-off
-        # floor instead of exiting on a satisfied criterion. That needs
-        # `platelet_solver_maxiter` alongside the tolerance -- without a cap an
-        # unreachable tolerance runs to the 1000-iteration default on every
-        # solve of every step.
-        #
-        # p, U, be, Dg and Us are deliberately untouched -- changing them would
-        # alter the flow and the probe would no longer be one variable. c and w
-        # are both tightened because BOTH solves contribute to |Wp - q|; Wp
-        # inherits w's entry via `$w`.
-        if child.get("platelet_solver_tolerance"):
-            tol = child["platelet_solver_tolerance"]
-            text = solution.read_text()
-            for field in ("c", "w"):
-                text, n = re.subn(
-                    rf"(?m)^(\s*{field}\s*\{{[^}}]*?tolerance\s+)[^;]+;",
-                    lambda m: f"{m.group(1)}{tol};", text, count=1,
-                )
-                if n != 1:
-                    raise ValueError(
-                        f"{solution}: could not set the {field} solver "
-                        f"tolerance; the fvSolution layout changed"
-                    )
-            solution.write_text(text)
 
-        # The iteration cap that makes an unreachable tolerance affordable.
-        # Applied to the same two entries and only those; Wp inherits w's via
-        # `$w`, and the `Final` variants inherit through `$c` / `$w` too.
-        if child.get("platelet_solver_maxiter"):
-            iters = int(child["platelet_solver_maxiter"])
-            text = solution.read_text()
-            for field in ("c", "w"):
-                text, n = re.subn(
-                    rf"(?m)^(\s*{field}\s*\{{[^}}]*?relTol\s+0;\s*)\}}",
-                    lambda m: f"{m.group(1)}maxIter {iters}; }}",
-                    text, count=1,
-                )
-                if n != 1:
-                    raise ValueError(
-                        f"{solution}: could not set the {field} solver "
-                        f"maxIter; the fvSolution layout changed"
-                    )
-            solution.write_text(text)
-            check = solution.read_text()
-            if check.count(f"maxIter {iters};") != 2:
-                raise ValueError(
-                    f"{solution}: expected exactly 2 maxIter entries, found "
-                    f"{check.count(f'maxIter {iters};')}"
-                )
 
         # S14: the rupture label's linear solver, ONLY for a child that
         # solves it, so every other child's fvSolution is byte-identical. The
@@ -5225,54 +3098,52 @@ def main() -> int:
         # template's anchor is gone. It is shell_'s class of equation (the
         # same shared operator on the same carrier), so it takes shell's
         # solver, $c.
-        rupture = child.get("network_rupture", "off") != "off"
-        if rupture:
-            solution_text = solution.read_text()
-            if not re.search(r"(?m)^\s*ruptured\s*\{", solution_text):
-                entry = (
-                    "    // S14: the rupture label, carried with the material "
-                    "like shell.\n"
-                    "    ruptured { $c; }\n"
-                    "    rupturedFinal { $c; relTol 0; }\n"
+        rupture = True
+        solution_text = solution.read_text()
+        if not re.search(r"(?m)^\s*ruptured\s*\{", solution_text):
+            entry = (
+                "    // S14: the rupture label, carried with the material "
+                "like shell.\n"
+                "    ruptured { $c; }\n"
+                "    rupturedFinal { $c; relTol 0; }\n"
+            )
+            patched, count = re.subn(
+                r"(?m)^\}\n\nPIMPLE", entry + "}\n\nPIMPLE",
+                solution_text, count=1)
+            if count != 1:
+                raise SystemExit(
+                    "child %s: could not place the ruptured solver entry "
+                    "in fvSolution -- the `}\\n\\nPIMPLE` anchor is gone, "
+                    "and a silent skip would fatal in Colab"
+                    % (child.get("child_id"),)
                 )
-                patched, count = re.subn(
-                    r"(?m)^\}\n\nPIMPLE", entry + "}\n\nPIMPLE",
-                    solution_text, count=1)
-                if count != 1:
-                    raise SystemExit(
-                        "child %s: could not place the ruptured solver entry "
-                        "in fvSolution -- the `}\\n\\nPIMPLE` anchor is gone, "
-                        "and a silent skip would fatal in Colab"
-                        % (child.get("child_id"),)
-                    )
-                solution.write_text(patched)
+            solution.write_text(patched)
         # S16 C: the partition's three linear solvers, ONLY for a child that
         # carries it, placed exactly as the ruptured entry is. They are
         # thetaC's class of equation (the same conservative upwind matrix on
         # the same carrier), so they take thetaC's solver, $c.
-        partition = child.get("damage_transport") == "contentPartition"
-        if partition:
-            solution_text = solution.read_text()
-            if not any(re.search(rf"(?m)^\s*{f}\s*\{{", solution_text)
-                       for f in S16_PARTITION_FIELDS):
-                entry = (
-                    "    // S16: the damage partition of the network content, "
-                    "carried like thetaC.\n"
-                    + "".join(
-                        f"    {f} {{ $c; }}\n    {f}Final {{ $c; relTol 0; }}\n"
-                        for f in S16_PARTITION_FIELDS)
+        partition = True
+        solution_text = solution.read_text()
+        if not any(re.search(rf"(?m)^\s*{f}\s*\{{", solution_text)
+                   for f in S16_PARTITION_FIELDS):
+            entry = (
+                "    // S16: the damage partition of the network content, "
+                "carried like thetaC.\n"
+                + "".join(
+                    f"    {f} {{ $c; }}\n    {f}Final {{ $c; relTol 0; }}\n"
+                    for f in S16_PARTITION_FIELDS)
+            )
+            patched, count = re.subn(
+                r"(?m)^\}\n\nPIMPLE", entry + "}\n\nPIMPLE",
+                solution_text, count=1)
+            if count != 1:
+                raise SystemExit(
+                    "child %s: could not place the damage-partition solver "
+                    "entries in fvSolution -- the `}\\n\\nPIMPLE` anchor "
+                    "is gone, and a silent skip would fatal in Colab"
+                    % (child.get("child_id"),)
                 )
-                patched, count = re.subn(
-                    r"(?m)^\}\n\nPIMPLE", entry + "}\n\nPIMPLE",
-                    solution_text, count=1)
-                if count != 1:
-                    raise SystemExit(
-                        "child %s: could not place the damage-partition solver "
-                        "entries in fvSolution -- the `}\\n\\nPIMPLE` anchor "
-                        "is gone, and a silent skip would fatal in Colab"
-                        % (child.get("child_id"),)
-                    )
-                solution.write_text(patched)
+            solution.write_text(patched)
 
         # S16 E (H-P4, em65 only): the final PIMPLE iteration relaxes neither
         # U nor p. OpenFOAM 13 looks up "<name>Final" on the final iteration
@@ -5306,85 +3177,80 @@ def main() -> int:
         # partition's are, with thetaC's solver (the same conservative upwind
         # matrix on the same carrier). S17 C: the Vs predictor's solver --
         # asymmetric M-matrix, so smoothSolver (U's) or PBiCGStab.
-        fibre = child.get("network_rupture") == "fibreRelease"
-        implicit_tangent = child.get("elastic_coupling") == "implicitTangent"
-        if fibre or implicit_tangent:
-            solution_text = solution.read_text()
-            entry = ""
-            if fibre:
-                if any(re.search(rf"(?m)^\s*{f}\s*\{{", solution_text)
-                       for f in S17_FIBRE_FIELDS):
-                    raise SystemExit(
-                        "child %s: fvSolution already declares a pending-fibre "
-                        "solver; the template changed" % (child.get("child_id"),))
-                if str(child.get("fibre_slack", "off")) == "v1":
-                    # S17b section 8 a: the passengers run P2's fixed entry
-                    entry += (
-                        "    // S17 A: the pending fibre's contents, carried with "
-                        "thetaPending (S17b section 8 a: its fixed entry).\n"
-                        + "".join(
-                            f"    {f} {S17B_FIXED_SWEEP_ENTRY}\n"
-                            f"    {f}Final {S17B_FIXED_SWEEP_ENTRY}\n"
-                            for f in S17_FIBRE_FIELDS)
-                    )
-                else:
-                    entry += (
-                        "    // S17 A: the pending fibre's contents, carried with "
-                        "thetaPending.\n"
-                        + "".join(
-                            f"    {f} {{ $c; }}\n    {f}Final {{ $c; relTol 0; }}\n"
-                            for f in S17_FIBRE_FIELDS)
-                    )
-            if implicit_tangent:
-                if re.search(r"(?m)^\s*Vs\s*\{", solution_text):
-                    raise SystemExit(
-                        "child %s: fvSolution already declares Vs; the "
-                        "template changed" % (child.get("child_id"),))
-                vs_solver = str(child.get("vs_linear_solver", S17_VS_SOLVERS[0]))
-                vs_body = (
-                    "solver smoothSolver; smoother symGaussSeidel;"
-                    if vs_solver == "smoothSolver"
-                    else "solver PBiCGStab; preconditioner DILU;"
-                )
-                entry += (
-                    "    // S17 C: the Vs predictor (asymmetric M-matrix).\n"
-                    f"    Vs {{ {vs_body} tolerance 1e-12; relTol 0; }}\n"
-                    "    VsFinal { $Vs; relTol 0; }\n"
-                )
-            patched, count = re.subn(
-                r"(?m)^\}\n\nPIMPLE", entry + "}\n\nPIMPLE",
-                solution_text, count=1)
-            if count != 1:
-                raise SystemExit(
-                    "child %s: could not place the S17 solver entries in "
-                    "fvSolution -- the `}\\n\\nPIMPLE` anchor is gone"
-                    % (child.get("child_id"),))
-            solution.write_text(patched)
+        fibre = True
+        implicit_tangent = True
+        solution_text = solution.read_text()
+        entry = ""
+        if any(re.search(rf"(?m)^\s*{f}\s*\{{", solution_text)
+               for f in S17_FIBRE_FIELDS):
+            raise SystemExit(
+                "child %s: fvSolution already declares a pending-fibre "
+                "solver; the template changed" % (child.get("child_id"),))
+        # S17b section 8 a: the passengers run P2's fixed entry
+        entry += (
+            "    // S17 A: the pending fibre's contents, carried with "
+            "thetaPending (S17b section 8 a: its fixed entry).\n"
+            + "".join(
+                f"    {f} {S17B_FIXED_SWEEP_ENTRY}\n"
+                f"    {f}Final {S17B_FIXED_SWEEP_ENTRY}\n"
+                for f in S17_FIBRE_FIELDS)
+        )
+        if re.search(r"(?m)^\s*Vs\s*\{", solution_text):
+            raise SystemExit(
+                "child %s: fvSolution already declares Vs; the "
+                "template changed" % (child.get("child_id"),))
+        vs_solver = str(child.get("vs_linear_solver", S17_VS_SOLVERS[0]))
+        # Refuse rather than substitute (report 14): the branch below writes
+        # PBiCGStab for any value but smoothSolver, so PCG -- invalid on this
+        # asymmetric matrix -- would otherwise run silently as PBiCGStab.
+        if vs_solver not in S17_VS_SOLVERS:
+            raise SystemExit(
+                "child %s: vs_linear_solver %r is not one of %s; the Vs "
+                "matrix is asymmetric, so PCG is never valid"
+                % (child.get("child_id"), vs_solver, S17_VS_SOLVERS))
+        vs_body = (
+            "solver smoothSolver; smoother symGaussSeidel;"
+            if vs_solver == "smoothSolver"
+            else "solver PBiCGStab; preconditioner DILU;"
+        )
+        entry += (
+            "    // S17 C: the Vs predictor (asymmetric M-matrix).\n"
+            f"    Vs {{ {vs_body} tolerance 1e-12; relTol 0; }}\n"
+            "    VsFinal { $Vs; relTol 0; }\n"
+        )
+        patched, count = re.subn(
+            r"(?m)^\}\n\nPIMPLE", entry + "}\n\nPIMPLE",
+            solution_text, count=1)
+        if count != 1:
+            raise SystemExit(
+                "child %s: could not place the S17 solver entries in "
+                "fvSolution -- the `}\\n\\nPIMPLE` anchor is gone"
+                % (child.get("child_id"),))
+        solution.write_text(patched)
         # S17b A1 (V1): the taut share's solver, and the SAME fixed-sweep
         # entry for the pending content and the taut share (the solver
         # refuses anything else: theta_T <= theta_P exactly, 06).
-        slack_v1 = str(child.get("fibre_slack", "off")) == "v1"
-        if slack_v1:
-            solution_text = solution.read_text()
-            old_pend = ("    thetaPending { $c; }\n"
-                        "    thetaPendingFinal { $c; relTol 0; }\n")
-            if solution_text.count(old_pend) != 1:
-                raise SystemExit(
-                    "child %s: the S16 thetaPending entries are not where the "
-                    "S17b fixed-sweep rewrite expects them" % (child.get("child_id"),))
-            if re.search(r"(?m)^\s*thetaTaut\s*\{", solution_text):
-                raise SystemExit(
-                    "child %s: fvSolution already declares thetaTaut; the "
-                    "template changed" % (child.get("child_id"),))
-            new_pend = (
-                "    // S17b A1 and section 8 a: the pending content, its taut "
-                "share and the two passengers\n"
-                "    // run ONE fixed-sweep entry (theta_T <= theta_P exactly; "
-                "the solver refuses anything else).\n"
-                + "".join(f"    {f} {S17B_FIXED_SWEEP_ENTRY}\n"
-                          for f in ("thetaPending", "thetaPendingFinal",
-                                    "thetaTaut", "thetaTautFinal")))
-            solution.write_text(solution_text.replace(old_pend, new_pend))
+        slack_v1 = str('v1') == "v1"
+        solution_text = solution.read_text()
+        old_pend = ("    thetaPending { $c; }\n"
+                    "    thetaPendingFinal { $c; relTol 0; }\n")
+        if solution_text.count(old_pend) != 1:
+            raise SystemExit(
+                "child %s: the S16 thetaPending entries are not where the "
+                "S17b fixed-sweep rewrite expects them" % (child.get("child_id"),))
+        if re.search(r"(?m)^\s*thetaTaut\s*\{", solution_text):
+            raise SystemExit(
+                "child %s: fvSolution already declares thetaTaut; the "
+                "template changed" % (child.get("child_id"),))
+        new_pend = (
+            "    // S17b A1 and section 8 a: the pending content, its taut "
+            "share and the two passengers\n"
+            "    // run ONE fixed-sweep entry (theta_T <= theta_P exactly; "
+            "the solver refuses anything else).\n"
+            + "".join(f"    {f} {S17B_FIXED_SWEEP_ENTRY}\n"
+                      for f in ("thetaPending", "thetaPendingFinal",
+                                "thetaTaut", "thetaTautFinal")))
+        solution.write_text(solution_text.replace(old_pend, new_pend))
         verify_linear_solvers_exist(
             solution, core_shell, eulerian_solid, rupture=rupture,
             partition=partition, fibre=fibre,
@@ -5428,23 +3294,10 @@ def main() -> int:
                 or (child.get("Gc_j_m2") or fixed["Gc_j_m2"])
             ),
             "k0p_core_m2": child.get("k0p_core_m2"),
-            "permeability_model": child.get(
-                "permeability_model",
-                series.get(
-                    "permeability_model", controls["porosity_axis"]["model"]
-                ),
-            ),
-            "skeleton_diffuse_domain": bool(
-                series.get("skeleton_diffuse_domain", False)
-            ),
-            "phase_field_material_velocity": bool(
-                series.get("phase_field_material_velocity", False)
-            ),
             # tear_measurement locates the tear by Dg > DgDetach, so the
             # threshold has to travel with the child rather than being
             # re-guessed downstream.
             "DgDetach": fixed["DgDetach"],
-            "advect_released": advecting,
             # THE ANCHOR, IN THE MANIFEST. Recorded so the assessor can check
             # that the case a child ran actually carried the anchor its
             # child_id claims, instead of trusting the id.
@@ -5453,13 +3306,6 @@ def main() -> int:
             ),
             "bond_hold_dilation": int(child.get("bond_hold_dilation", -1)),
             "bond_hold_penalty": float(child.get("bond_hold_penalty", 0.0)),
-            "bond_hold_carrier": bool(child.get("bond_hold_carrier", False)),
-            "bond_hold_taper": bool(child.get("bond_hold_taper", False)),
-            # THE SECOND ANCHOR, in the manifest for the same reason as the
-            # first: bk_ctl and bk_on differ only in this key and in the
-            # bond-hold keys above, and the assessor must be able to check
-            # that from the manifest rather than from the child_id.
-            "eulerian_brinkman": bool(child.get("eulerian_brinkman", False)),
             # No transport_stage key: the restart is gone and nothing reads it.
             # Leaving a dead field in matrix.json invites the next reader to
             # believe a two-stage run still happens.
@@ -5472,32 +3318,19 @@ def main() -> int:
         _s16_keys = ("damage_transport", "skeleton_floor_basis",
                      "network_pressure_damage", "network_release_time_s",
                      "network_damage_progressive")
-        if (child.get("network_rupture") in ("terminalRelease", "fibreRelease")
-                or any(k in child for k in _s16_keys)):
-            _term = child.get("network_rupture") in ("terminalRelease",
-                                                     "fibreRelease")
-            _prog = bool(child.get("network_damage_progressive", True))
-            spec["s16"] = {
-                "networkRupture": str(child.get("network_rupture", "off")),
-                "networkCriticalStretch": float(
-                    child.get("network_critical_stretch", 2.8)),
-                "networkReleaseTime": float(
-                    child.get("network_release_time_s", 3.3e-4)),
-                "networkDamageProgressive": "on" if _prog else "off",
-                "networkDamageOnsetStretch": float(
-                    child.get("network_damage_onset_stretch", 2.105)),
-                "networkDamageStretchScale": float(
-                    child.get("network_damage_stretch_scale", 1.0)),
-                "skeletonFloorBasis": str(
-                    child.get("skeleton_floor_basis", "intactWeight")),
-                "damageTransport": str(
-                    child.get("damage_transport", "volumeFlux")),
-                "networkPressureDamage": str(
-                    child.get("network_pressure_damage", "off")),
-                "releaseLaw": ("none" if not _term
-                               else "progressive+terminal" if _prog
-                               else "terminal-only"),
-            }
+        _term = True
+        _prog = bool(True)
+        spec["s16"] = {
+            "networkCriticalStretch": float(
+                child.get("network_critical_stretch", 2.8)),
+            "networkReleaseTime": float(
+                child.get("network_release_time_s", 3.3e-4)),
+            "networkDamageOnsetStretch": float(
+                child.get("network_damage_onset_stretch", 2.105)),
+            "networkDamageStretchScale": float(
+                child.get("network_damage_stretch_scale", 1.0)),
+            "releaseLaw": ('progressive+terminal'),
+        }
         if child.get("final_relaxation_unity"):
             spec["final_relaxation_unity"] = True
         if "wall_budget_h" in child:
@@ -5507,51 +3340,19 @@ def main() -> int:
         # so every earlier child.json is byte-identical.
         _s17_keys = ("elastic_coupling", "n_correctors", "s17_discriminator",
                      "vs_linear_solver")
-        if (child.get("network_rupture") == "fibreRelease"
-                or any(k in child for k in _s17_keys)):
-            spec["s17"] = {
-                "networkRupture": str(child.get("network_rupture", "off")),
-                "elasticCoupling": str(child.get("elastic_coupling", "explicit")),
-                "beDetRenormalise":
-                    "yes" if child.get("be_det_renormalise") else "no",
-                "pendingForm": ("fibre" if child.get("network_rupture")
-                                == "fibreRelease" else "none"),
-                "nCorrectors": int(child.get("n_correctors",
-                                             coupling["nCorrectors"])),
-            }
-            if "s17_discriminator" in child:
-                spec["s17"]["discriminator"] = str(child["s17_discriminator"])
-            # verification 17: the swept maxDeltaT of D3/D3b in child.json,
-            # where the renderer reads swept parameters (inside the s17
-            # block, so no earlier child.json changes).
-            if "max_delta_t_s" in child:
-                spec["s17"]["maxDeltaT"] = float(child["max_delta_t_s"])
+        spec["s17"] = {
+            "pendingForm": ('fibre'),
+            "nCorrectors": int(child.get("n_correctors",
+                                         coupling["nCorrectors"])),
+        }
         # S17b: what PHASE_CLOT_S17B_CONFIG must echo -- ONLY for a child
         # that names an S17b key, so every earlier child.json is identical.
-        if any(k in child for k, _d, _a in S17B_SWITCHES):
-            spec["s17b"] = {
-                "fibreSlack": str(child.get("fibre_slack", "off")),
-                "fibreArithmetic": str(child.get("fibre_arithmetic", "shipped")),
-                "skeletonWallFace": str(child.get("skeleton_wall_face", "shipped")),
-            }
-        # S18: what PHASE_CLOT_S18_CONFIG must echo -- ONLY for a child that
-        # names an S18 key or the contentRatio weight, so every earlier
-        # child.json is identical.
-        if (any(k in child for k, _d, _a in S18_SWITCHES)
-                or child.get("network_pressure_weight") == "contentRatio"):
+        if "network_pressure_weight" in child:
             spec["s18"] = {
-                "frozenPendingPressure": str(child.get("frozen_pending_pressure", "shipped")),
-                "wallPatchSplit": str(child.get("wall_patch_split", "shipped")),
-                "networkPressureWeight": str(child.get("network_pressure_weight",
-                                                       "depositedOccupancy")),
-                "cplusOrder": str(child.get("cplus_order", "shipped")),
+                "networkPressureWeight": str(child["network_pressure_weight"]),
             }
-        # S18p: what PHASE_CLOT_S18P_CONFIG must echo -- ONLY for a child
-        # that names proj_site_log, so every earlier child.json is identical.
         if any(k in child for k, _d, _a in S18P_SWITCHES):
             spec["s18p"] = {"projSiteLog": str(child.get("proj_site_log", "no"))}
-        # S19: what PHASE_CLOT_S19_CONFIG must echo -- ONLY for a child that
-        # names an S19 key, so every earlier child.json is identical.
         if any(k in child for k in S19_KEYS):
             spec["s19"] = {
                 "momentumPressureCoupling": str(
@@ -5559,15 +3360,6 @@ def main() -> int:
                 "networkViscosity": str(child.get("network_viscosity", "none")),
                 "networkViscosityTau": float(child.get("tau_v_s", 2.5e-4)),
             }
-            # S19b: ONLY for a child that names it, so every earlier
-            # child.json is identical; absent, the assessor expects
-            # eliminate under blockCoupled (D1).
-            if "block_coupled_lumen" in child:
-                spec["s19"]["blockCoupledLumen"] = str(child["block_coupled_lumen"])
-        # XU (2026-09-30): what the assessor's config echo (A0) and field
-        # tests (A1) read -- ONLY for a series that declares a plasma, a
-        # flow axis or a core exemption, so every earlier child.json is
-        # identical.
         if "rho_kg_m3" in series:
             spec["plasma"] = {"rho_kg_m3": series["rho_kg_m3"],
                               "nu_m2_s": series["nu_m2_s"]}
@@ -5583,230 +3375,55 @@ def main() -> int:
                           child.get("platelet_number_density_m3", 0.0)))
         if dome_margins is not None:
             spec["dome_floors"] = dome_margins
+        if "seed_theta_peak" in child:
+            # V21-8 (S20 V5): the seeded q < 0 test. 0/thetaC and 0/thetaH are
+            # patched after the initialiser and seed_stage2_content.py have run;
+            # Allrun calls seed_theta_peak.py when this file exists (the pattern
+            # of constant/throatProfile.json).
+            _sd = child["seed_theta_peak"]
+            _tref = float(child["skeleton_volume_fraction"])
+            if set(_sd) != {"theta", "cells"} or not float(_sd["theta"]) > _tref \
+                    or int(_sd["cells"]) < 1:
+                raise ValueError(
+                    f"{child_id}: seed_theta_peak needs exactly theta and cells, with "
+                    f"theta above skeleton_volume_fraction {_tref} (so q = 1 - theta/"
+                    f"theta_ref < 0) and cells >= 1; got {_sd!r}")
+            _sd = {"theta": float(_sd["theta"]), "cells": int(_sd["cells"]),
+                   "theta_ref": _tref}
+            (case / "constant" / "seedTheta.json").write_text(
+                json.dumps(_sd, indent=1) + "\n")
+            spec["seed_theta_peak"] = _sd
+        dictionary_key_refusal(case / "constant" / "phaseClotProperties")
         (case / "child.json").write_text(json.dumps(spec, indent=2) + "\n")
         matrix.append(spec)
 
-    # Ordered so an interrupted session still returns whole series.
-    # Deformation runs before the demonstration children: they are cheap,
-    # they carry no transport stage, and an interrupted Colab session should
-    # lose the long children rather than the short ones.
-    # Stage 3 runs FIRST. It is the cheapest thing in the file and it is a
-    # go/no-go for stage 4, so an interrupted session must not lose it behind
-    # three hours of children whose results are already recorded.
-    order = {"eulerian_drift_probe": -5,
-             "eulerian_diag_xu": -4, "eulerian_diag_li": -3,
-             "eulerian_stage3_xu": -2, "eulerian_stage3_li": -1,
-             "growth": 0, "required_strength": 1,
-             "deformation": 2, "demonstration": 3, "cohesive_tear": 4,
-             "source33_replication": 5,
-             # LAST, DELIBERATELY. These are the longest children in the file
-             # (2e-2 s against everything else's 3e-3), and the rule at the top
-             # of this block is to lose the long children rather than the short
-             # ones. When the saturation question is the point of the session
-             # they are selected by ONLY and the ordering does not bind.
-             "eulerian_saturation": 6,
-             # Same reasoning as eulerian_saturation: longer than the 3e-3
-             # children and selected by ONLY when it is the point of the
-             # session, so it sorts to the end.
-             "eulerian_beterm": 7,
-             # Two of its four children run to 2e-2 s, so it sorts behind
-             # eulerian_beterm by the same rule. Selected by ONLY when it is
-             # the point of the session.
-             "eulerian_spdfix": 8,
-             # Every child runs the full 1.2e-2 s window, so it is the most
-             # expensive series in the file and sorts last.
-             "eulerian_anchor": 9,
-             # The seated core runs on a 1.96x mesh, so it is dearer still.
-             "eulerian_seated": 10,
-             # Last: a 24 ms window against eulerian_seated's 12 ms. Note the
-             # cost does NOT simply double -- dt is elastic-wave-limited and
-             # goes as 1/sqrt(G), so the SOFT child is the cheap one. Within
-             # the series, child_id sorts st_ctl before st_xu, which is the
-             # wrong way round for an interrupted session; see the ordering
-             # override immediately below.
-             "eulerian_stiffness": 11,
-             # Both children are 4/40 and therefore CHEAP -- 0.84 h each at
-             # the measured 0.2572 s/step -- but they sort last because they
-             # are the newest question, not because they are the dearest.
-             "eulerian_detrenorm": 12,
-             # Last: the newest question. All three children are 4/40 with G
-             # unchanged, so dt and the step count are dr_on's exactly --
-             # 11736 steps at the MEASURED 0.3716 s/step = 1.21 h each, 3.6 h
-             # for the series. The dilation does not touch dt.
-             "eulerian_anchor_depth": 13,
-             # Last: growth restored and the bond finally breakable. Same
-             # 11736 steps (dt is elastic-wave-limited, G unchanged), so
-             # ~1.21 h/child at the measured 0.3716 s/step PLUS growth
-             # overhead the baseline did not carry -- budget ~4 h.
-             "eulerian_growth_peel": 14,
-             # Last: the 50 ms window. The 24 ms series could not answer its
-             # own question because peakTraction had not saturated -- it was
-             # at 86% of a 14.8-15.3 Pa asymptote and still climbing. ~24450
-             # steps at the MEASURED 0.4008 s/step = ~2.7 h/child, ~8.2 h for
-             # three. It sorts last because it is both the newest question and
-             # by far the dearest series in the file.
-             "eulerian_peel_propagation": 15,
-             # Last: the newest question, and a 24 ms window rather than 50 --
-             # "does the shell tear while the core holds" is a mechanism
-             # question visible early, not a saturation question. Four
-             # children at gr_hold's 11736 steps and its MEASURED 0.3716
-             # s/step = 1.21 h each, ~4.8 h for the series; bk_soft is the
-             # only one whose dt could differ and it moves k, not G, so it
-             # does not. Cheaper per child than eulerian_peel_propagation and
-             # it sorts behind it only because it is newer.
-             "eulerian_brinkman": 16,
-             # Last: the newest question and the dearest per child in the file
-             # after eulerian_peel_propagation. 24450 steps at the MEASURED
-             # 0.3859 / 0.3911 s/step = 2.62 h + 2.66 h, ~5.3 h for the pair.
-             # Selected by ONLY when it is the point of the session, so the
-             # ordering does not bind in practice.
-             "eulerian_core_fate": 17,
-             # Last: Dr Li's shell-stiffness sweep, requested 2026-09-01. Five
-             # children at 30 ms. dt is elastic-wave-limited on gMax(GField_),
-             # which is the CORE at 40 Pa in every child -- raising the SHELL
-             # to 10/20/30/40 never exceeds it -- so every child takes cf_xu's
-             # 2.045e-06 s step and none of them is dearer than the control.
-             # 24450*(30/50) = 14670 steps at the MEASURED 0.3575 s/step =
-             # 1.46 h each, ~7.3 h for the five.
-             "shell_modulus_sweep": 18,
-             "throat_occlusion": 19,
-             # Last: the lodged-embolus arm, added after run 20260903-114913
-             # measured that the journey arm cannot occlude at Xu's k. Its
-             # children run a 10 ms window rather than 30 -- the hydraulic
-             # question settles in about one viscous time (H^2/nu = 0.12 ms in
-             # the throat) and the rest of the window is there to show whether
-             # the fragment holds or washes out. ~6630 steps at the MEASURED
-             # 1.008 s/step of 20260903-114913 = ~1.9 h/child.
-             "throat_lodged": 20,
-             # Last: the newest question and the only series that depends on
-             # the relative-velocity drag. 30 ms, so ~19890 steps at the
-             # MEASURED 1.008 s/step = ~5.6 h/child, ~5.6 h for two at
-             # CONCURRENCY 2.
-             "throat_embolus": 21,
-             # Last: the Xu 2017 Figure 5 case (batch 61), four 10 ms
-             # children at dt 2.604167e-6 s, 3840 steps, ~4.6 h each.
-             "xu2017_fig5": 22,
-             # Last: the free-shell throat series (design
-             # 2026-10-02-case-free-shell-throat, rev. 3). 30 ms, wall_budget_h
-             # 13 each; concurrency 2, one session.
-             "throat_free_shell": 23}
+    order = {'throat_embolus': 21,
+    'xu2017_fig5': 22,
+    'throat_free_shell': 23}
     missing = {c["series"] for c in controls["children"]} - set(order)
     if missing:
         raise ValueError(f"no run order declared for series {sorted(missing)}")
-    # WITHIN a series, child_id order is the default and is right almost
-    # everywhere. eulerian_stiffness is the exception: its physics child
-    # (st_xu, 1.4 h) must run before its control (st_ctl, 4.4 h) so that a
-    # session that times out returns the child the series exists to produce.
-    # Alphabetical order would run the dear control first and lose st_xu.
-    # anchor_depth follows the same rule for a different reason: ad_d20 is the
-    # reproducibility control and every other child is unreadable until it has
-    # been checked against dr_on, so it must run FIRST even though all three
-    # cost the same. Alphabetical order already gives that; it is pinned here
-    # so a later rename cannot silently reorder it.
-    # eulerian_peel_propagation INVERTS the usual control-first rule, and the
-    # inversion is deliberate. At ~2.7 h/child an 8.2 h session is likely to be
-    # cut short, so the order is chosen for what a TRUNCATED session returns.
-    # pp_p11 is the only child guaranteed to produce the event the series
-    # exists to observe, and pp_hold is what makes that event attributable
-    # (without the erosion baseline, material lost by pp_p11 cannot be
-    # separated from the ~1%/ms that goes anyway). Those two are the minimum
-    # readable result, so they run first. pp_p15 is a coin-flip on a 5%
-    # extrapolation and is therefore the cheapest thing to lose.
-    # eulerian_growth_peel: gr_hold is BOTH the control and the measurement the
-    # other two are bracketed against, so it runs first. Alphabetically gr_hold
-    # already sorts before gr_p15/gr_p30, but the rungs must also run
-    # high-strength first (p30 is the one expected to HOLD, so a session that
-    # times out returns the informative pair).
-    # eulerian_brinkman keeps the control FIRST, and here that is not a habit
-    # but the precondition for reading anything else. bk_ctl has the new
-    # switch OFF, so it must reproduce gr_hold's solution exactly; if it does
-    # not, the edit touched something it should not have and the other three
-    # children are measuring an unknown change as well as the intended one.
-    # bk_on is next because it is the clean test, bk_both third because it
-    # only refines an answer bk_on has already given, and bk_soft last because
-    # it is contingent -- it is the response to an over-constrained core, and
-    # if the core is not over-constrained it answers nothing.
-    within = {"st_xu": 0, "st_ctl": 1, "dr_off": 0, "dr_on": 1,
-              "ad_d20": 0, "ad_d16": 1, "ad_d12": 2,
-              "gr_hold": 0, "gr_p30": 1, "gr_p15": 2,
-              "pp_p11": 0, "pp_hold": 1, "pp_p15": 2,
-              "bk_ctl": 0, "bk_on": 1, "bk_both": 2, "bk_soft": 3,
-              # eulerian_core_fate runs the QUESTION first, not the control,
-              # and that is safe here in a way it usually is not: BOTH children
-              # already have a 24 ms trajectory on disk from run
-              # 20260827-190800, so a truncated session still leaves cf_soft
-              # comparable against something. cf_soft is the child the series
-              # exists to answer, so it is the one that must survive.
-              "cf_soft": 0, "cf_xu": 1,
-              # shell_modulus_sweep runs the CONTROL first, for bk_ctl's
-              # reason: g04 is cf_xu's material at a shortened window, so it
-              # must reproduce cf_xu's trajectory step for step at 30 ms. If
-              # it does not, the sweep is measuring an unknown change as well
-              # as the intended one. After the control the order is chosen for
-              # what a TRUNCATED session returns: g40 is the homogeneous
-              # endpoint and the largest contrast, g20 is the midpoint, so
-              # g04/g40/g20 is a readable three-point curve on its own. g10
-              # and g30 only refine it.
-              "g04": 0, "g40": 1, "g20": 2, "g10": 3, "g30": 4,
-              # th_hold first: it is the child that can produce the
-              # result, and th_break is the control that explains it. If a
-              # session is cut after one child there is a result, not a
-              # control with nothing to control.
-              "th_hold": 0, "th_break": 1,
-              # S16, batch 57 (design section 6, red-team Change 8): em64 (G 4,
-              # ~40 min) and em63 (G 400, 3-12 h, wall budget 14 h) start
-              # together at CONCURRENCY 2, and em65 takes em64's slot when
-              # em64 finishes. At CONCURRENCY 1 the same order would make em65
-              # wait for em63's whole budget, which is why batch 57 is
-              # declared at CONCURRENCY 2.
-              "em64_G4_s16": 0, "em63_G400_s16": 1, "em65_G4_s16_final": 2,
-              # S17, batch 58 (design section 6, change 12): the
-              # discriminators first, then em67 with em66, then em68 with
-              # em69, then em70 -- in two slots (CONCURRENCY 2).
-              "s17_D1_nc3": 0, "s17_D2_nc4": 1, "s17_D2b_nc6": 2,
-              "s17_D3_dt18": 3, "s17_D3b_dt25": 4, "s17_CB6": 5, "s17_CB4": 6,
-              "em67_G4_s17": 7, "em66_G400_s17": 8,
-              "em68_G400_s17_law": 9, "em69_G400_s17_noimpl": 10,
-              "em70_G4_s17_noimpl": 11,
-              # S17b, batch 59 (design section 3): em72 (G 4, 3 h) with em71
-              # (G 400, 14 h), then em73 with em74 (2.5 ms each), CONCURRENCY 2.
-              "em72_G4_s17b": 12, "em71_G400_s17b": 13,
-              "em73_G400_s17b_noimpl": 14, "em74_G400_s17b_noA3": 15,
-              # S18, batch 60 (design section 4): em76 alone.
-              "em76_G4_s18": 16,
-              # Xu 2017 Figure 5, batch 61 (design section 3): 250 with 500,
-              # then 1000 with 2000, at CONCURRENCY 2. Pinned, because
-              # child_id order would run g1000 and g2000 first.
-              "xu5_g250": 17, "xu5_g500": 18, "xu5_g1000": 19,
-              "xu5_g2000": 20,
-              # S18p, batch 62 (design section 4): em78 with em79, then em80
-              # with em81, at CONCURRENCY 2.
-              "em78_G4_s18p_ctl": 21, "em79_G4_s18p_Cnp": 22,
-              "em80_G4_s18p_Afz": 23, "em81_G4_s18p_Esh": 24,
-              # BATCH 68 (design 2026-10-05 rev. 3, section 2.1): dense
-              # first, then loose, then the OI-48 control pair, so at
-              # CONCURRENCY 2 slot 2 runs loose then the pair. After every
-              # earlier throat_free_shell child (all 0), whose order is
-              # unchanged.
-              "fsf_G40_klo_v250": 1, "fsf_G4_kxu_v250": 2,
-              "fsb_G40_klo_rest": 3, "fs_G40_klo_rest_seg": 4}
+    within = {'em76_G4_s18': 16,
+    'em78_G4_s18p_ctl': 21,
+    'em79_G4_s18p_Cnp': 22,
+    'xu5_g250': 17,
+    'xu5_g500': 18,
+    'xu5_g1000': 19,
+    'xu5_g2000': 20,
+    'fsf_G40_klo_v250': 1,
+    'fsf_G4_kxu_v250': 2,
+    'fsb_G40_klo_rest': 3,
+    'fs_G40_klo_rest_seg': 4,
+    'em78_id': 25,
+    'xu5_id': 21,
+    'fsf_G4_kxu_r3_40': 5,
+    'fsf_G4_kxu_nor3_40': 6,
+    'fsf_G4_kxu_seedq': 0}
     # S17 (design section 6): the mechanical control check, before anything
     # is ordered for launch. The controls-entry half runs for every pair; the
     # child.json half for the pairs whose control is built in this run
     # (s17_control_check; fix round 13c).
-    if any(c["child_id"] == "em66_G400_s17" for c in controls["children"]):
-        s17_control_check(
-            {c["child_id"]: c for c in controls["children"]},
-            {s["child_id"]: s for s in matrix})
-    if any(c["child_id"] == "em71_G400_s17b" for c in controls["children"]):
-        s17_control_check(
-            {c["child_id"]: c for c in controls["children"]},
-            {s["child_id"]: s for s in matrix}, S17B_CONTROL_PAIRS)
-    # S18 (design section 4): the parent rule on the controls entries.
-    s18_parent_check({c["child_id"]: c for c in controls["children"]})
     s18p_parent_check({c["child_id"]: c for c in controls["children"]})
-    fsp_parent_check({c["child_id"]: c for c in controls["children"]})
-    s19_parent_check({c["child_id"]: c for c in controls["children"]})
     fsf_parent_check({c["child_id"]: c for c in controls["children"]})
     # Xu (design section 1): each child is em76 but for the design's keys.
     xu_parent_check({c["child_id"]: c for c in controls["children"]})

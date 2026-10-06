@@ -18,6 +18,16 @@ research/designs/2026-09-24-S15-composition-label-and-progressive-damage.md.
 
 Every predicate has a mutation that must make it FAIL.
 
+S21 (research/designs/2026-10-05-S21-clean-solver.md; docket 20261005-1621,
+reports 06, 09, 11) built networkRupture in at fibreRelease, damageTransport
+at contentPartition and plateletOuterTransactions at false, and deleted the
+other values' code. The assertions that pinned that deleted code are removed,
+each at its site, with the hunk that deleted it; what S15 still owns on the
+kept code is pinned in its kept form: the label is thetaH/theta, synced after
+the phase solve, never transported or clipped under contentComposition; the
+damage law is source 32 Eq. 6 on the stretch; every rupture consequence is
+taken unconditionally; the kept validations and defaults; the log keys.
+
 Run: python3 scripts/check_s15_composition_label_and_damage.py
 """
 from __future__ import annotations
@@ -55,7 +65,12 @@ def label_is_the_composition(src: str) -> bool:
 def label_is_synced_after_every_content_change(src: str) -> bool:
     s = flat(src)
     return (
-        s.count("solvePhaseField();syncMaterialLabelFromContent();updateDerivedFields();") == 2
+        # S21: 2 -> 1. The second site was the opt-in platelet outer
+        # transaction (`else if (plateletContentModel_ &&
+        # plateletOuterTransactions_)`, release-4198bb17 .C:17028-17039),
+        # deleted by report 06 hunk a40 (plateletOuterTransactions built in
+        # at false).
+        s.count("solvePhaseField();syncMaterialLabelFromContent();updateDerivedFields();") == 1
         and '<<"networkDamageStretchScale="<<networkDamageStretchScale_<<endl;syncMaterialLabelFromContent();' in s
     )
 
@@ -73,43 +88,49 @@ def composition_is_not_clipped(src: str) -> bool:
 
 def damage_is_kliuchnikov_eq6(src: str) -> bool:
     b = flat(body(src, "phaseClotAxisymmetricFluid::ruptureOverstretchedNetwork()"))
-    # S16 (2026-09-24): the partition branch (damageTransport
-    # contentPartition) comes first and has its own `else if (progressive)`;
-    # the S15 loop is the one whose progressive branch starts from l1.
-    i = b.find("if(progressive){constscalarl1=sqrt(b1);")
-    j = b.find("elseif(b1>=b1c&&rI[celli]<1.0)")
-    prog = b[i:j] if 0 <= i < j else ""
+    # S21: S15's own progressive loop is deleted. Its `progressive` local
+    # (`networkRupture_ == "progressiveDamage"`) became the constant false
+    # (report 09 hunk d37), and the chain elements it guarded, `else if
+    # (progressive)` and `else if (b1 >= b1c && rI[celli] < 1.0)`, were
+    # deleted as never reached (report 11 hunks p11.1, p11.2; their
+    # irreversibility and no-be-reset clauses went with them, p15.1). Eq. 6
+    # survives as the law of the kept fibreRelease branch, pinned here.
     return (
-        'constboolprogressive=networkRupture_=="progressiveDamage";' in b
-        and "constscalarl1=sqrt(b1);if(l1>lf){constscalard=1.0-exp(-(l1-lf)/(2.0*dlf));" in prog
-        and "if(d>rI[celli]){damageStepMax=max(damageStepMax,d-rI[celli]);" in prog
-        and "rI[celli]=d;" in prog
-        and "symmTensor::I" not in prog          # no be reset: the intact part keeps its strain
+        "constscalarl1=sqrt(b1);{if(l1>=lc){dsLaw=1.0;}"
+        "elseif(l1>lf){dsLaw=1.0-exp(-(l1-lf)/(2.0*dlf));}}" in b
         and "reduce(damageStepMax,maxOp<scalar>());" in b
     )
 
 
 def damage_shares_every_rupture_consequence(src: str) -> bool:
     s = flat(src)
+    # S21 (networkRupture built in at fibreRelease, report 09): each
+    # consequence is now taken unconditionally. Deleted with their guards:
+    # intactFraction's rupture-off return (hunk a23), advectRuptureLabel(),
+    # a no-op under contentPartition (b, a24, and its call b11), the
+    # noMemory guard (d59), the rIntact guard (d80) and the ruptured_
+    # NO_WRITE branch (a11).
     return (
-        'if(networkRupture_=="off"){returnvolScalarField::New("intactFraction",' in s
-        # S16: under contentPartition d is D/theta of the carried partition,
-        # so the label transport returns for that switch too.
-        and flat(body(src, "phaseClotAxisymmetricFluid::advectRuptureLabel")).count(
-            'if(networkRupture_=="off"||damageTransport_=="contentPartition"){return;}') == 1
-        and 'if(networkRupture_!="off"){noMemory=max(' in s
-        and 'scalarrIntact=r;if(networkRupture_!="off"){rIntact=' in s
-        and 'if(networkRupture_=="off"){ruptured_.writeOpt()=IOobject::NO_WRITE;}' in s
+        'returnvolScalarField::New("intactFraction",1.0-ruptured_);' in s
+        and 'volScalarFieldnoMemory("noNetworkMemory",absent);{noMemory=max('
+            '1.0-thetaNetRef_*(1.0-ruptured_)' in s
+        and "scalarrIntact=r;{rIntact=r*(1.0-ruptured_[celli]);" in s
+        and "ruptured_.writeOpt()=IOobject::NO_WRITE" not in s
+        and "advectRuptureLabel" not in s
     )
 
 
 def switches_are_validated(src: str) -> bool:
     s = flat(src)
+    # S21: the networkRupture value refusal is deleted (report 09 hunk c08);
+    # the onset check lost its `networkRupture_ == "progressiveDamage"` guard
+    # (d24) and now runs unconditionally; the mixed guard
+    # `!(contentModel_ && coreShell_)` reduced to `!coreShell_` (report 06
+    # hunk d07, design section 2 (d), .C:2920).
     return (
-        'networkRupture_!="off"&&networkRupture_!="criticalStretch"&&networkRupture_!="progressiveDamage"' in s
-        and 'networkRupture_=="progressiveDamage"&&!(networkDamageOnsetStretch_>1&&networkDamageStretchScale_>0)' in s
+        'if(!(networkDamageOnsetStretch_>1&&networkDamageStretchScale_>0))' in s
         and 'materialLabelBasis_!="transportedLabel"&&materialLabelBasis_!="contentComposition"' in s
-        and 'materialLabelBasis_=="contentComposition"&&!(contentModel_&&coreShell_)' in s
+        and 'if(materialLabelBasis_=="contentComposition"&&!coreShell_){FatalErrorInFunction' in s
         and '"networkDamageOnsetStretch",2.105' in s
         and '"networkDamageStretchScale",1.0' in s
         and '"materialLabelBasis","transportedLabel"' in s
@@ -135,32 +156,32 @@ MUTATIONS = [
     ("label clipped instead of checked", label_is_the_composition,
      "    if (!(sMin >= 0 && sMax <= 1))\n    {\n        FatalErrorInFunction",
      "    if (false)\n    {\n        FatalErrorInFunction"),
-    ("sync missed after the transaction's second phase solve", label_is_synced_after_every_content_change,
-     "        ++plateletOuter_;\n        solvePhaseField();\n        syncMaterialLabelFromContent();\n",
-     "        ++plateletOuter_;\n        solvePhaseField();\n"),
+    ("sync missed after the step's phase solve", label_is_synced_after_every_content_change,
+     "        solvePhaseField();\n        syncMaterialLabelFromContent();\n        updateDerivedFields();\n",
+     "        solvePhaseField();\n        updateDerivedFields();\n"),
     ("label still transported under composition", transported_label_is_retired,
      'if (!coreShell_ || materialLabelBasis_ == "contentComposition")',
      "if (!coreShell_)"),
     ("composition clipped again", composition_is_not_clipped,
      '    volScalarField s("materialComposition", shell_);\n    if (materialLabelBasis_ != "contentComposition")\n    {',
      '    volScalarField s("materialComposition", shell_);\n    if (true)\n    {'),
+    # S21: "damage reversible" and "progressive branch resets be" retired
+    # with the S15 loop they mutated (report 11 hunks p11.1, p11.2); the
+    # "relaxation only for the step law" and "label transport only for the
+    # step law" anchors were the deleted guards (09 d59, a24).
     ("damage on b1, not the stretch", damage_is_kliuchnikov_eq6,
-     "                const scalar d = 1.0 - exp(-(l1 - lf)/(2.0*dlf));",
-     "                const scalar d = 1.0 - exp(-(b1 - lf)/(2.0*dlf));"),
-    ("damage reversible", damage_is_kliuchnikov_eq6,
-     "                if (d > rI[celli])\n                {\n                    damageStepMax",
-     "                if (true)\n                {\n                    damageStepMax"),
-    ("progressive branch resets be", damage_is_kliuchnikov_eq6,
-     "                    rI[celli] = d;\n",
-     "                    rI[celli] = d;\n                    bI[celli] = symmTensor::I;\n"),
-    ("relaxation only for the step law", damage_shares_every_rupture_consequence,
-     '        if (networkRupture_ != "off")\n        {\n            noMemory = max',
-     '        if (networkRupture_ == "criticalStretch")\n        {\n            noMemory = max'),
-    ("label transport only for the step law", damage_shares_every_rupture_consequence,
-     '    if (networkRupture_ == "off" || damageTransport_ == "contentPartition")\n    {\n        return;\n    }\n    fvScalarMatrix rupturedEqn',
-     '    if (networkRupture_ != "criticalStretch" || damageTransport_ == "contentPartition")\n    {\n        return;\n    }\n    fvScalarMatrix rupturedEqn'),
+     "dsLaw = 1.0 - exp(-(l1 - lf)/(2.0*dlf));",
+     "dsLaw = 1.0 - exp(-(b1 - lf)/(2.0*dlf));"),
+    ("intact fraction blind to rupture", damage_shares_every_rupture_consequence,
+     '"intactFraction", 1.0 - ruptured_)', '"intactFraction", 1.0 + 0*ruptured_)'),
+    ("relaxation blind to rupture", damage_shares_every_rupture_consequence,
+     "              - thetaNetRef_*(1.0 - ruptured_)\n", "              - thetaNetRef_\n"),
+    ("deposit dilution blind to rupture", damage_shares_every_rupture_consequence,
+     "                        rIntact = r*(1.0 - ruptured_[celli]);\n",
+     "                        rIntact = r;\n"),
     ("composition allowed without contents", switches_are_validated,
-     '     && !(contentModel_ && coreShell_)', '     && false'),
+     '        materialLabelBasis_ == "contentComposition"\n     && !coreShell_\n',
+     '        materialLabelBasis_ == "contentComposition"\n     && false\n'),
     ("damage increment not logged", switches_are_validated,
      '<< " damageStepMax=" << damageStepMax', '<< " damageStepMx=" << damageStepMax'),
 ]
@@ -191,11 +212,13 @@ class S15Properties(unittest.TestCase):
         self.assertIn("20260924-014332", self.hdr)
 
     def test_the_generator_mirrors_the_solver(self):
+        # S21: the generator's networkRupture value list and the
+        # s15_combination_refusal()/`rupture` mirror went with the key
+        # (built in at fibreRelease; the case-engineer's S21 generator cut).
+        # The materialLabelBasis refusal it mirrored is kept, inline.
         g = self.gen
-        self.assertIn('"off", "criticalStretch", "progressiveDamage"', g)
-        self.assertIn("def s15_combination_refusal", g)
-        self.assertIn('s15_combination_refusal(child, bool(spec.get("core_shell")))', g)
-        self.assertIn('rupture = child.get("network_rupture", "off") != "off"', g)
+        self.assertIn('if child.get("material_label_basis") == "contentComposition" '
+                      'and not core_shell:', g)
         self.assertIn('"networkDamageOnsetStretch"', g)
 
     def test_kliuchnikov_values(self):
@@ -269,17 +292,9 @@ class S15Properties(unittest.TestCase):
         self.assertTrue(s15["composition_label"])
         self.assertTrue(s15["progressive_damage"])
 
-    def test_the_new_children_differ_only_in_s15(self):
-        import json
-        kids = {k["child_id"]: k for k in json.loads(CONTROLS.read_text())["children"]}
-        for new, old in (("em61_G4_s15", "em59_G4_s14"), ("em62_G400_s15", "em60_G400_s14")):
-            a, b = kids[old], kids[new]
-            diff = sorted(k for k in set(a) | set(b)
-                          if k not in ("expectation", "child_id", "_every_number_and_its_source")
-                          and a.get(k) != b.get(k))
-            self.assertEqual(diff, ["material_label_basis", "network_critical_stretch",
-                                    "network_damage_onset_stretch",
-                                    "network_damage_stretch_scale", "network_rupture"])
+    # S21: test_the_new_children_differ_only_in_s15 retired. em59-em62 are
+    # not among the kept children (design section 1.1); they stay in the
+    # backup's controls.
 
 
 class S15Mutations(unittest.TestCase):

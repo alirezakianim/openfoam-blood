@@ -71,36 +71,20 @@ def compact(source: str) -> str:
     return re.sub(r"\s+", "", source)
 
 
+# S21 (2026-10-05, docket 20261005-1621 report 15): the two-velocity guard
+# (S21C1 d37.0), the superficial preweight (S21A a36) and the convention
+# switch (S21A d36: flux(word("intrinsic"), ...)) are built in. The kept
+# dispatch is the unconditional fluid-own carrier.
 DISPATCH = compact('''
 surfaceScalarField carrier("plateletCarrier", suppliedCarrier);
-if (twoVelocitySkeleton_)
 {
     carrier = phiFluidOwn_;
-    if (plateletFluxConvention_ == "superficial")
-    {
-        carrier *= fvc::interpolate(epsP_);
-    }
 }
 ''')
 
 
-# THE ONE SANCTIONED SECOND USE OF suppliedCarrier.
-#
-# The test-only evidence dump has to be handed the supplied carrier: the
-# whole point of the archive is that a reader can see BOTH candidate
-# fluxes and tell which one the operator consumed. Writing only the
-# selection would make the substitution unverifiable.
-#
-# It is excised before the counts below rather than loosening them, so the
-# remainder of the function is held to exactly the contract it had before:
-# one suppliedCarrier, initialising the selected carrier and nothing else.
-# Anything that is not this exact call still trips the count.
-ARCHIVE_CALL = compact('''
-if (plateletCarrierArchive_)
-{
-    archivePlateletCarrier(suppliedCarrier, carrier, Feps, phaseCorrector);
-}
-''')
+# S21A a38/b13 deleted plateletCarrierArchive_'s call and archivePlateletCarrier().
+# Its count exemption is removed with it: the counts below now hold the whole body.
 
 
 def wiring_errors(source: str) -> list[str]:
@@ -116,32 +100,24 @@ def wiring_errors(source: str) -> list[str]:
         return [str(exc)]
     arguments, body = compact(arguments), compact(body)
     errors = []
-    archives = body.count(ARCHIVE_CALL)
-    if archives > 1:
-        errors.append("the evidence archive must be called at most once")
-    if "archivePlateletCarrier" in body and archives != 1:
-        errors.append("archivePlateletCarrier appears in some other form;"
-                      " the evidence dump is exempt from the counts below"
-                      " only in its exact sanctioned shape")
-    counted = body.replace(ARCHIVE_CALL, "", 1)
+    counted = body
     if arguments != "constsurfaceScalarField&suppliedCarrier,constlabelphaseCorrector":
         errors.append("input must be the distinctly named suppliedCarrier")
     if body.count(DISPATCH) != 1:
         errors.append("missing or changed phase/convention dispatch")
     else:
         start = body.index(DISPATCH)
-        if not body.startswith("if(!plateletContentModel_){return;}"):
-            errors.append("disabled model must return before carrier selection")
+        # S21A a35 deleted the `if (!plateletContentModel_) return;` head.
         porosity = "epsP_.correctBoundaryConditions();"
         if porosity not in body[:start]:
             errors.append("dispatch must follow the current porosity update")
         tail = body[start + len(DISPATCH):]
-        flux = "plateletContent::flux(plateletFluxConvention_,epsP_,carrier)"
+        flux = 'plateletContent::flux(word("intrinsic"),epsP_,carrier)'
         if flux not in tail or body.count("plateletContent::flux(") != 1:
             errors.append("shared helper must consume the selected carrier once")
     # There must be no second path quietly changing the one-velocity carrier,
     # or a second porosity multiplication elsewhere in this function.
-    if len(re.findall(r"\bcarrier(?:\*=|/=|\+=|-=|=(?!=))", counted)) != 2:
+    if len(re.findall(r"\bcarrier(?:\*=|/=|\+=|-=|=(?!=))", counted)) != 1:
         errors.append("unexpected carrier assignment or porosity multiplication")
     if len(re.findall(r"\bsuppliedCarrier\b", counted)) != 1:
         errors.append("supplied carrier must only initialize the selected carrier")
@@ -190,41 +166,24 @@ class CarrierTests(unittest.TestCase):
         mutations = (
             ("wrong phase", "carrier = phiFluidOwn_;", "carrier = phiSkelOwn_;"),
             ("mixture phase", "carrier = phiFluidOwn_;", "carrier = suppliedCarrier;"),
-            ("missing preweight", "carrier *= fvc::interpolate(epsP_);", ""),
-            ("double preweight", "carrier *= fvc::interpolate(epsP_);",
-             "carrier *= fvc::interpolate(epsP_); carrier *= fvc::interpolate(epsP_);"),
-            ("wrong convention", 'plateletFluxConvention_ == "superficial"',
-             'plateletFluxConvention_ == "intrinsic"'),
-            ("wrong phase condition", "if (twoVelocitySkeleton_)",
-             "if (!twoVelocitySkeleton_)"),
+            # S21: "missing preweight", "wrong phase condition" and the old
+            # "wrong convention" anchors were deleted (S21A a36, S21C1 d37.0,
+            # S21A d36). These two hold the same properties on the kept text.
+            ("added preweight", "carrier = phiFluidOwn_;",
+             "carrier = phiFluidOwn_; carrier *= fvc::interpolate(epsP_);"),
+            ("wrong convention", 'word("intrinsic"), epsP_, carrier',
+             'word("superficial"), epsP_, carrier'),
             ("one velocity changed", '"plateletCarrier", suppliedCarrier',
              '"plateletCarrier", phiFluidOwn_'),
             ("helper bypasses dispatch", "epsP_, carrier)", "epsP_, suppliedCarrier)"),
             ("diagnostics use stale carrier", "gMin(carrier.primitiveField())",
              "gMin(suppliedCarrier.primitiveField())"),
-            # The evidence archive is exempt from the suppliedCarrier and
-            # phiSkelOwn_ counts. These five confirm the exemption is a hole
-            # exactly the size of that one call and no larger: a reordered or
-            # renamed archive call stops being exempt, and transport that
-            # reaches for either field is still caught while the archive is
-            # present and well-formed.
-            ("archive arguments reordered",
-             "archivePlateletCarrier(suppliedCarrier, carrier, Feps,"
-             " phaseCorrector);",
-             "archivePlateletCarrier(carrier, suppliedCarrier, Feps,"
-             " phaseCorrector);"),
-            ("archive call renamed",
-             "archivePlateletCarrier(suppliedCarrier",
-             "archivePlateletCarrierX(suppliedCarrier"),
-            ("archive ungated",
-             "if (plateletCarrierArchive_)\n    {\n"
-             "        archivePlateletCarrier(",
-             "if (true)\n    {\n        archivePlateletCarrier("),
-            ("transport reaches for the skeleton flux despite the archive",
+            # S21A a38/b13: the three archive mutations went with the archive.
+            ("transport reaches for the skeleton flux",
              "const surfaceScalarField& Feps = tFeps();",
              "const surfaceScalarField& Feps = tFeps();"
              " const surfaceScalarField sneak(phiSkelOwn_);"),
-            ("transport reuses the supplied carrier despite the archive",
+            ("transport reuses the supplied carrier",
              "const surfaceScalarField& Feps = tFeps();",
              "const surfaceScalarField& Feps = tFeps();"
              " const surfaceScalarField sneak(suppliedCarrier);"),

@@ -33,6 +33,12 @@ a run on disk:
 This file asserts the six properties that makes it have, and -- because a
 guard that cannot fail is worthless -- that each MUTATION of the expression
 loses at least one of them.
+
+S21: the solver keeps only convexExcess with the deposited reference, both
+built in. The pins on the deleted laws, the switch tests, their refusals and
+the generator's copies are removed; the source checks now pin the convexExcess
+code as S21 left it (report 18 of docket
+20261005-1621-run110939-b68-free-clots lists each with its hunk).
 """
 
 import math
@@ -195,40 +201,25 @@ class LawProperties(unittest.TestCase):
 class SourceMatchesTheLaw(unittest.TestCase):
     """The C++ actually implements the form tested above."""
 
+    # S21: poleAtMax, cubic and poleCubic are deleted from the solver
+    # (S21B hunks a19, a20, a22, d02), so the branch, its shape and the
+    # unknown-model refusal have no source left to pin. The law's properties
+    # above stay: they are the record of why convexExcess replaced them.
+
     def setUp(self):
         self.src = SOLVER.read_text(encoding="utf-8")
 
-    def test_branch_exists(self):
-        self.assertIn('networkPressureModel_ == "poleCubic"', self.src)
-
-    def test_expression_shape(self):
-        """Every factor of the derived form is present in the returned
-        expression, and the pole is in the DENOMINATOR."""
-        m = re.search(
-            r'networkPressureModel_ == "poleCubic"\)\s*\{(.*?)\n    \}',
-            self.src, re.S)
-        self.assertIsNotNone(m, "poleCubic branch not found")
-        body = m.group(1)
-        for token in ("cubicNorm", "poleNorm", "sqr(phiSc)",
-                      "(phiSc - phiS0)", "(phiSMax - phiSc)"):
-            self.assertIn(token, body, f"missing {token}")
-        ret = body[body.index("volScalarField::New"):]
-        self.assertIn("/(cubicNorm*(phiSMax - phiSc))", ret,
-                      "the pole must divide, not multiply")
-        self.assertIn("*poleNorm", ret, "the derived normalisation is missing")
-
-    def test_unknown_model_is_refused_and_names_poleCubic(self):
-        self.assertIn("Use poleAtMax, cubic, poleCubic or ", self.src)
-        self.assertIn('"convexExcess."', self.src)
-
     def test_construction_refuses_a_pole_with_no_room(self):
-        """phiSMax <= phi_s0 inverts the law's sign; it must be fatal."""
+        """phiSMax <= phi_s0 inverts the law's sign; it must be fatal.
+        S21 (S21B hunk d03): the cubic exemption went with the cubic, so the
+        refusal is unconditional."""
         self.assertIn("needs phiSMax > skeletonVolumeFraction", self.src)
-        m = re.search(
-            r'networkPressureModel_ != "cubic"\s*\n\s*&& phiSMax_ <= '
-            r'skeletonVolumeFraction_', self.src)
-        self.assertIsNotNone(
-            m, "the guard must exempt `cubic`, which never reads phiSMax")
+        flat = "".join(self.src.split())
+        self.assertIn(
+            'if(phiSMax_<=skeletonVolumeFraction_){FatalErrorInFunction'
+            '<<"networkPressureModel="<<"convexExcess"'
+            '<<"needsphiSMax>skeletonVolumeFraction,butphiSMax="', flat,
+            "phiSMax <= phi_s0 must be refused, with no exemption")
 
     def test_the_cap_is_instrumented(self):
         """A bound no law can report is unfailable (this project's retired
@@ -238,40 +229,10 @@ class SourceMatchesTheLaw(unittest.TestCase):
         self.assertIn('" pnCapFrac="', self.src)
 
 
-class GeneratorAndSolverAgree(unittest.TestCase):
-    """Both sides of the legal set, DERIVED rather than listed twice.
-
-    The solver FatalErrors on an unknown networkPressureModel and the
-    generator refuses one. If those two sets drift, either a name the
-    generator emits dies on the VM, or a name the solver accepts cannot be
-    reached from a child. Both are silent until a run is paid for.
-    """
-
-    def test_the_two_accepted_sets_are_equal(self):
-        gen = (ROOT / "cases" / "AM2020_planar_mural_detachment"
-               / "scripts" / "create_cases.py").read_text(encoding="utf-8")
-        m = re.search(
-            r'_npm not in \(([^)]*)\)', gen)
-        self.assertIsNotNone(m, "generator refusal not found")
-        generator_set = set(re.findall(r'"(\w+)"', m.group(1)))
-
-        src = SOLVER.read_text(encoding="utf-8")
-        solver_set = set(re.findall(
-            r'networkPressureModel_ == "(\w+)"', src))
-        # poleAtMax is reached by falling through the != test, not by an ==
-        solver_set.update(re.findall(
-            r'networkPressureModel_ != "(\w+)"', src))
-        # `cubic` also appears in the banner's ternary; that is the same name
-        self.assertEqual(
-            generator_set, solver_set,
-            f"generator accepts {sorted(generator_set)} but solver knows "
-            f"{sorted(solver_set)}")
-
-    def test_the_default_is_unchanged(self):
-        """Adding a value must not move any existing child."""
-        gen = (ROOT / "cases" / "AM2020_planar_mural_detachment"
-               / "scripts" / "create_cases.py").read_text(encoding="utf-8")
-        self.assertIn('"network_pressure_model", "poleAtMax"', gen)
+# S21: GeneratorAndSolverAgree is retired. networkPressureModel is built in
+# (convexExcess): the solver has no value test left to derive a set from, and
+# the generator writes none of the built-in keys (case-engineer report 07,
+# item 3), so neither side of the comparison exists.
 
 
 class MutationsMustFail(unittest.TestCase):
@@ -381,11 +342,13 @@ class DepositedReference(unittest.TestCase):
         i = src.find("phaseClotAxisymmetricFluid::networkPressureArgument()")
         self.assertGreater(i, 0, "networkPressureArgument() is gone")
         body = "".join(src[i:src.find("\n}\n", i)].split())
-        self.assertIn('if(networkPressureReference_=="deposited")', body)
+        # S21: deposited is built in -- the guard (S21B hunk d34) and the
+        # nominal forceFraction() fall-back (a18) are deleted, so the excess
+        # is the function's last and only return.
         self.assertIn("skeletonVolumeFraction_)+(thetaC_+thetaH_)-thetaNetRef_",
                       body)
-        self.assertTrue(body.endswith("returnforceFraction();"),
-                        "the nominal branch must stay the shipped argument")
+        self.assertTrue(body.endswith("+(thetaC_+thetaH_)-thetaNetRef_);}"),
+                        "the excess must be the argument the function returns")
 
     def test_a_ratio_form_in_the_source_would_fail(self):
         src = SOLVER.read_text()
@@ -502,13 +465,17 @@ class ConvexExcess(unittest.TestCase):
 
     def test_the_source_implements_it(self):
         src = SOLVER.read_text(encoding="utf-8")
-        i = src.index('if (networkPressureModel_ == "convexExcess")')
-        body = src[i:src.index("\n    }\n", i)]
+        # S21: convexExcess is built in. Its `if` (S21B hunk d35) is gone, so
+        # the body checked is all of networkPressure(); the FatalError the
+        # old branch held was the deposited refusal (a21), deleted, and the
+        # out-of-domain report is the shared check it calls.
+        i = src.index("phaseClotAxisymmetricFluid::networkPressure() const")
+        body = src[i:src.index("\n}\n", i)]
         flat = "".join(body.split())
         self.assertIn(
             "(phiSMax-phiS0)*(phiS-phiS0)/(phiS*(phiSMax-phiS))", flat)
-        self.assertIn("FatalErrorInFunction", body,
-                      "out-of-domain must be reported, not bounded")
+        self.assertIn('checkNetworkArgument(phiS,"convexExcessnetworkpressure");',
+                      flat, "out-of-domain must be reported, not bounded")
         self.assertNotIn("min(phiS", flat)
         self.assertNotIn("max(phiS", flat)
         self.assertNotIn("phiSc", flat, "the legacy clamp must not be used")
@@ -519,21 +486,17 @@ class ConvexExcess(unittest.TestCase):
         j = src.index("phaseClotAxisymmetricFluid::networkPartialPressureUndamaged()")
         pp = "".join(src[j:src.index("\n}\n", j)].split())
         self.assertIn('thetaNetRef_/dimensionedScalar("phiS0"', pp)
-        self.assertIn("forceFraction()*networkPressure()", pp)
+        # S21: the legacy-law forceFraction() weight was unreachable once
+        # convexExcess is built in and is deleted (S21B hunk a30).
         k = src.index("phaseClotAxisymmetricFluid::networkPartialPressure() const")
         wrap = "".join(src[k:src.index("\n}\n", k)].split())
         self.assertIn(
             "returnnetworkPressureDamaged(networkPartialPressureUndamaged());",
             wrap)
 
-    def test_generator_and_solver_refuse_it_without_deposited(self):
-        src = SOLVER.read_text(encoding="utf-8")
-        self.assertIn("convexExcess needs networkPressureReference deposited",
-                      src)
-        gen = (ROOT / "cases" / "AM2020_planar_mural_detachment"
-               / "scripts" / "create_cases.py").read_text(encoding="utf-8")
-        self.assertIn("network_pressure_model convexExcess weights by the",
-                      gen)
+    # S21: test_generator_and_solver_refuse_it_without_deposited is retired:
+    # the solver refusal is deleted (S21B hunk a21) and the generator writes
+    # neither key (case-engineer report 07, item 3).
 
 
 class ConvexExcessMutations(unittest.TestCase):

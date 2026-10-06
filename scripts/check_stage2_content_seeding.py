@@ -32,9 +32,9 @@ spec = importlib.util.spec_from_file_location("seed_stage2", SEEDER)
 S = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(S)
 
-PROPS = """contentModel yes;
-plateletContentModel yes;
-skeletonVolumeFraction 0.45;
+# S21: contentModel and plateletContentModel are built in, so a generated dictionary carries
+# neither (the solver refuses both by name); the seeder needs only theta_ref.
+PROPS = """skeletonVolumeFraction 0.45;
 """
 
 
@@ -111,11 +111,13 @@ class SeedingTests(unittest.TestCase):
 
     # ---- the refusals -------------------------------------------------
 
-    def test_it_is_a_no_op_without_the_platelet_model(self):
-        case = self.seed(c=[-1.0], shell=[0.0],
-                         props="contentModel yes;\nskeletonVolumeFraction 0.45;\n")
-        self.assertFalse((case / "0" / "thetaC").exists(),
-                         "seeded a case that never asked for Stage 2")
+    def test_an_s21_dictionary_without_the_two_switches_is_seeded(self):
+        """S21: no switch in the dictionary means seeding, never a no-op (the pre-S21 no-op
+        would have left the solver's all-or-none restart without thetaC/thetaH)."""
+        case = self.seed(c=[-1.0], shell=[0.0], props="skeletonVolumeFraction 0.45;\n")
+        self.assertTrue((case / "0" / "thetaC").exists(), "an S21 dictionary was not seeded")
+        self.assertAlmostEqual(self.values(case, "thetaC")[0] + self.values(case, "thetaH")[0],
+                               0.45, places=15)
 
     def test_missing_nP_is_refused_rather_than_half_seeded(self):
         """Writing thetaC+thetaH without nP fails the contract the other way."""
@@ -145,14 +147,16 @@ class SeedingTests(unittest.TestCase):
                 S.main()
             self.assertIn("0/shell has", str(caught.exception))
 
-    def test_platelet_model_without_content_model_is_refused(self):
+    def test_a_dictionary_without_theta_ref_is_refused(self):
+        """S21 replaces the retired switch-combination refusal: theta_ref is the one input
+        the seeder reads from the dictionary, and it is never defaulted."""
         with tempfile.TemporaryDirectory() as tmp:
-            case = build(tmp, c=[-1.0], shell=[0.0],
-                         props="plateletContentModel yes;\n"
-                               "skeletonVolumeFraction 0.45;\n")
+            case = build(tmp, c=[-1.0], shell=[0.0], props="G 4;\n")
             S.main.__globals__["sys"].argv = ["seed", str(case)]
-            with self.assertRaises(SystemExit):
+            with self.assertRaises(SystemExit) as caught:
                 S.main()
+            self.assertIn("skeletonVolumeFraction is not declared", str(caught.exception))
+            self.assertFalse((case / "0" / "thetaC").exists())
 
     # ---- the written file ---------------------------------------------
 

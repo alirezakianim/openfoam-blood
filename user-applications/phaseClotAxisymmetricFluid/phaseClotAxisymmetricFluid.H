@@ -149,26 +149,6 @@ class phaseClotAxisymmetricFluid
     volScalarField H_;           // history field, max of psi+
     volScalarField poroPerm_;    // permeability k(phi)
 
-    //- STAGE 3, opt-in. The interphase drag coefficient formed from the
-    //  CONSERVED content and its composition instead of the legacy indicator
-    //  and the legacy shell label. Kinematic, 1/s; the dynamic form is
-    //  rho*contentDragK_ and both phases take the SAME coefficient with
-    //  opposite signs. Filled only when dragDriver_ == "content"; left at
-    //  zero and unused otherwise.
-    //
-    //  Authority: research/model-specs/AM2020-content-drag-v1.md.
-    volScalarField contentDragK_;
-
-    //- contentInvPermKC, m^-2. A NEW diagnostic, not a reinterpretation of
-    //  poroPerm: poroPerm keeps its name, its units and its meaning so
-    //  archived consumers still read what they were written against.
-    //
-    //  IT DESCRIBES THE KOZENY-CARMAN BRANCH ONLY, which is not necessarily
-    //  the branch the momentum equation used -- the named dilute
-    //  continuation can dominate. The branch counts are reported next to it
-    //  and must never be inferred from the field.
-    volScalarField contentInvPermKC_;
-
     //- chi*nu/k, the Brinkman drag exactly as it enters the momentum
     //  equation. Written for ParaView because poroPerm spans nineteen
     //  decades and reads BACKWARDS: blood is the infinitely permeable
@@ -233,7 +213,6 @@ class phaseClotAxisymmetricFluid
     volScalarField bondHold_;
 
     volSymmTensorField sigmaD_;  // deviatoric-ish stress carrier
-    volVectorField divSigmaExp_; // explicit stress correction
 
     //- PERSISTENT copy of elasticStress(), for the wall-adhesion condition.
     //
@@ -286,7 +265,6 @@ class phaseClotAxisymmetricFluid
     // capability traded for kinematics that survive large strain, and it must
     // be reported as one rather than quietly dropped. See section 5 of
     // research/literature/AM.2020.0056-19/KINEMATICS_DECISION_2026-08-15.md.
-    bool eulerianSolid_;
 
     //- Put the Brinkman drag back on the Eulerian path, gated on release.
     //  DEFAULT OFF, so every case that predates this switch assembles a
@@ -319,7 +297,6 @@ class phaseClotAxisymmetricFluid
     //  STATED RISK, not hidden: coeff*dt = 675 in the core, so the core may
     //  go rigid -- the opposite failure from the present one. bk_soft in the
     //  eulerian_brinkman series brackets it by moving k0pcore alone.
-    bool eulerianBrinkman_;
 
     //- Elastic left Cauchy-Green tensor. I where unstrained.
     volSymmTensorField be_;
@@ -346,21 +323,18 @@ class phaseClotAxisymmetricFluid
     //
     //  Default OFF: it is a modelling choice, and the A/B against it is the
     //  evidence that it is the right one.
-    bool beTraceFreeSource_;
 
     //- Advect the phase field with phi_ on the Eulerian path, instead of
     //  rebuilding a chi-blended material flux from the cell-centred vs.
     //  Defaults ON: one velocity means one flux, and the blend is the
     //  partitioned formulation's construction. See the derivation and the two
     //  measured defects at the call site in solvePhaseField().
-    bool eulerianMaterialFluxIsPhi_;
 
     //- Build the stretch term's velocity gradient by Gauss on a face velocity
     //  whose normal component is exactly phi_/|Sf|, so its trace is div(phi)
     //  and therefore machine zero. Defaults ON. Derivation, the measurement
     //  that motivates it, and why it is NOT the dev(gradU) mistake again, are
     //  at the call site in solveElasticStrain().
-    bool beFluxConsistentGradU_;
 
     //- Report the be equation TERM BY TERM at the cell with the smallest
     //  eigenvalue of be, every step. DEFAULT OFF: it costs four extra
@@ -371,7 +345,6 @@ class phaseClotAxisymmetricFluid
     //  every global quantity looked ordinary -- eleven hypotheses were tested
     //  against bulk means and all eleven died. Rationale and the reading rule
     //  are at the call site in solveElasticStrain().
-    bool beTermDiagnostic_;
 
     //- Apply the elastic force through the FACE flux rather than as a
     //  cell-centred source inside UEqn.H(). DEFAULT OFF, because it is
@@ -409,19 +382,12 @@ class phaseClotAxisymmetricFluid
     //  NOT ESTABLISHED AS THE CAUSE. Nine causes have been wrong in this
     //  project. What is established is the stencil mismatch and its dose
     //  response; that fixing it fixes the lock is what the A/B measures.
-    bool faceConsistentElasticForce_;
-
-    //- The elastic body force in m/s^2, held between momentumPredictor() and
-    //  correctPressure() when faceConsistentElasticForce_ is on. Invalid
-    //  otherwise, which is how correctPressure() decides to defer to the base.
-    tmp<volVectorField> elasticForce_;
 
     //- Rescale be by det^(-1/3) after each solve so det(be) = 1 exactly.
     //  A BAND-AID, DEFAULT OFF: it restores the volume without undoing the
     //  advective smearing that destroyed it, and defaulting it on would make
     //  the det gate pass forever while the drift continued unmeasured. See the
     //  derivation and the Minkowski argument at the call site.
-    bool beDetRenormalise_;
 
     //- Courant number for the shear wave, c_s = sqrt(G/rho).
     //
@@ -468,7 +434,6 @@ class phaseClotAxisymmetricFluid
     dimensionedScalar D_;
     dimensionedScalar alpha_;
     dimensionedScalar k0_;
-    dimensionedScalar k1_;
     dimensionedScalar etaP_;
     dimensionedScalar gradFloor_;
     dimensionedScalar qFloor_;
@@ -479,7 +444,6 @@ class phaseClotAxisymmetricFluid
     //   "thresholdSaturating" k = k0 * E(gammaDot), Shankar et al. (2022)
     //                         eq. (9): E = 1 below gammaLow, linear ramp to
     //                         enhancementMax at gammaHigh, saturated above.
-    word shearEnhancementModel_;
 
     // THE GROWTH CLOSURE. See
     // research/designs/AM2020_growth_closure_reaction_form.md
@@ -491,32 +455,25 @@ class phaseClotAxisymmetricFluid
     //               to resolve, and exactly stoichiometric with the sink.
     // Defaults to "gradient" so every previously passed gate reproduces
     // byte-identically without editing its dictionary.
-    word growthClosure_;
 
     // Sub-grid depletion resistance folded into kEff.
     //   "none"              kEff = k                       (default)
     //   "seriesResistance"  kEff = 1/(1/k + h/(2 D))
     // Applied to the sink and the growth together, so switching it on
     // cannot break the stoichiometry.
-    word interfaceDepletionModel_;
     dimensionedScalar gammaLow_;
     dimensionedScalar gammaHigh_;
     scalar enhancementMax_;
 
     // --- v3 mechanics controls (AM2020-clot-mechanics-v3) ---
-    bool clotMechanics_;             // false => exact v2 rigid behaviour
     dimensionedScalar G_;            // skeleton shear modulus
     scalar poissonRatio_;            // drained Poisson ratio
     dimensionedScalar lambdaLame_;   // second Lame parameter
-    word permeabilityModel_;         // "kozenyCarman" | "constant"
     dimensionedScalar k0p_;          // intrinsic permeability
-    scalar phi0_;                    // reference porosity
     dimensionedScalar Gc_;           // fracture toughness
     dimensionedScalar ell_;          // fracture regularisation length
     scalar etaRes_;                  // residual stiffness
     scalar DgDetach_;                // damage at which material is released
-    label nSkeletonCorrectors_;
-    label nStaggeredCorrectors_;
 
     // --- geometrically nonlinear skeleton ---
     // DEFAULTS TO FALSE, so every case that does not ask for it assembles the
@@ -538,7 +495,6 @@ class phaseClotAxisymmetricFluid
     // attached clot bending downstream undergoes, and it introduces no new
     // material constant. It is not a good model at large STRETCH; that is a
     // declared limit, not an oversight.
-    bool finiteStrain_;
 
     // --- Strongly-coupled flow/skeleton exchange ---
     // DEFAULTS TO FALSE, so a case that does not ask for it gets the
@@ -553,12 +509,7 @@ class phaseClotAxisymmetricFluid
     // G = 1 kPa, with a PERIOD THAT SHRINKS WITH dt and therefore no continuum
     // limit, and showed the timestep is not a usable repair (382 to 11743
     // hours to reach a tolerable amplitude).
-    bool stronglyCoupledFSI_;
-    label nFSICorrectors_;        // cap on exchanges per time step
-    scalar fsiTolerance_;         // relative residual that ends the exchange
     scalar fsiRelaxation_;        // initial (or fixed) relaxation factor
-    bool fsiAitken_;              // adapt the factor by Aitken's Delta^2
-    scalar skeletonFixedPointTolerance_;
                                   // exit tolerance of the SEGREGATED loop in
                                   // solveSkeleton(), distinct from the linear
                                   // solver tolerance beneath it. A dictionary
@@ -566,9 +517,6 @@ class phaseClotAxisymmetricFluid
                                   // 1e-7 it always had, because it is a
                                   // candidate cause of the exchange floor that
                                   // run 20260805-071815 measured.
-    bool advectReleased_;         // carry released clot away with the flow.
-                                  // Default OFF, so every result established
-                                  // before 2026-08-10 reproduces exactly.
     label releaseSupportSweeps_;  // max-propagation sweeps used to decide what
                                   // is still connected to a bonded face
 
@@ -620,7 +568,6 @@ class phaseClotAxisymmetricFluid
     //  Slowing the fluid would leave the phase field translating at 9.14e-3
     //  m/s regardless. An anchor has to act on the CARRIER OF c, not only on
     //  the momentum equation.
-    bool bondHoldCarrier_;
 
     //- Ramp the hold linearly to zero over bondHoldDilation cells instead of
     //  switching it off at a cell boundary.
@@ -645,7 +592,6 @@ class phaseClotAxisymmetricFluid
     //  stiffness still decides how much it deforms.
     //
     //  Default false, so every result before 2026-08-25 reproduces exactly.
-    bool bondHoldTaper_;
 
     //- Never mark a CORE cell released. On by default, and effective only
     //  when coreShell is on, so a single-material case is untouched.
@@ -676,16 +622,12 @@ class phaseClotAxisymmetricFluid
     //  operator and the declared div(sigmaElastic) scheme. This writes the
     //  terms using those operators so the two can be told apart. It CHANGES
     //  NOTHING that is solved.
-    bool skeletonResidualDiagnostic_;
 
     //- div(sigma_e)/rho, the elastic force per unit mass [m/s^2]
     volVectorField skelElasticForce_;
 
     //- chi*grad(p), the pressure force per unit mass [m/s^2]
     volVectorField skelPressForce_;
-
-    //- The skeleton velocity the balance implies, U - (fPress - fElastic)/drag
-    volVectorField skelVs_;
 
     //- TWO-VELOCITY SKELETON. The clot gets its own velocity field.
     //
@@ -715,7 +657,6 @@ class phaseClotAxisymmetricFluid
     //
     //  Default OFF. It changes what the phase field is advected by, which is
     //  the most consequential switch in this solver.
-    bool twoVelocitySkeleton_;
 
     //- Blend the material carrier to the fluid flux as the clot fraction
     //  vanishes:  phiMaterial = chi_f*phiSkel + (1 - chi_f)*phi.
@@ -797,7 +738,6 @@ class phaseClotAxisymmetricFluid
     //  while 20260908-061511's says carrierBlend=ON. With the default ON,
     //  re-running em_2vel_ps45_cub_df1e6 would silently apply a carrier that
     //  child never had and would not reproduce its SIGFPE. OFF restores it.
-    Switch materialCarrierBlend_;
 
     //- Cap the growth/erosion interface speed so a step cannot carry c
     //  outside [-1, 1].  DEFAULT OFF, and it is off because it was DISPROVED.
@@ -839,7 +779,6 @@ class phaseClotAxisymmetricFluid
     //  which feeds surfaceLossCoeff_ and the platelet sink, and the two
     //  solves do not share one accepted transfer because prePredictor() runs
     //  updateDerivedFields() again between them.
-    Switch vnCapEnabled_;
 
     //- Skeleton (clot material) velocity [m/s]. Eulerian; NOT a displacement.
     //
@@ -898,7 +837,6 @@ class phaseClotAxisymmetricFluid
     //  answer one falsifiable question: does conservatively transported
     //  content reproduce the legacy chi to solver tolerance? If not, nothing
     //  built on top of it is trustworthy.
-    Switch contentModel_;
 
     //- Which operator solveContentComponents() assembles. Two words only,
     //  validated at construction -- a typo must not fall through to a
@@ -921,7 +859,6 @@ class phaseClotAxisymmetricFluid
     //  source (closed against the mass budget to four digits) and the
     //  sign-cancelling 77.9% is upwind against vanLeer. `matched` is the test
     //  that criterion should always have been.
-    word contentOperator_;
 
     //- Declared volume per bound platelet-equivalent. DECLARED, not fitted
     //  from the failing q trajectory -- fitting it there would bake the
@@ -1000,7 +937,6 @@ class phaseClotAxisymmetricFluid
         //  double root at phi_s = 0, a simple root at phi_s0). The cubic
         //  exists because the pole form applies a FRINGE FORCE -- see
         //  networkPressure() -- and run 20260905-223740 measured it.
-        word networkPressureModel_;
 
         //- S10 FIX 1. What p_n measures compaction AGAINST: "nominal" (the
         //  shipped behaviour, phi_s = theta against the constant phi_s0) or
@@ -1009,7 +945,6 @@ class phaseClotAxisymmetricFluid
         //  reads as network dilated below phi_s0 and is in tension at t = 0:
         //  run 20260922-104613 measured 0.00725*G of normal wall traction on
         //  step 1, 24 of 56 bonds broken before the flow had loaded anything.
-        word networkPressureReference_;
 
         //- S10 FIX 3. The face interpolation the content components are
         //  transported with: "upwind" (shipped) or "limitedLinear" (the
@@ -1017,14 +952,12 @@ class phaseClotAxisymmetricFluid
         //  shared by both components, the reference content and the momentum
         //  face value). Upwind added dx*(1-Co) of variance per unit distance
         //  travelled: 39.7 um^2 measured against 40.7 predicted over 57 um.
-        word contentTransportScheme_;
 
         //- S10 FIX 2. What carries RELEASED material on the two-velocity
         //  path: "rigidBody" (shipped: the kinematic band-average Ubody) or
         //  "material" (the solved skeleton flux, the same carrier attached
         //  material rides). Ubody read 14 mm/s because its band spans the
         //  throat; the solved Vs said the released clot rolls at ~6 mm/s.
-        word releasedCarrier_;
 
         //- S11 FIX 1. The skeleton (and fluid) momentum equation's form:
         //  "conservative" (shipped: fvm::ddt(phi, U) with a BOUNDED div,
@@ -1036,7 +969,6 @@ class phaseClotAxisymmetricFluid
         //  that left, so Vs grows as phi_old/phi_new per step: run
         //  20260923-031942 tracked phi0/phi to 3-17% over 12 steps before
         //  its void cell ran away.
-        word skeletonMomentumForm_;
 
         //- S11 FIX 2. How the 2x2 block is taken to faces: "cellInverse"
         //  (shipped: interpolate the CELL inverse) or "faceAssembled"
@@ -1045,7 +977,6 @@ class phaseClotAxisymmetricFluid
         //  diagonal is only Kres ~ residualPhiS/dt, so its inverse is ~1e4x
         //  the clot's; interpolating inverses hands that mobility to every
         //  force on a clot SURFACE face.
-        word blockFaceInverse_;
 
         //- S11 FIX 3. How the deviatoric network stress crosses a face:
         //  "linear" (shipped: the average of the two PARTIAL stresses, so a
@@ -1053,7 +984,6 @@ class phaseClotAxisymmetricFluid
         //  "series" (seriesFaceWeights() of the occupancy times the linearly
         //  interpolated intrinsic stress). Also the face coefficient of the
         //  BSD stabiliser, which carries the same stiffness.
-        word stressFaceTransmission_;
 
         //- S11 FIX 4. How the isotropic network stress acts: "stressDivergence"
         //  (shipped: inside sigma, a cell divergence then INTERPOLATED to
@@ -1062,7 +992,6 @@ class phaseClotAxisymmetricFluid
         //  force of multiphaseEuler, momentumTransferSystem::Fs). Requires a
         //  law whose partial pressure is monotone, or the compact force is
         //  anti-diffusive: networkPressureModel convexExcess.
-        word networkPressureForce_;
 
         //- S11 FIX 6. What decides where be relaxes to I: "blood" (shipped:
         //  rate*q^2, so the clot's own diffuse edge forgets its strain in
@@ -1070,7 +999,6 @@ class phaseClotAxisymmetricFluid
         //  where no network was ever deposited, thetaNetRef/phi_s0 below
         //  residualChi). Under networkAbsent newly deposited content is mixed
         //  into be stress-free, which is what relaxation used to do for it.
-        word beRelaxBasis_;
 
         //- S11: "off" (shipped) or "on". On, maxDeltaT() also bounds dt by
         //  the Courant number of the SKELETON carrier (0.5, as maxCo bounds
@@ -1084,7 +1012,6 @@ class phaseClotAxisymmetricFluid
         //  the first time, estimated at 0.13-0.18, i.e. a bound near 5.2e-07
         //  s -- a ~10% margin, so it may bind slightly at the edge. That is
         //  the bound doing its job, not a cost to tune away.
-        word explicitStabilityBounds_;
 
         //- max over cells of D/h^2, 1/s, of the two explicit elastic terms
         //  -- the compact network pressure and the deviatoric stress where
@@ -1102,7 +1029,6 @@ class phaseClotAxisymmetricFluid
         //  20260923-085741: under legacy the calibrated floor bound in 100%
         //  of fringe cells, 10x (shell) to 1000x (core) below the network's
         //  own drag, and that fringe ran away in both children.
-        word dragOccupancyBasis_;
 
         //- S13 FIX A. What weights the convexExcess partial pressure p(a),
         //  a = phi_s0 + theta - thetaNetRef: "depositedOccupancy" (S11 as
@@ -1126,7 +1052,6 @@ class phaseClotAxisymmetricFluid
         //  compaction the content registers, so that mode had no elastic
         //  restoring stress; the flux-consistent one strains the network by
         //  exactly the compaction its content undergoes.
-        word beStretchGradient_;
 
         //- S14. "off" (shipped) or "criticalStretch": network whose largest
         //  principal stretch sqrt(max eig(be)) reaches networkCriticalStretch_
@@ -1137,7 +1062,6 @@ class phaseClotAxisymmetricFluid
         //  locally; single fibres 2.5-3.3. Run 20260923-204553 (em58): a
         //  wall tail of network reached principal stretch 3.2-6.2 and its
         //  explicit elastic term blew up.
-        word networkRupture_;
 
         //- S14: the critical principal stretch, dimensionless (> 1).
         scalar networkCriticalStretch_;
@@ -1148,7 +1072,6 @@ class phaseClotAxisymmetricFluid
         //  G*[(8/9)b1 + (2/9)(b2 + b3)], b the eigenvalues of be -- G*4/3 at
         //  rest, ~G*b1 stretched). em58's solver-form number read 0.087 while
         //  the tangent form was 1.25 at the step it blew up.
-        word elasticStabilityStiffness_;
 
         //- S15. networkRupture progressiveDamage: Kliuchnikov et al. 2025
         //  (source 32) Eq. 6, the Kachanov isotropic damage fitted to
@@ -1188,14 +1111,12 @@ class phaseClotAxisymmetricFluid
         //  terminalRelease. Off: d*_law is 0 below lc and 1 at it
         //  ("terminal-only"), which is the only form in which lc <= lf is
         //  allowed.
-        Switch networkDamageProgressive_;
 
         //- S16 B. What the skeleton stress floor guards: "intactWeight"
         //  (shipped): max(ind*(1 - d), floor), so d -> 1 is overridden by
         //  the floor; "occupancy": max(ind, floor)*(1 - d), the floor guards
         //  the occupancy only and a fully damaged cell carries no deviatoric
         //  stress. Identical wherever d = 0.
-        word skeletonFloorBasis_;
 
         //- S16 C. How the damage d is carried: "volumeFlux" (shipped): the
         //  label ruptured_ is transported by the volume flux;
@@ -1204,13 +1125,11 @@ class phaseClotAxisymmetricFluid
         //  carried by the content's own transport and limiter, and d, d* are
         //  its quotients. H9: the label gained 23.3% of damaged content in
         //  transport alone.
-        word damageTransport_;
 
         //- S16 D (F3). Whether damage reaches the network pressure: "off"
         //  (shipped) or "tensile": p_n -> max(p_n, 0) + (1 - d) min(p_n, 0),
         //  a broken network resists no dilation, its debris still resists
         //  packing (first-principles; design section 2F).
-        word networkPressureDamage_;
 
         //- S17 C (research/designs/2026-09-26-S17-frozen-release-implicit-
         //  elastic-startup.md, section 2C). "explicit" (shipped): the BSD
@@ -1220,7 +1139,6 @@ class phaseClotAxisymmetricFluid
         //  Vs predictor is solved with Kres on its diagonal, and the elastic
         //  number leaves the dt rate (the wave CFL and nuNet stay). Needs
         //  networkRupture fibreRelease.
-        word elasticCoupling_;
 
         //- S17b (research/designs/2026-09-27-S17b-slack-fibre-field-units-
         //  wall-face.md, revision 2, APPROVED). Each defaults to S17.
@@ -1229,16 +1147,13 @@ class phaseClotAxisymmetricFluid
         //  thetaTaut_, C_B and q_P go to 0 at once, the content stays in P2
         //  until the tau law releases it; q_P scales with T on every UNI
         //  contraction). Needs networkRupture fibreRelease.
-        word fibreSlack_;
         //  fibreArithmetic: "shipped" or "fieldUnits" (A2: the six
         //  partition/fibre predictors assembled in field units, rows x dt/V;
         //  the fibre read -- P-LS, W2, G-proj -- only where the carrying
         //  content >= DBL_MIN). Needs damageTransport contentPartition.
-        word fibreArithmetic_;
         //  skeletonWallFace: "shipped" or "zeroed" (A3: the wall-patch face
         //  term zeroed in BOTH the Vs and the U reconstructs, as
         //  phiSkelOwn_ zeroes its wall flux). Needs twoVelocitySkeleton.
-        word skeletonWallFace_;
         //- S18, the soft stage (research/designs/2026-09-29-S18-no-frozen-
         //  pressure-content-weight-network-viscosity.md, rev. 10, APPROVED
         //  2026-09-29). Each defaults to S17b. (C, the content weight, is
@@ -1246,15 +1161,12 @@ class phaseClotAxisymmetricFluid
         //  frozenPendingPressure: "shipped" (S17: p_used carries q_P/S) or
         //  "none" (A, R1: p_used excludes q_P/S; q_P stays stored and
         //  enters no force). Needs networkRupture fibreRelease.
-        word frozenPendingPressure_;
         //  wallPatchSplit: "shipped" (the split's wall patch keeps dev(be))
         //  or "split" (B, H12: the S17 intact/pending split on the wall
         //  patch). Needs networkRupture fibreRelease.
-        word wallPatchSplit_;
         //  cplusOrder: "shipped" (passengers() forms X - divX/Vrel) or
         //  "shared" (E, H9: passengers() in tautShare()'s A/B order).
         //  Needs networkRupture fibreRelease.
-        word cplusOrder_;
         //  projSiteLog: no (S18 as built) or yes (S18p, research/designs/
         //  2026-10-01-S18p-em76-attribution-probe.md rev. 2, section 2): the
         //  per-site P-LS counters (PHASE_CLOT_S18P, once per step) and the
@@ -1277,7 +1189,6 @@ class phaseClotAxisymmetricFluid
         //  "eliminate" (the default: a lumen cell's Vs is not an unknown,
         //  Vs = U there) or "identityRows" (S19a's system exactly: the
         //  lumen identity rows Vs - U = 0). Read only under blockCoupled.
-        word blockCoupledLumen_;
 
     //- phi_s and phi_f, held as REGISTERED fields rather than recomputed as
     //  temporaries at each use. This is not tidiness: fvm::ddt(rho, vf) reads
@@ -1309,36 +1220,8 @@ class phaseClotAxisymmetricFluid
     surfaceScalarField phiFluidOwn_;
     surfaceScalarField phiSkelOwn_;
 
-    //- THE ADVECTION MASK. Its boundary is where the advecting velocity jumps
-    //  from Ubody to the local fluid, so it must lie where grad(c) is
-    //  negligible or the field is sheared apart there. Sized by the FIELD,
-    //  not by a cell count: grown through every cell whose c is below
-    //  releasedMaskLimit, then a short margin further into pure blood.
-    //
-    //  Measured shedding at the boundary, |du|*|grad c| integrated over one
-    //  transit (run 20260813-013923):
-    //      boundary at c = 0.905  ->  dc = 15.2   torn apart
-    //                      0.9989 ->  dc =  0.15  marginal
-    //                      0.9999 ->  dc =  0.007 safe
-    //
-    //  A large mask is free: the scheme is the non-conservative u.grad(c)
-    //  form, so where c is uniform the mask velocity has no effect at all.
-
-        //- Unconditional margin, in cells, grown past releasedMaskLimit so
-        //  the boundary sits in blood rather than on the threshold contour.
-        label releasedMaskDilation_;
-
-        //- c above which a cell carries no meaningful clot material.
-        scalar releasedMaskLimit_;
-
-        //- Safety cap on growth sweeps; the loop exits when nothing changes.
-        label releasedMaskSweeps_;
-
     label skeletonDivergenceRun_; // consecutive residual increases that count
                                   // as divergence of the skeleton fixed point
-    bool skeletonDiverged_;       // set by the guard in solveSkeleton()
-    label skeletonGrowthRun_;     // running count of consecutive increases
-    scalar skeletonPrevResidual_; // previous corrector's residual
 
     // TERMINATION on sustained divergence. Until run 20260814-224138 the flag
     // above was WRITE-ONLY: the guard broke out of the corrector loop, the
@@ -1351,21 +1234,7 @@ class phaseClotAxisymmetricFluid
     //- Constitutive law for the skeleton. "stVenantKirchhoff" (default, the
     //  historical behaviour) or "neoHookean". Only meaningful with
     //  finiteStrain on; the constructor refuses the combination otherwise.
-    word constitutiveModel_;
-    bool neoHookean_;
 
-    scalar skeletonBestResidual_;      // best residual of the current solve
-    scalar skeletonDivergenceGrowth_;  // residual must exceed this multiple of
-                                       // the best before growth counts as
-                                       // divergence rather than plateau jitter
-    bool skeletonHardFailure_;         // non-finite, |Us| past the bound, or an
-                                       // inverted element: unambiguous, so it
-                                       // ends the run at once rather than
-                                       // waiting for consecutive steps
-    label skeletonDivergedSteps_;      // consecutive TIMESTEPS diverged
-    label divergenceTimeIndex_;        // step the accumulator is currently on
-    bool stepDiverged_;                // any exchange in THIS step diverged
-    label nSkeletonDivergedSteps_;     // how many are tolerated before stopping
     //- The timestep that the PENDING displacement increment (Us_ - UsPrev_)
     //  actually spans.
     //
@@ -1383,29 +1252,6 @@ class phaseClotAxisymmetricFluid
     //  underneath was converging normally.
     scalar deltaTIncrement_;
 
-    scalar materialCourant_;           // Courant bound on the mixture material
-                                       // velocity that advects c; 0 disables
-    scalar materialDeltaTMin_;         // floor under the material-Courant
-                                       // limiter. Without it the limiter can
-                                       // strangle a run silently: see the note
-                                       // on maxDeltaT()
-    label nMaterialFloorSteps_;        // consecutive steps pinned at that floor
-                                       // before the run is stopped
-    label materialFloorSteps_;         // running count of them
-    scalar skeletonUsBound_;           // |Us| beyond which the solve is
-                                       // unphysical regardless of residual
-                                       // history; stops immediately
-    scalar releasedAmbientQ_;     // q above which a cell counts as genuinely
-                                  // fluid when averaging the ambient flow that
-                                  // carries a released clot. The diffuse
-                                  // interface reaches only q ~ 0.54 at the first
-                                  // ring, which is why adjacency was wrong by
-                                  // 300x in run 20260811-100050.
-    bool skeletonPressureForce_;  // apply -chi*grad(p) to the skeleton, the
-                                  // Biot effective-stress term that was absent
-                                  // until run 20260811-051109. Default OFF so
-                                  // earlier results reproduce byte-identically.
-    scalar skeletonImplicitFactor_;
                                   // multiplies the implicit laplacian AND the
                                   // explicit laplacian it is deferred against,
                                   // so the converged solution is unchanged and
@@ -1413,34 +1259,6 @@ class phaseClotAxisymmetricFluid
                                   // above 1 to stabilise the finite-strain
                                   // correction, which diverged at 18% strain
                                   // in run 20260810-035337. Default 1.
-    label skeletonIters_;         // correctors the last skeleton solve used
-    scalar skeletonResidual_;     // and the residual it exited on. Together
-                                  // these say whether that solve CONVERGED or
-                                  // TRUNCATED - the difference between an exact
-                                  // and an inexact map for the outer exchange.
-    scalar fsiOmegaMin_;
-    scalar fsiOmegaMax_;
-    bool fsiSweepTrace_;          // log the residual of EVERY sweep, not just
-                                  // the per-step summary. Default OFF, because
-                                  // it multiplies the log by the sweep count.
-                                  // Needed because the reported contraction is
-                                  // a GEOMETRIC MEAN over the step,
-                                  // (r_last/r_first)^(1/(n-1)), so it depends
-                                  // on how many sweeps ran: the same
-                                  // configuration measured 0.911 at a cap of 50
-                                  // and 0.966 at a cap of 150 (runs
-                                  // 20260804-052240 and 20260804-074259). A
-                                  // mean that moves with the cap cannot be
-                                  // compared across cases, and it makes the
-                                  // sweeps-to-tolerance extrapolation
-                                  // optimistic. The per-sweep trace gives the
-                                  // rate as a FUNCTION OF SWEEP INDEX, which is
-                                  // a property of the iteration rather than of
-                                  // the budget it was given.
-    scalar fsiNormProbeFraction_; // diagnostic threshold for counting cells
-                                  // above a fraction of the L-infinity peak;
-                                  // default 0.5, read only when the existing
-                                  // per-sweep trace is enabled.
 
     volVectorField fsiResidual_;  // previous fixed-point residual, for Aitken
     volScalarField HStep_;        // H at the START of the time step. The
@@ -1509,7 +1327,6 @@ class phaseClotAxisymmetricFluid
     // as the conservative terms, so it cancels to machine precision, and what
     // remains on the diagonal is delta*k >= 0. Derivation in
     // research/designs/AM2020_platelet_flux_consistency_derivation.md.
-    bool plateletFluxConsistent_;
 
     // SOLVE FOR PLATELET CONTENT W = q*w INSTEAD OF THE CONCENTRATION w.
     // Default FALSE; false is the old branch byte for byte.
@@ -1573,7 +1390,6 @@ class phaseClotAxisymmetricFluid
     //
     // Derivation, closure for Vn, and the acceptance gates:
     // research/designs/AM2020_platelet_content_formulation_derivation.md
-    bool plateletContentFormulation_;
 
     // The flux the phase field was ACTUALLY advected by on this step, stored by
     // solvePhaseField() and consumed by solvePlatelets() immediately after it
@@ -1690,7 +1506,6 @@ class phaseClotAxisymmetricFluid
     tmp<volScalarField> pendingStretchStepAccepted_;
     //  S17b A1: the taut share rolls back with the partition.
     tmp<volScalarField> thetaTautStepAccepted_;
-    label plateletOuter_;
 
     //  S16 per-step diagnostics (design section 6), set in the constructor
     //  body and reset at the start of every step. The three stress-weight
@@ -1813,9 +1628,6 @@ class phaseClotAxisymmetricFluid
     autoPtr<blockCoupled::UmfpackLU> blockLU_;
 
     label nPhaseCorrectors_;
-    bool operatorAudit_;
-    bool operatorLocalisationAudit_;
-    label operatorAuditEvery_;
 
     scalar previousInventory_;
 
@@ -2034,16 +1846,13 @@ class phaseClotAxisymmetricFluid
     // permeability or momentum, and it must not be switched on in the same
     // case as the `matched` legacy growth source (both would add content --
     // see checkPlateletConfiguration()).
-    Switch plateletContentModel_;
 
     //- Experimental, default-off PIMPLE-outer reconstruction path. Only the
     //  isolated platelet-content gate enables this until runtime and rollback
     //  gates pass; legacy phase/platelet ordering remains unchanged.
-    Switch plateletOuterTransactions_;
 
     //- Test-only forced rejection at the final outer. Default off and valid
     //  only with the isolated outer transaction path.
-    Switch plateletOuterForceReject_;
 
     //- Test-only transaction-attempt identity. Zero preserves every existing
     //  case; nonzero is valid only in the isolated outer transaction path.
@@ -2060,7 +1869,6 @@ class phaseClotAxisymmetricFluid
     //  too small -- 0.55x at eps = 0.55 -- and it is invisible in uniform
     //  fields because both divergences vanish. Hence nP_ (not NP_) is the
     //  transported unknown and T7 uses a non-uniform pulse.
-    word plateletFluxConvention_;
 
     //- Effective pore diffusivity of free platelets, m^2/s. D_eff = 0 is a
     //  SUPPORTED transport-isolation case, not a degenerate one.
@@ -2095,7 +1903,6 @@ class phaseClotAxisymmetricFluid
     //    "interface" -- kEff*interfaceDelta_, the specified surface-delta
     //                   localisation, matching what the legacy platelet sink
     //                   already does at :8309.
-    word plateletBindLocalisation_;
 
     //- Adhesion speed kEff for the interface localisation, m/s. Negative
     //  means "reuse adhesionSpeedEff_", the v2 closure the legacy sink uses,
@@ -2127,12 +1934,10 @@ class phaseClotAxisymmetricFluid
     //  3.3e+05 inside the clot, so any surviving force is divided by
     //  something ~5000x too small. em30's localised theta in those same
     //  cells is 2.66e-13, nine decades under that precedent.
-    word phaseWeightBasis_;
 
     //- Override for the ordering constraint above: run "content" weights on
     //  an unlocalised deposition path anyway. Exists so the refusal can be
     //  lifted deliberately and on the record, never by accident.
-    Switch unlocalisedPhaseWeightsAccepted_;
 
     //- Basis for the solid fraction that weights the network-pressure FORCE:
     //  networkPressure()'s argument and the ISOTROPIC elastic term.
@@ -2151,7 +1956,6 @@ class phaseClotAxisymmetricFluid
     //  drop the floor that keeps the operator non-degenerate outside the
     //  clot. That is the error run 20260905-191135 died of; see section 4 of
     //  the consumer map.
-    word phaseForceBasis_;
 
     //- Which face value of the solid fraction the SKELETON MOMENTUM equation
     //  advects with -- phiSkelFlux, and nothing else.
@@ -2179,7 +1983,6 @@ class phaseClotAxisymmetricFluid
     //  (eps = 1 - theta), no equation transported it, so there is no "flux it
     //  was advected with" to inherit. That is a separate question and it is
     //  not this key's.
-    word phaseMomentumFluxBasis_;
 
     //- S6a. Which field DEFINES the fluid fraction q.
     //
@@ -2215,7 +2018,6 @@ class phaseClotAxisymmetricFluid
     //  Cahn-Hilliard and its width is actively maintained; theta has no
     //  sharpening term. So this key is gated as a REPRESENTATION swap with a
     //  pre-registered offset, never as an improvement.
-    word phaseFluidFractionBasis_;
 
     //- S6b-1. WHICH FIELD phaseFieldFaceWeights() EVALUATES THE LIMITER ON.
     //
@@ -2242,7 +2044,6 @@ class phaseClotAxisymmetricFluid
     //  defining q -- theta -- is transported by first-order upwind as a
     //  Stage 1 contract while Wp is transported by a limited scheme. See
     //  phasePlateletFluxBasis_ below, which is the key that addresses it.
-    word phaseLimiterBasis_;
 
     //- S6b-2. WHICH FACE VALUES THE PLATELET CONTENT Wp IS ADVECTED WITH.
     //  The OI-6 argument applied one equation further on.
@@ -2274,7 +2075,6 @@ class phaseClotAxisymmetricFluid
     //  not transport -- em39's two operators are identical by construction.
     //  A gate of 1e-11 on this case would be six decades under the
     //  instrument, which is the failure this project has now made five times.
-    word phasePlateletFluxBasis_;
 
     //- Basis for the INDICATOR chi -- the raw phase marker that eleven sites
     //  compute inline as max(1 - q, 0), and that is NOT the solid fraction.
@@ -2320,7 +2120,6 @@ class phaseClotAxisymmetricFluid
     //  the source says so at the bond-hold and legacy-drag sites -- and the
     //  "matched" content operator does drive theta negative at roundoff scale
     //  in 2354 cells.
-    word phaseIndicatorBasis_;
 
     //- Which field fills interfaceDelta_, the UNIT surface delta delta_Gamma.
     //  'legacy' -> deltaC_ = 0.5*|grad c|;
@@ -2371,7 +2170,6 @@ class phaseClotAxisymmetricFluid
     //  depletion the transfer causes, so stoichNorm is a ratio of two
     //  front-side quantities either way. S4 leaves it alone, reports the
     //  committed transfer beside it, and does not gate on it.
-    word phaseDeltaBasis_;
 
     //- WHAT DEFINES THE INTERFACE NORMAL. S6c-1, and it is the LAST live
     //  consumer of `c` -- see research/designs/
@@ -2398,7 +2196,6 @@ class phaseClotAxisymmetricFluid
     //
     //  deltaC_ and phaseGradient_ do NOT follow this key. Moving deltaC_
     //  would make the S1' instrument compare a field against itself.
-    word phaseNormalBasis_;
 
     //- WHAT GROWS THE CLOT. One key, and it changes the model rather than a
     //  discretisation.
@@ -2449,7 +2246,6 @@ class phaseClotAxisymmetricFluid
     //  all (both cap divisors log capOn=no on 1090/1090 records, the
     //  `matched` site is dead under contentOperator 'content'), so a gate on
     //  it could not fail. It is a functional of c and S6 retires it with c.
-    word phaseGrowthDriver_;
 
     //- Reaction off: transport and diffusion only (D0, D1, D2, D3, T7).
     Switch plateletTransportOnly_;
@@ -2475,7 +2271,6 @@ class phaseClotAxisymmetricFluid
     //  transport rode. Intended for fixtures of a handful of steps on a
     //  few dozen cells; it is not a production diagnostic and nothing in
     //  the solver reads it back.
-    Switch plateletCarrierArchive_;
 
     //- PORE CONCENTRATION, the SOLVED UNKNOWN, platelet-equivalents per unit
     //  PORE volume. Conservative storage ddt(eps, nP) makes the discrete
@@ -2563,7 +2358,6 @@ class phaseClotAxisymmetricFluid
     // Us -> UsPrev + U*dt every step. It is instead confined to essentially
     // pure fluid, where the solid weight is negligible, so the clot's own
     // surface is free while the far field stays anchored.
-    bool skeletonDiffuseDomain_;
 
     //- Floor on the solid weight, so the elliptic operator does not vanish
     //  in blood and the linear system stays well conditioned.
@@ -2742,7 +2536,6 @@ class phaseClotAxisymmetricFluid
     // fluid velocity where it is not, with no switch and no threshold. v_s is
     // (Us - UsPrev)/dt, the same skeleton velocity the momentum equation
     // already uses, so the two sides cannot disagree.
-    bool phaseFieldMaterialVelocity_;
 
     //- Floor applied to the permeability before it is used as mu/k. Was the
     //  hard-coded Foam::small = 2.22e-16 m2, which is not a small number for
@@ -2759,7 +2552,6 @@ class phaseClotAxisymmetricFluid
     //  first solve -- the same failure mode contentOperator was given a
     //  fail-closed check for, after `contentOperator matchd` would have run
     //  the shipped model while the manifest claimed the identity test.
-    word dragDriver_;
 
     // Cell extent along the interface normal, h_n = 2V/sum_f|Sf.n|, exact
     // for a cube. This is the length the platelet depletion layer D/k
@@ -2783,15 +2575,6 @@ class phaseClotAxisymmetricFluid
     // The two fields silently assembled different matrices and gate A-exact
     // went from 6.686e-12 to 1.784e-05. Nothing else noticed.
     tmp<fvScalarMatrix> phaseSharedConvection
-    (
-        const surfaceScalarField& carrier,
-        const volScalarField& f
-    ) const;
-
-    //- div(carrier*f) WITHOUT the bounded scheme's Sp. For a volume
-    //  fraction, which must be conserved; labels keep
-    //  phaseSharedConvection(). Same weights as that function.
-    tmp<fvScalarMatrix> phaseConservativeConvection
     (
         const surfaceScalarField& carrier,
         const volScalarField& f
@@ -2896,7 +2679,6 @@ class phaseClotAxisymmetricFluid
     //- S14: carry ruptured_ with the material, on the carrier the content
     //  and shell_ use, with the same shared operator as shell_. A no-op
     //  under networkRupture off.
-    void advectRuptureLabel(const surfaceScalarField& carrier);
 
     //- S14: rupture the network wherever it has reached the critical
     //  stretch -- ruptured_ = 1 and be_ = I there -- and report it.
@@ -2905,10 +2687,6 @@ class phaseClotAxisymmetricFluid
     //- S15: shell_ = thetaH/theta under materialLabelBasis
     //  contentComposition, then the material fields. A no-op otherwise.
     void syncMaterialLabelFromContent();
-
-    //- S16: true when any S16 switch is away from its shipped default; the
-    //  PHASE_CLOT_S16 lines are printed only then.
-    bool s16Active() const;
 
     //- S16 C: ruptured_ = D/theta and the checks that every component is
     //  non-negative (a negative component is a FatalError naming the site).
@@ -2935,13 +2713,6 @@ class phaseClotAxisymmetricFluid
     //- S11 partial pressure before S16 D; networkPartialPressure() applies
     //  networkPressureDamaged() to it.
     tmp<volScalarField> networkPartialPressureUndamaged() const;
-
-    //- S17: true under networkRupture fibreRelease or elasticCoupling
-    //  implicitTangent; the PHASE_CLOT_S17 lines are printed only then.
-    bool s17Active() const;
-
-    //- S17 A: fibreRelease is selected.
-    bool fibreRelease() const;
 
     //- S17 A: the intact share thetaI/S of the partition (1 where S = 0);
     //  the pending share and 1 - d come with it. Under fibreRelease only.
@@ -3082,21 +2853,6 @@ class phaseClotAxisymmetricFluid
             const label phaseCorrector
         );
 
-        //- TEST-ONLY per-face evidence dump, gated on plateletCarrierArchive_.
-        //  Writes the fluxes and fields solvePlateletContent() actually
-        //  consumed for one phase corrector. A SEPARATE function on purpose:
-        //  it reads the supplied carrier and the skeleton flux, and the
-        //  wiring guard refuses either of those inside solvePlateletContent()
-        //  because either one there is indistinguishable from the defect the
-        //  2026-09-14 repair removed.
-        void archivePlateletCarrier
-        (
-            const surfaceScalarField& suppliedCarrier,
-            const surfaceScalarField& carrier,
-            const surfaceScalarField& Feps,
-            const label phaseCorrector
-        ) const;
-
         //- Fail-closed validation of the Stage 2 dictionary combination.
         //  Called once from the constructor.
         void checkPlateletConfiguration();
@@ -3113,10 +2869,8 @@ class phaseClotAxisymmetricFluid
     //
     // Both are no-ops when no patch uses the condition, so every case that
     // keeps `wall fixedValue (0 0 0)` behaves byte for byte as before.
-    void restoreWallBonds();
     void commitWallBonds();
 
-    void solveSkeleton();
 
     //- Advance be_ one step: the Eulerian replacement for solveSkeleton().
     //  Calls beTransport::solve(), the same code the stage-1 gate qualified,
@@ -3152,9 +2906,7 @@ class phaseClotAxisymmetricFluid
 
     void solveDamage();
     //- Decide, once per timestep, whether a diverged skeleton ends the run
-    void registerSkeletonDivergence();
 
-    void solveMechanicsExchange();
     void releaseDetachedMaterial();
 
     // Mark clot material that is no longer connected to an intact bond, so
@@ -3170,9 +2922,6 @@ class phaseClotAxisymmetricFluid
         //- Build bondHold_ from the intact bonds. No-op when the hold is off.
         void updateBondHold();
 
-    //- Rigid-body translation velocity of the released clot, taken from the
-    //  ambient blood surrounding it. Zero when nothing is released.
-    vector releasedBodyVelocity() const;
     //- The face weights div(phiReleased,c) is about to use, captured from that
     //  entry itself so the Wp equation cannot be given a different operator.
     tmp<surfaceScalarField> phaseFieldFaceWeights
@@ -3183,15 +2932,9 @@ class phaseClotAxisymmetricFluid
     void solvePhaseField();
     void beginPlateletOuterTransaction();
     void solvePlatelets();
-    void writePlateletOperatorAudit
-    (
-        const volScalarField& qEff,
-        const surfaceScalarField& qPhi
-    );
     void writeBalanceDiagnostic();
 
         //- Assemble and write the skeleton momentum residual. Diagnostic only.
-        void writeSkeletonResidual();
 
         //- The coupled two-velocity poroelastic pressure corrector: a
         //  per-cell 2x2 block inversion of the drag coupling and a pressure
@@ -3226,15 +2969,6 @@ class phaseClotAxisymmetricFluid
         //  above; see phaseIndicatorBasis_ for why, and for the one site that
         //  keeps its own clamp.
         tmp<volScalarField> phaseIndicator() const;
-
-        //- Fill contentDragK_ and contentInvPermKC_ from thetaC_ + thetaH_.
-        //  Emits PHASE_CLOT_CONTENT_DRAG every step, and on a domain
-        //  violation emits PHASE_CLOT_CONTENT_DRAG_REFUSAL -- a STRUCTURED
-        //  reason the runner can classify -- before failing. A bare fatal
-        //  error with the usual diagnostics missing is indistinguishable
-        //  from an infrastructure failure, which is why the record comes
-        //  first.
-        void updateContentDrag();
 
         //- Face flux of Vs_, with no penetration through walls.
         tmp<surfaceScalarField> skeletonFlux() const;

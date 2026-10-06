@@ -228,7 +228,9 @@ def synthesise_child(
                         dg[idx] = 0.99
         return dg
 
-    n_steps = int(round(spec["end_time_s"] / dt))
+    # The last step lands ON end_time, as foamRun's adjustable step does (the seeded
+    # child's 9.5238e-5 s is 19.05 steps of 5e-6 s: its 20th step is short).
+    n_steps = int(math.ceil(spec["end_time_s"] / dt - 1e-9))
     if short:
         n_steps = max(1, n_steps // 3)
     area = spec["geometry"]["injury_length_m"] * spec["geometry"]["depth_m"]
@@ -240,7 +242,7 @@ def synthesise_child(
     lines, debonded = [], 0
     footprint, reformed = BONDED_FACES, 0
     for k in range(1, n_steps + 1):
-        t = k * dt
+        t = min(k * dt, spec["end_time_s"])
         lines.append(f"Time = {t:.10g}s\n")
         # A skeleton at its iteration cap with a residual four orders worse:
         # the fixed point ran out of budget rather than converging. This is
@@ -817,7 +819,7 @@ def report_differences(a, b, path: str = "", out: list | None = None) -> list:
     return out
 
 def exercise(name: str, per_child: dict, expectations, build_log=GOOD_BUILD,
-             every_child: dict | None = None):
+             every_child: dict | None = None, after=None):
     with tempfile.TemporaryDirectory(prefix="am2020-main-") as tmp:
         root = build_case(Path(tmp))
         (root / "log.Allwmake").write_text(build_log)
@@ -834,6 +836,8 @@ def exercise(name: str, per_child: dict, expectations, build_log=GOOD_BUILD,
                     spec["adhesive_strength_pa"], spec["wall_shear_rate_1_s"]
                 )
             synthesise_child(root / "runs" / spec["child_id"], spec, **kwargs)
+        if after is not None:            # files the runner, not the solver, leaves behind
+            after(root)
         code, result = run_assessor(root)
         try:
             expectations(result, code)
@@ -865,61 +869,18 @@ def _s16(controls: dict, child_id: str, **changes) -> None:
 # (each was run once, directly, by the solver-engineer, docket 20261003-0205
 # report 09). (label, mutate(controls), the refusal's own words).
 S19_REFUSALS = (
-    ("a misspelt momentum_pressure_coupling",
-     lambda c: _s16(c, "fsb_k13", momentum_pressure_coupling="block"),
-     "momentum_pressure_coupling 'block' is not one of segregated, blockCoupled."),
     ("a misspelt network_viscosity",
      lambda c: _s16(c, "fsb_ctl_r3", network_viscosity="kv"),
      "network_viscosity 'kv' is not one of none, kelvinVoigt."),
     ("a non-positive tau_v_s",
      lambda c: _s16(c, "fsb_ctl_r3", tau_v_s=0.0),
      "tau_v_s 0.0 must be a positive number of seconds"),
-    ("an S19 key without two_velocity_skeleton",
-     lambda c: _s16(c, "ad_d12", momentum_pressure_coupling="segregated"),
-     "act on the two-velocity block; without two_velocity_skeleton"),
     ("R3 under segregated",
      lambda c: _s16(c, "fsb_ctl_r3", momentum_pressure_coupling=None),
      "network_viscosity kelvinVoigt needs momentum_pressure_coupling blockCoupled"),
     ("R3 with the content weight",
      lambda c: _s16(c, "fsb_ctl_r3", network_pressure_weight="contentRatio"),
      "network_viscosity kelvinVoigt with network_pressure_weight contentRatio"),
-    ("blockCoupled without released_carrier material",
-     lambda c: _s16(c, "fsb_k13", released_carrier="rigidBody"),
-     "blockCoupled needs eulerian_solid true and released_carrier material"),
-    ("blockCoupled with the content weight",
-     lambda c: _s16(c, "fsb_k13", network_pressure_weight="contentRatio"),
-     "blockCoupled with network_pressure_weight contentRatio is refused"),
-    ("blockCoupled without implicitTangent",
-     lambda c: _s16(c, "fsb_k13", elastic_coupling="explicit"),
-     "blockCoupled needs elastic_coupling implicitTangent"),
-    ("blockCoupled with faceConsistentElasticForce",
-     lambda c: _s16(c, "fsb_k13", face_consistent_elastic_force=True),
-     "blockCoupled with face_consistent_elastic_force true is refused"),
-    ("tau_v_s without R3 (silently inert)",
-     lambda c: _s16(c, "fsb_ctl", tau_v_s=2.5e-4),
-     "tau_v_s is read only under network_viscosity kelvinVoigt"),
-    ("fsb_off with the key present",
-     lambda c: _s16(c, "fsb_off", momentum_pressure_coupling="segregated"),
-     "S19 parent check: fsb_off differs from fsp_k13 in momentum_pressure_coupling"),
-    ("fsb_k13 drifting from fsp_k13",
-     lambda c: _s16(c, "fsb_k13", k0p_m2=2e-13),
-     "S19 parent check: fsb_k13 differs from fsp_k13 in k0p_m2"),
-    # S19b (2026-10-04; design 2026-10-04-S19b-lumen-elimination rev. 2,
-    # APPROVED): one negative per new refusal, each run once, directly
-    # (docket 20261004-1803 report 03).
-    ("a misspelt block_coupled_lumen",
-     lambda c: _s16(c, "fsb_k13_id", block_coupled_lumen="elim"),
-     "block_coupled_lumen 'elim' is not one of eliminate, identityRows."),
-    ("block_coupled_lumen under segregated (silently inert)",
-     lambda c: _s16(c, "fsb_off", block_coupled_lumen="identityRows"),
-     "block_coupled_lumen is read only under momentum_pressure_coupling blockCoupled"),
-    ("fsb_k13_id drifting from fsb_k13",
-     lambda c: _s16(c, "fsb_k13_id", k0p_m2=2e-13),
-     "S19 parent check: fsb_k13_id differs from fsb_k13 in k0p_m2"),
-    ("fsb_k13_id without its named key",
-     lambda c: _s16(c, "fsb_k13_id", block_coupled_lumen=None),
-     "S19 parent check: fsb_k13_id does not differ from fsb_k13 in its named key "
-     "block_coupled_lumen"),
 )
 
 
@@ -978,7 +939,8 @@ XU_REFUSALS = (
      ["xu2017_fig5"], "series xu2017_fig5: declares rho_kg_m3 without its pair"),
     ("the held layer tapered",
      lambda c: _xu_child(c, "xu5_g250").__setitem__("bond_hold_taper", True),
-     ["xu2017_fig5"], "the held layer must be the solver default as em72"),
+     # S21: bondHoldTaper is built in (no); the key is refused by name.
+     ["xu2017_fig5"], "names the built-in option bondHoldTaper"),
     ("an inlet pressure on the velocity series",
      lambda c: c["series"]["xu2017_fig5"].__setitem__("inlet_pressure_m2_s2", 0.3),
      ["xu2017_fig5"], "inlet_pressure_m2_s2 is read only by a pressure-driven inlet"),
@@ -994,10 +956,6 @@ XU_REFUSALS = (
     ("a dome that closes the lumen floor",
      lambda c: c["series"]["xu2017_fig5"]["clot_override"].__setitem__("height_m", 4.3e-5),
      ["xu2017_fig5"], "the lumen above the dome is"),
-    ("releaseCoreExempt named where there is no core",
-     lambda c: next(x for x in c["children"] if x["series"] == "growth").__setitem__(
-         "release_core_exempt", False),
-     ["growth"], "this series has no core, so it would be silently inert"),
     ("a per-child velocity where the series has no axis",
      lambda c: _xu_child(c, "em76_G4_s18").__setitem__("mean_velocity_m_s", 8.333e-3),
      ["em76_G4_s18"], "mean_velocity_m_s is read only when the series declares its own flow_axis"),
@@ -1144,9 +1102,10 @@ def xu_fixture(tmp: Path) -> tuple:
                 f"internalField nonuniform List<symmTensor>\n{n}\n(\n"
                 + "\n".join("(" + " ".join(repr(v) for v in b) + ")" for b in be) + "\n)\n;\n")
     dt = 2.5e-4/96
-    lines = ["PHASE_CLOT_FREEPLATELET_CONFIG fluxConvention=intrinsic transportOnly=1\n",
-             "PHASE_CLOT_S18_CONFIG frozenPendingPressure=none wallPatchSplit=split "
-             "networkPressureWeight=contentRatio cplusOrder=shared\n"]
+    # S21: the solver's own CONFIG lines (fluxConvention, frozenPendingPressure,
+    # wallPatchSplit and cplusOrder are built in and no longer printed).
+    lines = ["PHASE_CLOT_FREEPLATELET_CONFIG transportOnly=1\n",
+             "PHASE_CLOT_S18_CONFIG networkPressureWeight=contentRatio\n"]
     for k in range(1, 3841):
         t = k*dt
         lines.append(f"Time = {t:.12g}\n")
@@ -1459,22 +1418,172 @@ def free_shell_watcher_fixtures() -> None:
                   f"{str(facts.get('stop'))[:70]!r}")
 
 
+# ---- S21 (docket 20261005-1621, pipeline pass 2b) ---------------------------------
+# The generator must refuse a dictionary carrying a built-in option or a deleted
+# parameter (the solver refuses both by name at construction: s21BuiltInKeys,
+# s21DeletedKeys), and a control key naming either. Each negative is run on its own,
+# on a pristine copy, and must fail with its own message; the pristine copy must
+# generate.
+S21_GENERATOR_NEGATIVES = (
+    ("template phaseClotProperties carries a built-in option",
+     "template", "fsiAitken no;", "built-in option(s) ['fsiAitken']"),
+    ("template phaseClotProperties carries a deleted parameter",
+     "template", "phi0 0.5;", "deleted parameter(s) ['phi0']"),
+    ("growth_parameters carries the deleted k1",
+     "controls", ("growth_parameters", None, "k1", 0.0), "names the deleted parameter k1"),
+    ("a child carries nFSICorrectors (camel case)",
+     "controls", ("child", "fsf_G4_kxu_v250", "nFSICorrectors", 60),
+     "names the deleted parameter nFSICorrectors"),
+    ("a child carries skeleton_us_bound (snake case)",
+     "controls", ("child", "fsf_G4_kxu_v250", "skeleton_us_bound", 1.0),
+     "names the deleted parameter skeletonUsBound"),
+    ("a child carries operator_audit_every (a pre-S21 control key)",
+     "controls", ("child", "xu5_g250", "operator_audit_every", 20),
+     "names the deleted parameter operatorAuditEvery"),
+    ("a series carries skeleton_implicit_factor",
+     "controls", ("series", "throat_embolus", "skeleton_implicit_factor", {"1000": 8}),
+     "names the deleted parameter skeletonImplicitFactor"),
+    ("a child carries material_courant",
+     "controls", ("child", "em76_G4_s18", "material_courant", 0.5),
+     "names the deleted parameter materialCourant"),
+    ("a child carries fibre_slack (a built-in option)",
+     "controls", ("child", "em76_G4_s18", "fibre_slack", "v1"),
+     "names the built-in option fibreSlack"),
+)
+
+
+def s21_generator_negatives() -> None:
+    with tempfile.TemporaryDirectory(prefix="am2020-s21-gen-") as tmp:
+        root = build_case(Path(tmp))
+        n = len(json.loads((root / "runs" / "matrix.json").read_text()))
+        assert n == 18, f"the pristine copy generated {n} children, expected 18"
+        shutil.rmtree(root / "runs")
+        controls_path = root / "constant" / "mainCaseControls.json"
+        props_path = root / "template" / "constant" / "phaseClotProperties"
+        pristine_c, pristine_p = controls_path.read_text(), props_path.read_text()
+        for label, where, what, expected in S21_GENERATOR_NEGATIVES:
+            controls_path.write_text(pristine_c)
+            props_path.write_text(pristine_p)
+            if where == "template":
+                props_path.write_text(pristine_p.rstrip("\n") + f"\n{what}\n")
+            else:
+                c = json.loads(pristine_c)
+                level, name, key, value = what
+                if level == "child":
+                    block = next(x for x in c["children"] if x["child_id"] == name)
+                elif level == "series":
+                    block = c["series"][name]
+                else:
+                    block = c[level]
+                assert key not in block, f"{label}: {key} already present"
+                block[key] = value
+                controls_path.write_text(json.dumps(c, indent=1) + "\n")
+            done = subprocess.run([sys.executable, "-B", str(root / "scripts" / "create_cases.py")],
+                                  capture_output=True, text=True)
+            said = done.stdout + done.stderr
+            assert done.returncode != 0, f"{label}: the generator accepted it"
+            assert expected in said, f"{label}: refused for another reason: {said[-400:]}"
+            shutil.rmtree(root / "runs", ignore_errors=True)
+            print(f"generator refuses: {label:<54} -> {expected}")
+
+
+# G3'lambda (S20 section 2.3), on the assessor's own s10_report: N/A on a pre-S20 log,
+# FAIL on batch 68's lambdaFluxMean 0, PASS on the loose replay's 0.99, and the 0.1
+# threshold seen from both sides.
+def _fct(lines):
+    return "".join(
+        f"PHASE_CLOT_CONTENT_FCT time={1e-6*(i+1):.6g} activeFaces={a} limitedFaces=0 "
+        f"lambdaMin=0 lambdaFluxMean={lam}" + ("" if rule is None else f" zeroFluxRule={rule}")
+        + " negAfter=0\n" for i, (a, lam, rule) in enumerate(lines))
+
+
+def g3_lambda_contract() -> None:
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "assess_case_g3l", Path(__file__).resolve().parent / "assess_case.py")
+    ac = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ac)
+    cases = (
+        ("pre-S20 log, lambda 0", [(40, 0, None)] * 5, None),
+        ("S20 log, lambda 0 on every active step (batch 68)", [(40, 0, "exactZero")] * 5, False),
+        ("S20 log, loose replay 0.99", [(40, 0.99, "exactZero")] * 5, True),
+        ("S20 log, median exactly 0.1", [(40, 0.05, "exactZero"), (40, 0.1, "exactZero"),
+                                         (40, 0.2, "exactZero")], True),
+        ("S20 log, median 0.0999", [(40, 0.05, "exactZero"), (40, 0.0999, "exactZero"),
+                                    (40, 0.2, "exactZero")], False),
+        ("S20 log, idle steps do not count", [(0, 0, "exactZero")] * 9 + [(40, 0.99, "exactZero")],
+         True),
+        ("S20 log, one line not exactZero", [(40, 0.99, "exactZero")] * 4 + [(40, 0.99, "legacy")],
+         False),
+        ("S20 log, no active face", [(0, 1.0, "exactZero")] * 3, None),
+    )
+    for label, lines, want in cases:
+        got = ac.s10_report(_fct(lines), 4.0)
+        assert got["g3_lambda"] is want, f"{label}: g3_lambda {got['g3_lambda']!r}, want {want!r} ({got})"
+        if want is None and lines[0][2] is None:
+            assert str(got["g3_lambda_note"]).startswith("N/A"), got["g3_lambda_note"]
+        print(f"   G3'lambda {label:<52} -> {got['g3_lambda']} (median {got['g3_lambda_median']})")
+
+
+# THE 5 ms WATCHER'S RECORD (pass 2a): runs/<child>/watcher-verdict.json. The child is
+# synthesised COMPLETE (exit 0, "End", the last time at end_time) so the verdict file
+# alone must decide: FAIL, WATCHER_ERROR and an unreadable file are STOPPED_BY_WATCHER
+# and inadmissible; PASS and NOT_REACHED leave a complete child complete.
+WATCHER_RECORDS = {
+    "fsf_G4_kxu_r3_40": {"verdict": "FAIL", "clauses": [
+        {"clause": "width", "status": "FAIL", "value": 4.54},
+        {"clause": "lambda_median", "status": "FAIL", "value": 0.0}],
+        "stop": {"touched": True, "acknowledged": "stopAtFile(timeIndex=1053): stopping now after writing"}},
+    "fsf_G4_kxu_nor3_40": {"verdict": "PASS", "clauses": [
+        {"clause": "width", "status": "REPORTED", "value": 4.54}]},
+    "fsf_id": {"verdict": "WATCHER_ERROR", "reason": "no 0.005 frame", "clauses": []},
+    "em78_id": "{ not json",
+    "xu5_id": {"verdict": "NOT_REACHED", "reason": "the child ended first"},
+}
+
+
+def _write_watcher_records(root: Path) -> None:
+    for cid, rec in WATCHER_RECORDS.items():
+        (root / "runs" / cid / "watcher-verdict.json").write_text(
+            rec if isinstance(rec, str) else json.dumps(rec))
+
+
+def watcher_stopped(r, code):
+    stopped = {"fsf_G4_kxu_r3_40", "fsf_id", "em78_id"}
+    for cid in WATCHER_RECORDS:
+        c = r["children"][cid]
+        if cid in stopped:
+            assert c["status"] == "STOPPED_BY_WATCHER", (cid, c["status"])
+            assert not c["completed"] and not c["admissible"], (cid, c["completed"], c["admissible"])
+        else:
+            assert c["status"] == "COMPLETE" and c["admissible"], (cid, c["status"], c["admissible"])
+    why = {e["child_id"]: e for e in r["inadmissible"]}
+    assert set(why) == stopped, sorted(why)
+    assert all(e["status"] == "STOPPED_BY_WATCHER" and e["why"].startswith("STOPPED_BY_WATCHER")
+               for e in why.values()), why
+    assert why["fsf_G4_kxu_r3_40"]["why"].endswith("['width', 'lambda_median'])"), why
+    assert r["children"]["em78_id"]["watcher_verdict"]["verdict"] == "UNREADABLE"
+    assert r["children"]["fsf_G4_kxu_r3_40"]["watcher_verdict"]["stop"]["touched"] is True
+
+
+
 def main() -> int:
+    # S21 (docket 20261005-1621, pipeline pass 2b): the kept set only. Every
+    # scenario below runs on the 18 kept children of throat_embolus, xu2017_fig5
+    # and throat_free_shell; the scenarios of the retired series (growth,
+    # required strength, demonstration, transport, tear, source 33, deformation)
+    # and the generator negatives of the deleted refusals are cut (the pre-S21
+    # file: release-4198bb17).
+    KEPT = 18
+
     def healthy(r, code):
         assert code == 0, f"exit {code}"
+        assert r["children_total"] == KEPT, r["children_total"]
         assert r["children_admissible"] == r["children_total"], r["inadmissible"]
         assert r["library_compiled"]
-        g = r["growth_vs_flow"]
-        assert len(g["rows"]) == 3, g
-        exponent = g["flow_dependence"]["exponent"]
-        assert exponent is not None and abs(exponent - 1 / 3) < 0.02, exponent
-        assert len(r["required_strength"]["rows"]) == 9
-        demo = {d["child_id"]: d for d in r["demonstration"]["rows"]}
-        assert demo["demo_full_release"]["progressive"], demo
-        assert demo["demo_full_release"]["released_everything"], demo
-        assert r["cohesive_release_anywhere"] == 0
-        for row in r["required_strength"]["rows"]:
-            assert row["required_strength_pa"] is not None, row
+        assert all(c["status"] == "COMPLETE" for c in r["children"].values()), sorted(
+            (k, c["status"]) for k, c in r["children"].items() if c["status"] != "COMPLETE")
+        assert r["xu2017_fig5"], "no Xu report"
     exercise("healthy", variant(), healthy)
 
     def compile_failed(r, code):
@@ -1482,324 +1591,46 @@ def main() -> int:
     exercise("compile_failed", variant(), compile_failed, build_log=BAD_BUILD)
 
     # AN INADMISSIBLE CHILD MUST BE NAMED AND EXCLUDED, never averaged in.
-    def excluded(r, code):
-        bad = [e["child_id"] for e in r["inadmissible"]]
-        assert bad == ["req_s200_G11600"], bad
-        ids = [row["child_id"] for row in r["required_strength"]["rows"]]
-        assert "req_s200_G11600" not in ids, ids
-        assert len(ids) == 8, ids
-        assert r["required_strength"]["excluded"][0]["child_id"] == "req_s200_G11600"
+    def only(cid, reason=None):
+        def check(r, code):
+            bad = [e["child_id"] for e in r["inadmissible"]]
+            assert bad == [cid], bad
+            if reason:
+                assert reason in r["children"][cid]["bounds_reason"], r["children"][cid]["bounds_reason"]
+        return check
     exercise("crashed_child_is_excluded_and_named",
-             variant(req_s200_G11600=dict(exit_code=136)), excluded)
-
-    def short_run(r, code):
-        bad = [e["child_id"] for e in r["inadmissible"]]
-        assert bad == ["req_s100_G1000"], bad
+             variant(fsf_G4_kxu_v250=dict(exit_code=136)), only("fsf_G4_kxu_v250"))
     exercise("incomplete_child_is_excluded",
-             variant(req_s100_G1000=dict(short=True)), short_run)
-
-    # A NaN must not pass the bounds check.
-    def nan_child(r, code):
-        bad = [e["child_id"] for e in r["inadmissible"]]
-        assert bad == ["req_s050_G0059"], bad
-        assert "non-finite" in r["children"]["req_s050_G0059"]["bounds_reason"]
+             variant(em76_G4_s18=dict(short=True)), only("em76_G4_s18"))
     exercise("nan_field_is_inadmissible",
-             variant(req_s050_G0059=dict(nan_field=True)), nan_child)
+             variant(xu5_g500=dict(nan_field=True)), only("xu5_g500", "non-finite"))
 
-    # THE PHASE FIELD AFTER S6c-2, which does not write `c` at all.
-    #
-    # The solver writes q, thetaC and thetaH; create_cases.py still writes
-    # 0/c. The assessor reconstructs c = 2q - 1 and must reach EXACTLY the
-    # same verdict, because the fixture derives q from the same c field the
-    # legacy fixture writes. Anything that differs is a convention error in
-    # the reconstruction, not a finding -- so this compares the whole report,
-    # not a chosen statistic.
+    # THE PHASE FIELD AFTER S6c-2 (q, thetaC, thetaH; no c): the reconstruction
+    # c = 2q - 1 must give exactly the same report as the legacy fixture.
     def theta_native_matches(base):
         def check(r, code):
             assert code == 0, f"exit {code}"
             diffs = report_differences(base, r)
-            assert not diffs, "theta-native report differs:\n  " + "\n  ".join(
-                diffs[:12]
-            )
+            assert not diffs, "theta-native report differs:\n  " + "\n  ".join(diffs[:12])
         return check
-
-    baseline = exercise("healthy_baseline_for_theta_native",
-                        variant(), healthy)
+    baseline = exercise("healthy_baseline_for_theta_native", variant(), healthy)
     exercise("theta_native_grades_identically", variant(),
-             theta_native_matches(baseline),
-             every_child={"theta_native": True})
-
-    # AND THE BOUNDS GATE MUST STILL FIRE THROUGH THE RECONSTRUCTION. Without
-    # this, the scenario above is satisfied by an assessor that reads nothing
-    # and reports nothing for every child alike.
-    def unbounded_theta(r, code):
-        bad = [e["child_id"] for e in r["inadmissible"]]
-        assert bad == ["growth_shear100"], bad
-        assert "phase out of bounds" in r["children"]["growth_shear100"]["bounds_reason"]
+             theta_native_matches(baseline), every_child={"theta_native": True})
     exercise("out_of_bounds_phase_is_seen_in_theta",
-             variant(growth_shear100=dict(c_extreme=1.5)), unbounded_theta,
+             variant(fsb_ctl_r3=dict(c_extreme=1.5)), only("fsb_ctl_r3", "phase out of bounds"),
              every_child={"theta_native": True})
-
-    # Phase out of bounds.
-    def unbounded(r, code):
-        bad = [e["child_id"] for e in r["inadmissible"]]
-        assert bad == ["growth_shear100"], bad
-        assert "phase out of bounds" in r["children"]["growth_shear100"]["bounds_reason"]
-        assert len(r["growth_vs_flow"]["rows"]) == 2
-        # Two points still fit an exponent; the fit must survive the exclusion
-        # rather than silently using the excluded child.
-        assert r["growth_vs_flow"]["flow_dependence"]["exponent"] is not None
     exercise("out_of_bounds_phase_is_excluded",
-             variant(growth_shear100=dict(c_extreme=1.5)), unbounded)
-
-    # MISSING FIELDS MUST NOT PASS VACUOUSLY. This is the check that catches a
-    # results table computed from files that were never written.
-    def missing(r, code):
-        bad = [e["child_id"] for e in r["inadmissible"]]
-        assert bad == ["demo_full_release"], bad
-        assert len(r["demonstration"]["rows"]) == 0
-        assert r["demonstration"]["excluded"][0]["child_id"] == "demo_full_release"
+             variant(fsb_ctl_r3=dict(c_extreme=1.5)), only("fsb_ctl_r3", "phase out of bounds"))
+    # MISSING FIELDS MUST NOT PASS VACUOUSLY.
     exercise("missing_fields_are_inadmissible",
-             variant(demo_full_release=dict(omit_fields=True)), missing)
+             variant(em79_G4_s18p_Cnp=dict(omit_fields=True)), only("em79_G4_s18p_Cnp"))
 
-    # The growth fit must refuse rather than invent when it has one point.
-    def one_point(r, code):
-        fit = r["growth_vs_flow"]["flow_dependence"]
-        assert fit["exponent"] is None, fit
-        assert "usable" in (fit["reason"] or ""), fit
-    exercise("growth_fit_refuses_with_one_point",
-             variant(growth_shear050=dict(exit_code=136),
-                     growth_shear100=dict(exit_code=136)), one_point)
+    # THE 5 ms WATCHER'S RECORD: a stopped child is STOPPED_BY_WATCHER, never complete.
+    exercise("a_watcher_stopped_child_is_never_complete", variant(), watcher_stopped,
+             after=_write_watcher_records)
+    run_direct("g3_lambda_is_na_before_s20_and_fails_on_lambda_0", g3_lambda_contract)
+    run_direct("s21_generator_refuses_built_in_and_deleted_keys", s21_generator_negatives)
 
-    # Flow-not-stiffness: supported when the required strength barely moves
-    # with G, and NOT supported when it tracks G. Both directions pinned,
-    # because "supported" is a claim about the physics and the more
-    # interesting outcome is the negative one.
-    def flow_not_stiffness(r, code):
-        p = r["required_strength"]["flow_not_stiffness"]
-        assert p["supported"] is True, p
-    exercise("load_set_by_flow_is_detected", variant(), flow_not_stiffness)
-
-    def stiffness_matters(r, code):
-        p = r["required_strength"]["flow_not_stiffness"]
-        assert p["supported"] is False, p
-    exercise("load_tracking_stiffness_is_detected",
-             variant(req_s200_G11600=dict(peak_traction=60.0),
-                     req_s100_G11600=dict(peak_traction=30.0)), stiffness_matters)
-
-    # Cohesive release is a finding, reported separately from adhesive release.
-    def cohesive(r, code):
-        assert r["cohesive_release_anywhere"] == 5
-        demo = {d["child_id"]: d for d in r["demonstration"]["rows"]}
-        assert demo["demo_full_release"]["cohesive_release_cells"] == 5
-    exercise("cohesive_release_is_reported",
-             variant(demo_full_release=dict(cohesive_cells=5)), cohesive)
-
-    # A demonstration child that never fires is not a peel.
-    def never_fires(r, code):
-        demo = {d["child_id"]: d for d in r["demonstration"]["rows"]}
-        assert demo["demo_full_release"]["faces_released"] == 0, demo
-        assert not demo["demo_full_release"]["progressive"], demo
-    exercise("demonstration_that_never_fires_is_visible",
-             variant(demo_full_release=dict(debond_schedule=None)), never_fires)
-
-    # ... and one that goes all at once is not progressive either.
-    def all_at_once(r, code):
-        demo = {d["child_id"]: d for d in r["demonstration"]["rows"]}
-        assert demo["demo_full_release"]["released_everything"], demo
-        assert not demo["demo_full_release"]["progressive"], demo
-        assert demo["demo_full_release"]["largest_single_step_release"] == 60
-    exercise("demonstration_going_all_at_once_is_visible",
-             variant(demo_full_release=dict(debond_schedule=[0, 60])), all_at_once)
-
-    # --- TRANSPORT: the whole point of the advection change ----------------
-    def transported(r, code):
-        demo = {d["child_id"]: d for d in r["demonstration"]["rows"]}
-        # ONLY the child that releases every face may move. The other two are
-        # still attached, and a still-attached clot that travels downstream
-        # would be a numerical artefact, not a result -- so they are asserted
-        # STATIONARY here rather than left unchecked.
-        tr = demo["demo_full_release"]["transport"]
-        assert tr["available"], tr
-        assert tr["moved_downstream"], tr
-        assert tr["displacement_cells"] > 15, tr
-        assert abs(tr["volume_change_fraction"]) < 0.05, tr
-    exercise("clot_is_carried_downstream", variant(), transported)
-
-    # THE FAILURE THIS CHANGE EXISTS TO FIX. Run 20260810-212211 released 59 of
-    # 60 faces and the clot did not move a micron. If the advection term ever
-    # goes inert again, the numbers still look like a perfect peel -- so the
-    # displacement has to be measured, and zero displacement has to be visible.
-    def did_not_move(r, code):
-        tr = {d["child_id"]: d["transport"]
-              for d in r["demonstration"]["rows"]}["demo_full_release"]
-        assert tr["available"], tr
-        assert tr["moved_downstream"] is False, tr
-        assert abs(tr["displacement_cells"]) < 1.0, tr
-    exercise("clot_that_does_not_move_is_visible",
-             variant(demo_full_release=dict(transport_shift_cells=0)),
-             did_not_move)
-
-    # Smearing is not transport. If the interface diffuses away instead of
-    # travelling, the volume check catches it even though the centroid moves.
-    def dissolved(r, code):
-        tr = {d["child_id"]: d["transport"]
-              for d in r["demonstration"]["rows"]}["demo_full_release"]
-        assert tr["available"], tr
-        assert tr["volume_change_fraction"] < -0.5, tr
-    exercise("smearing_is_not_transport",
-             variant(demo_full_release=dict(transport_dissolves=True)),
-             dissolved)
-
-    # A CRASHED RUN cannot report transport. There is no separate transport
-    # exit code any more -- one run, one exit code -- so this asserts the
-    # single-stage failure path rather than the retired restart's.
-    def crashed(r, code):
-        assert "demo_full_release" in [e["child_id"] for e in r["inadmissible"]]
-        child = r["children"]["demo_full_release"]
-        assert not child["transport"]["available"], child["transport"]
-        assert "exited 136" in child["transport"]["reason"], child["transport"]
-    exercise("a_crashed_run_reports_no_transport",
-             variant(demo_full_release=dict(exit_code=136)), crashed)
-
-    # A non-demonstration child must not be advected at all, and must
-    # say so rather than reporting a null displacement as if it had tried.
-    def no_stage(r, code):
-        child = r["children"]["req_s200_G0059"]["transport"]
-        assert not child["available"], child
-        assert "advection is off" in child["reason"], child
-    exercise("welded_children_are_not_advected", variant(), no_stage)
-
-    # AN ARRESTED PEEL MUST NOT READ AS A FULL RELEASE. Run 20260811-004647
-    # released 59 of 60 faces and reported released_fraction 0.983, which looks
-    # like success in a table and was in fact a clot that never moved. The
-    # distinction is not the face count, it is whether anything came free --
-    # and, now that advection is gated on it, whether the body could move at
-    # all. The single demonstration child is given an arresting schedule here.
-    def arrest(r, code):
-        row = {d["child_id"]: d
-               for d in r["demonstration"]["rows"]}["demo_full_release"]
-        assert not row["released_everything"], row
-        assert row["arrested"], row
-        assert row["faces_released"] == row["bonded_faces_initially"] - 1, row
-        assert row["released_fraction"] > 0.95, row
-        # Nearly-identical face count, OPPOSITE outcome: it cannot travel.
-        assert not row["transport"]["moved_downstream"], row
-        assert row["transport"]["displacement_cells"] == 0, row
-    exercise("arrested_peel_is_not_a_full_release",
-             variant(demo_full_release=dict(debond_schedule=PEEL_ARREST)),
-             arrest)
-
-    # --- THE RATCHET: growth welding the clot to healthy endothelium --------
-    #
-    # Run 20260812-062701. All 60 injury faces peeled, the clot started to
-    # move, and then the footprint grew to 61 and 62 as growth carried clot
-    # material onto virgin wall faces that were still initialised bonded. One
-    # bonded face re-anchors every contiguous clot cell, so the body stopped
-    # dead, tore free again, and re-welded further downstream. The injury latch
-    # makes the footprint fixed; this scenario feeds the assessor a log with
-    # the ratchet in it and requires that it SAYS SO rather than reporting a
-    # clean full release.
-    def ratchet(r, code):
-        row = {d["child_id"]: d
-               for d in r["demonstration"]["rows"]}["demo_full_release"]
-        assert row["footprint_grew"], row
-        assert row["footprint_faces_start"] == BONDED_FACES, row
-        assert row["footprint_faces_end"] > BONDED_FACES, row
-        assert row["faces_reformed"] == 2, row
-        assert row["steps_with_reformation"] == 2, row
-    exercise("growth_welding_to_virgin_wall_is_reported",
-             variant(demo_full_release=dict(
-                 debond_schedule=[0] + [6] * 10,
-                 footprint_growth=[0] * 11 + [1, 0, 1],
-             )),
-             ratchet)
-
-    # The post-fix expectation, as its own assertion. Without this the scenario
-    # above only proves the ratchet is DETECTABLE, not that the normal run is
-    # free of it -- and "detectable" was never the problem.
-    def footprint_is_fixed(r, code):
-        row = {d["child_id"]: d
-               for d in r["demonstration"]["rows"]}["demo_full_release"]
-        assert row["footprint_grew"] is False, row
-        assert row["footprint_faces_start"] == row["footprint_faces_end"], row
-        assert row["faces_reformed"] == 0, row
-    exercise("a_latched_injury_footprint_never_grows", variant(),
-             footprint_is_fixed)
-
-    # --- THE CORE LEAVES: did it take its material with it? ----------------
-    #
-    # Run 20260812-200349 released all 60 faces, the body reached the outlet
-    # and left at t = 0.1359, and 83% of its material stayed behind as a
-    # stationary wedge with clotDrag 3e+07..5e+09 that blocked the channel for
-    # the remaining 0.21 s. The assessor said only "no clot material at one of
-    # the transport endpoints" and returned None for every transport field, so
-    # the one thing that was wrong was the one thing not reported.
-    def stranded(r, code):
-        row = {d["child_id"]: d
-               for d in r["demonstration"]["rows"]}["demo_full_release"]
-        tr = row["transport"]
-        # The TRANSLATION is still measured, over the window the body was
-        # inside the domain -- the exit is not a defect. What must be loud is
-        # the material that did not leave with it.
-        assert tr["clot_cells_final"] == 0, tr
-        assert tr["stranded_residue"] is True, tr
-        assert tr["left_cleanly"] is False, tr
-        assert tr["residue_fraction"] > 0.1, tr
-        # And the exit must not be scored as a dissolution.
-        assert tr["translating"] is True, tr
-        assert not tr["dissolving"], tr
-    exercise("a_core_that_leaves_its_material_behind_is_reported",
-             variant(demo_full_release=dict(final_state="stranded",
-                                            transport_shift_cells=55)),
-             stranded)
-
-    # The success case, which must NOT trip the same flag -- otherwise the
-    # warning fires on every run that works and stops being read.
-    def clean_exit(r, code):
-        row = {d["child_id"]: d
-               for d in r["demonstration"]["rows"]}["demo_full_release"]
-        tr = row["transport"]
-        assert tr["left_cleanly"] is True, tr
-        assert tr["stranded_residue"] is False, tr
-        assert tr["residue_fraction"] < 0.1, tr
-        assert tr["clot_cells_final"] == 0, tr
-        # A clean exit must ALSO not read as a dissolution: the body was
-        # coherent right up to the point it left.
-        assert tr["translating"] is True, tr
-        assert not tr["dissolving"], tr
-    exercise("a_clot_that_leaves_cleanly_is_not_flagged",
-             variant(demo_full_release=dict(final_state="clean_exit",
-                                            transport_shift_cells=55)),
-             clean_exit)
-
-    # --- STRETCHING UPWARD IS NOT TRANSLATING EITHER -----------------------
-    #
-    # Run 20260812-200349. releasedBodyVelocity averaged the ambient flow over
-    # a slab spanning the whole domain length, so the up-flow ahead of the
-    # clot was never cancelled by the down-flow behind it; Uy/Ux climbed from
-    # 0.072 to 0.171 as the body neared the outlet, 22.7 um of upward
-    # advection in total. The clot's underside is on the no-slip wall, so it
-    # stretched: length pinned at exactly the 90 um injury width while the
-    # height went 20 -> 34 um and the core grew 336 -> 557 cells.
-    #
-    # Every length-based metric called that a clean translation. The height
-    # and core-growth metrics exist so it cannot happen twice, and the solver
-    # now discards the cross-stream component rather than acting on it.
-    def stretches(r, code):
-        row = {d["child_id"]: d
-               for d in r["demonstration"]["rows"]}["demo_full_release"]
-        tr = row["transport"]
-        # The length is preserved, which is precisely why length alone lies.
-        assert abs(tr["length_change_fraction"]) < 0.15, tr
-        assert tr["height_change_fraction"] > 0.15, tr
-        assert tr["core_growth_fraction"] > 0.15, tr
-        # A growing core is what separates a stretch from smearing.
-        assert not tr["dissolving"], tr
-        assert tr["translating"] is False, tr
-    exercise("vertical_stretching_is_not_translation",
-             variant(demo_full_release=dict(transport_stretches_rows=9)),
-             stretches)
 
     # --- THE PARSER ITSELF --------------------------------------------------
     #
@@ -1884,252 +1715,6 @@ def main() -> int:
     # welding the wall and weakening the body. Three things can quietly undo
     # it, and each has a scenario.
 
-    TEAR_IDS = ("tear_gc1em9", "tear_gc1em8", "tear_gc1em7")
-
-    def tears(rows_by_id):
-        """Give every tear child a tear band except where told otherwise."""
-        return variant(**{
-            cid: dict(tear_rows=rows) for cid, rows in rows_by_id.items()
-        })
-
-    # 1. THE WALL MUST HOLD. This is the control on the whole experiment: if
-    #    any face released, the clot had a second way out and "it tore" no
-    #    longer means the body failed rather than the bond.
-    def wall_holds(r, code):
-        ct = r["cohesive_tear"]
-        assert len(ct["rows"]) == 3, ct["rows"]
-        assert ct["wall_held_everywhere"] is True, ct
-        for row in ct["rows"]:
-            assert row["faces_released"] == 0, row
-    exercise("an_unbreakable_wall_never_releases_a_face",
-             tears({cid: (6, 8) for cid in TEAR_IDS}), wall_holds)
-
-    # 2. THE TEAR MUST BE THROUGH THE BODY, and the height is the whole
-    #    answer. A tear confined to the first two cell rows is the bond
-    #    failing under another name and would reproduce exactly the
-    #    whole-body release he rejected -- so it must be reported as
-    #    tear_at_wall, NOT counted as the picture he asked for.
-    def through_body(r, code):
-        rows = {x["child_id"]: x for x in r["cohesive_tear"]["rows"]}
-        body = rows["tear_gc1em9"]
-        assert body["tore"] and body["tear_through_body"], body
-        assert body["tear_at_wall"] is False, body
-        assert body["tear_height_fraction"] > 0.2, body
-        assert body["shows_what_the_PI_asked_for"] is True, body
-
-        wall = rows["tear_gc1em8"]
-        assert wall["tore"] is True, wall
-        assert wall["tear_at_wall"] is True, wall
-        assert wall["tear_through_body"] is False, wall
-        # THE TRAP. It tore, the wall held, a fragment moved -- every headline
-        # box ticked -- and it is still the wrong answer, because the break is
-        # at the wall.
-        assert wall["shows_what_the_PI_asked_for"] is False, wall
-    exercise("a_tear_at_the_wall_is_not_a_tear_through_the_body",
-             tears({"tear_gc1em9": (6, 8), "tear_gc1em8": (0, 1),
-                    "tear_gc1em7": (6, 8)}),
-             through_body)
-
-    # 3. THE LADDER MUST BRACKET. A sweep where every rung tears has not
-    #    measured a required toughness, it has run out of range -- and
-    #    reporting its endpoint as "the" answer is the mistake this whole
-    #    series exists to avoid.
-    def brackets(r, code):
-        ct = r["cohesive_tear"]
-        assert ct["bracketed"] is True, ct
-        assert ct["required_Gc_j_m2"] == 1e-08, ct
-        assert ct["lowest_Gc_that_held_j_m2"] == 1e-07, ct
-        assert ct["bracket_note"] is None, ct
-        # The distance from physiology IS the finding, so it has to be there.
-        assert 8.0 < ct["orders_below_physiological"] < 9.0, ct
-    exercise("the_toughness_ladder_brackets_the_tear",
-             tears({"tear_gc1em9": (6, 8), "tear_gc1em8": (6, 8)}),
-             brackets)
-
-    def unbracketed(r, code):
-        ct = r["cohesive_tear"]
-        assert ct["bracketed"] is False, ct
-        assert ct["bracket_note"] is not None, ct
-        assert "ENDPOINT" in ct["bracket_note"], ct
-    exercise("a_ladder_where_everything_tears_says_so",
-             tears({cid: (6, 8) for cid in TEAR_IDS}), unbracketed)
-
-    # 4. ABLATION IS NOT A TEAR. Run 20260814-055141 reported
-    #    `tear_through_body: true` for 15 damaged cells sitting at 99% of the
-    #    clot height -- the crest. Nothing was above them; the outer surface
-    #    was simply being eaten inward. Measured on that run: ZERO intact clot
-    #    cells above the damage, in every child at every time. A through-tear
-    #    must leave material standing on the far side of the severed band.
-    def ablation_is_not_a_tear(r, code):
-        rows = {x["child_id"]: x for x in r["cohesive_tear"]["rows"]}
-        surf = rows["tear_gc1em9"]
-        assert surf["tore"] is True, surf
-        assert surf["tear_mode"] == "surface_ablation", surf
-        assert surf["intact_cells_above_damage"] == 0, surf
-        assert surf["tear_through_body"] is False, surf
-        assert surf["shows_what_the_PI_asked_for"] is False, surf
-
-        deep = rows["tear_gc1em8"]
-        assert deep["tear_mode"] == "through_body", deep
-        assert deep["intact_cells_above_damage"] > 0, deep
-        assert deep["tear_through_body"] is True, deep
-        assert r["cohesive_tear"]["failure_mode"] == "through_body", r["cohesive_tear"]
-    exercise("surface_ablation_is_not_reported_as_a_through_tear",
-             tears({"tear_gc1em9": (9, 12), "tear_gc1em8": (5, 6)}),
-             ablation_is_not_a_tear)
-
-    def all_ablation(r, code):
-        ct = r["cohesive_tear"]
-        assert ct["failure_mode"] == "surface_ablation", ct
-        assert ct["ablation_note"] is not None, ct
-        assert "no intact clot beyond" in ct["ablation_note"], ct
-        assert not any(x["shows_what_the_PI_asked_for"] for x in ct["rows"]), ct
-    exercise("a_ladder_that_only_ablates_says_so",
-             tears({cid: (9, 12) for cid in TEAR_IDS}), all_ablation)
-
-    # 3b. A TEAR DRIVEN BY THE INTERFACE IS NOT A RESULT. This is the defect
-    #     run 20260814-055141 was actually reporting: H peaked in the four-cell
-    #     phase interface at 13.5x its bulk value, so the damage criterion was
-    #     met in a numerical boundary layer created by the Us pin. Every tear
-    #     number downstream of that is meaningless, and the report has to say
-    #     so rather than presenting a bracketed ladder.
-    def interface_driven(r, code):
-        ct = r["cohesive_tear"]
-        assert ct["driver_artefact"] > 1.0, ct
-        for row in ct["rows"]:
-            assert row["driver_is_the_material"] is False, row
-            # It tore, through the body, wall held -- and it is STILL not the
-            # picture, because the interface drove it.
-            assert row["shows_what_the_PI_asked_for"] is False, row
-    exercise("a_tear_driven_by_the_interface_is_not_a_result",
-             variant(**{cid: dict(tear_rows=(5, 6), interface_driver_ratio=13.5)
-                        for cid in TEAR_IDS}),
-             interface_driven)
-
-    # 4. A MISSING Ccy MUST REFUSE, not return a bare cell count. Without cell
-    #    centres the tear HEIGHT is unknown, and "it tore" with no height is
-    #    indistinguishable from the bond failure Dr Li rejected. Same class as
-    #    the height blind spot that let run 20260812-200349's 70% vertical
-    #    stretch read as a clean translation.
-    def refuses_without_centres():
-        import assess_case as A
-        with tempfile.TemporaryDirectory(prefix="am2020-tear-") as tmp:
-            case = Path(tmp) / "c"
-            (case / "0").mkdir(parents=True)
-            (case / "0.01").mkdir()
-            write_scalar(case / "0.01" / "Dg", [0.99] * 10)
-            spec = {"series": "cohesive_tear", "DgDetach": 0.95,
-                    "geometry": {"h_m": 7.5e-07}, "clot": {"height_m": 1.5e-05}}
-            out = A.tear_measurement(case, spec)
-            assert out["available"] is False, out
-            assert out["tore"] is None, out
-            assert "Ccy" in out["reason"], out
-    run_direct("a_tear_without_cell_centres_is_refused_not_guessed",
-               refuses_without_centres)
-
-    # --- CORE/SHELL: the one child built to tear where source 33 tears -------
-    #
-    # Alireza, 2026-08-14: "turn on the grow too based on the 33_ source; also
-    # just make one case that you are sure it will tear cleanly." Sure is a
-    # strong word, so every way it can come back looking right while being
-    # wrong gets a scenario.
-
-    CS = "xu_core_shell_growth"
-
-    def core_shell(**kw):
-        base = dict(core_rows=(0, 4), core_cols=(60, 100),
-                    tear_cols=(60, 100), growth_rows=4,
-                    shell_shift_cells=12, tear_rows=None)
-        base.update(kw)
-        return variant(**{CS: base})
-
-    # 1. SOURCE 33'S SIGNATURE, and what this child is actually for: the shell
-    #    is pushed downstream and the core is not (their figure 5e-h). No
-    #    damage variable is involved and no toughness was lowered to get it.
-    def looks_like_source_33(r, code):
-        cs = r["source33_replication"]
-        assert len(cs["rows"]) == 1, cs["rows"]
-        row = cs["rows"][0]
-        # The experiment is valid.
-        assert row["wall_held"] is True, row
-        assert row["driver_is_the_material"] is True, row
-        assert row["permeability_is_real"] is True, row
-        assert not any(cs["the_experiment_is_valid_only_if"].values()), cs
-        # TOUGHNESS WAS NOT LOWERED. This is the assertion that would have
-        # caught the previous design, where Gc_shell was 1e-9 against a
-        # physiological 5.547 and the tear was manufactured by that number.
-        assert row["Gc_shell_j_m2"] == row["Gc_core_j_m2"], row
-        assert row["orders_below_physiological"] == 0.0, row
-        # And the outcome, described rather than graded.
-        assert row["shell_moved_more_than_core"] is True, row
-        assert row["shell_centroid_shift_m"] > 0, row
-        assert abs(row["core_centroid_shift_m"]) < 1e-12, row
-        # The material contrast has to reach the displacement field too:
-        # strain goes as 1/G, so 40/4 = 10 is what it predicts.
-        assert abs(row["Us_shell_over_core"]
-                   / row["Us_shell_over_core_predicted"] - 1.0) < 0.01, row
-        assert row["grew"] is True, row
-        assert row["growth_area_fraction"] > 0.05, row
-        # Nothing fractured, and at physiological toughness that is the
-        # CORRECT answer rather than a missing capability.
-        assert row["Dg_max"] < 0.5, row
-        assert row["tore"] is False, row
-    exercise("source33_shell_moves_downstream_while_the_core_holds_its_shape",
-             core_shell(), looks_like_source_33)
-
-    # 2. THE FAILURE THAT LOOKS LIKE IT FROM A DISTANCE. If the core travels
-    #    with the shell this is the whole clot sliding away -- Dr Li's exact
-    #    objection -- and it must not be reported as Xu's mechanism.
-    def whole_body_slides(r, code):
-        row = r["source33_replication"]["rows"][0]
-        assert row["core_centroid_shift_m"] > 0, row
-        assert row["shell_moved_more_than_core"] is False, row
-        assert CS in r["source33_replication"]["did_it_look_like_source_33"][
-            "shell_moved_more_than_core"
-        ]
-    exercise("a_core_that_travels_with_the_shell_is_whole_body_sliding",
-             core_shell(shell_shift_cells=12, core_shift_cells=12),
-             whole_body_slides)
-
-    # 3. THE CORE MUST NOT BREAK. Its Gc is physiological, so damage inside it
-    #    cannot be physics -- it is the shell field or the Gc blend being
-    #    wrong, and every other number in the row is then describing a
-    #    different experiment. The DEPTH of the first damage is still reported
-    #    whenever damage does fire, because that is what separates a tear from
-    #    the surface erosion Alireza named: "it is like eatening it up".
-    def core_broke(r, code):
-        row = r["source33_replication"]["rows"][0]
-        assert row["core_damaged_cells"] > 0, row
-        assert row["core_survived"] is False, row
-        assert row["first_tear_depth_cells"] is not None, row
-    exercise("damage_inside_the_core_is_reported_not_averaged_away",
-             core_shell(tear_rows=(2, 3), shell_shift_cells=0), core_broke)
-
-
-    # 4. THE PERMEABILITY THAT ACTUALLY RAN. Every bulk-clot cell of run
-    #    20260814-055141 held exactly 2.22e-16 m2 -- the numerical floor --
-    #    so k0p had no effect on the clot and the porosity axis was three runs
-    #    at the same permeability. The core/shell contrast is 500x in k0p and
-    #    means nothing at all if the floor is what the solver used.
-    def permeability_is_floored(r, code):
-        row = r["source33_replication"]["rows"][0]
-        assert row["permeability_floored_fraction"] == 1.0, row
-        assert row["k_clot_min_m2"] == row["k_clot_max_m2"], row
-        assert row["k_clot_min_m2"] < 1e-15, row
-        # The declared contrast survives in the row, so the discrepancy is
-        # visible side by side rather than having to be inferred.
-        assert row["k0p_shell_m2"] / row["k0p_core_m2"] > 100, row
-    exercise("a_clot_permeability_pinned_at_the_floor_is_visible",
-             core_shell(permeability_floored=True), permeability_is_floored)
-
-    def permeability_is_the_material(r, code):
-        row = r["source33_replication"]["rows"][0]
-        assert row["permeability_floored_fraction"] == 0.0, row
-        assert row["k_clot_min_m2"] == row["k0p_core_m2"], row
-        assert row["k_clot_max_m2"] == row["k0p_shell_m2"], row
-    exercise("with_the_constant_model_the_clot_gets_the_declared_permeability",
-             core_shell(), permeability_is_the_material)
-
     # 5. A MISSING SHELL FIELD MUST BE NAMED. The solver refuses it outright,
     #    but a log from before that refusal, or a child whose initialiser was
     #    skipped, would otherwise report a core of None and read as a clean
@@ -2153,160 +1738,6 @@ def main() -> int:
     run_direct("a_core_shell_child_without_a_shell_field_says_so",
                missing_shell_field)
 
-    # --- DEFORMATION: does the clot body actually bend, and can we believe it -
-    def deforms(r, code):
-        d = r["deformation"]
-        rows = {row["wall_shear_rate_1_s"]: row for row in d["rows"]}
-        assert len(rows) == 4, rows
-        # Strain must RISE with shear. A table that reports the same number at
-        # 1000/s and 8000/s is not measuring deformation.
-        strains = [rows[s]["strain_percent"] for s in sorted(rows)]
-        assert strains == sorted(strains), strains
-        assert strains[-1] > 4 * strains[0], strains
-        # The venous baseline is 0.53%; arterial has to clear it meaningfully.
-        assert strains[0] > d["venous_reference_strain_percent"], strains
-        assert d["deforms_visibly"], d
-        assert d["lowest_visible_shear_1_s"] is not None, d
-        assert all(row["trustworthy"] for row in d["rows"]), d
-    exercise("clot_deforms_more_at_arterial_shear", variant(), deforms)
-
-    # THE TRAP IN THIS SERIES. The load that makes the clot deform is the load
-    # that stops the skeleton converging. A big strain from a solve that sat at
-    # its iteration cap is not a measurement, and must not be counted as one.
-    def unconverged(r, code):
-        d = r["deformation"]
-        bad = {row["child_id"]: row for row in d["rows"]
-               if not row["skeleton_converged"]}
-        assert set(bad) == {"deform_s8000"}, list(bad)
-        assert not bad["deform_s8000"]["trustworthy"], bad
-        assert d["rows_discarded_for_convergence"] == 1, d
-        # It still has to APPEAR in the table -- silently dropping it would
-        # hide the largest deformation in the study.
-        assert bad["deform_s8000"]["strain_percent"] is not None, bad
-        assert d["lowest_visible_shear_1_s"] != 8000.0, d
-    exercise("unconverged_skeleton_is_not_a_deformation_measurement",
-             variant(deform_s8000=dict(skeleton_at_cap=True, us_scale=3.0)),
-             unconverged)
-
-    # THE ARTERIAL CRASH, turned into a measurement. Run 20260811-051109 lost
-    # deform_s2000/_s4000/_s8000 to SIGFPE inside solveSkeleton and returned
-    # nothing about them. A child that trips the guard must come back with its
-    # strain visible, marked untrustworthy, and the reason on the row.
-    def diverged(r, code):
-        d = r["deformation"]
-        rows = {row["child_id"]: row for row in d["rows"]}
-        bad = rows.get("deform_s4000")
-        assert bad is not None, "the diverged child vanished from the table"
-        assert bad["skeleton_diverged"], bad
-        assert not bad["trustworthy"], bad
-        assert bad["skeleton_divergence"]["reason"] == "residualGrowing", bad
-        assert bad["strain_percent"] is not None, bad
-        # And it must not be counted as evidence the clot deforms.
-        assert d["lowest_visible_shear_1_s"] != 4000.0, d
-    exercise("skeleton_divergence_is_reported_not_crashed",
-             variant(deform_s4000=dict(skeleton_diverges=True)), diverged)
-
-    # The rigid-body transport velocity has to be auditable: if the clot does
-    # not move, the report must say whether the VELOCITY was zero or the
-    # ADVECTION was. Those have different fixes, and run 20260811-051109 could
-    # not tell them apart.
-    def body_velocity(r, code):
-        demo = r["children"]["demo_full_release"]
-        assert demo["body_velocity_max_m_s"] is not None, demo
-        assert demo["body_velocity_max_m_s"] > 1e-4, demo
-        # A welded child never releases, so it must report no body velocity
-        # at all rather than a stale or defaulted number.
-        assert r["children"]["req_s200_G0059"]["body_velocity_max_m_s"] is None
-        # The ratio must reach the DEMONSTRATION ROW, not just the child dict.
-        row = {d["child_id"]: d for d in r["demonstration"]["rows"]}["demo_full_release"]
-        assert row["body_velocity_plausible"], row
-        assert row["free_stream_m_s"] is not None, row
-    exercise("rigid_body_velocity_is_reported", variant(), body_velocity)
-
-    # EROSION FROM BEHIND, reported as transport. Run 20260812-041322 moved the
-    # trailing edge 17 cells and the leading edge 9, shrinking the body by 8,
-    # and every metric in the report agreed the clot had "moved downstream":
-    # the centroid HAD moved. A centroid cannot tell translation from a body
-    # being eaten. This replays that geometry and requires the report to say so.
-    def eroded(r, code):
-        tr = {d["child_id"]: d["transport"]
-              for d in r["demonstration"]["rows"]}["demo_full_release"]
-        assert tr["length_change_fraction"] < -0.1, tr
-        assert tr["translating"] is False, tr
-        assert tr["trailing_travel_cells"] > tr["leading_travel_cells"], tr
-        # The centroid still moves, and the old flag still says so -- which is
-        # exactly why the length check has to exist alongside it.
-        assert tr["moved_downstream"], tr
-    exercise("erosion_from_behind_is_not_translation",
-             variant(demo_full_release=dict(transport_erodes_cells=14)),
-             eroded)
-
-    # And a clean translation must NOT be flagged, or the check is noise.
-    def translating(r, code):
-        tr = {d["child_id"]: d["transport"]
-              for d in r["demonstration"]["rows"]}["demo_full_release"]
-        assert tr["translating"], tr
-        assert abs(tr["length_change_fraction"]) < 0.15, tr
-        lead, trail = tr["leading_travel_cells"], tr["trailing_travel_cells"]
-        assert abs(lead - trail) < 2, (lead, trail)
-    exercise("a_translating_body_keeps_its_length", variant(), translating)
-
-    # DISSOLUTION WITH THE FOOTPRINT INTACT -- the failure that got all the way
-    # to ParaView. Run 20260811-195034 advected during the PEEL at Courant 16.2
-    # and smeared c_min from -0.997 to -0.145, while the cell count held at
-    # ~721 and volume_change_fraction reported 0.0. Every existing conservation
-    # check was blind to it: they all count cells below the c = 0 contour, and
-    # a field draining towards zero does not cross it.
-    def dissolving(r, code):
-        tr = {d["child_id"]: d["transport"]
-              for d in r["demonstration"]["rows"]}["demo_full_release"]
-        assert tr["dissolving"], tr
-        assert tr["c_min_end"] > -0.5, tr
-        # The old metric must be seen to MISS it -- that is the point.
-        assert abs(tr["volume_change_fraction"]) < 0.05, tr
-        # The material integral must NOT miss it.
-        assert tr["material_change_fraction"] < -0.2, tr
-    exercise("clot_smearing_away_is_caught_by_c_min",
-             variant(demo_full_release=dict(transport_smears_to=0.145)),
-             dissolving)
-
-    # And the healthy case must NOT be flagged, or the check is just noise.
-    def not_dissolving(r, code):
-        for row in r["demonstration"]["rows"]:
-            assert not row["transport"]["dissolving"], row
-            assert row["transport"]["c_min_end"] < -0.9, row
-    exercise("a_transported_clot_is_not_reported_as_dissolving",
-             variant(), not_dissolving)
-
-    # THE BUG THIS EXISTS TO CATCH. Run 20260811-100050 carried the clot at
-    # 4.06e-6 m/s against a 2.46e-3 free stream because the ambient sample was
-    # taken from the first ring of c > 0 cells, which sits at q = 0.54 inside
-    # the diffuse interface where the Brinkman drag is still half active. In
-    # isolation 4e-6 is just a small number; as a RATIO it is 0.0016 and names
-    # itself. Nothing in the previous 27 scenarios looked at it.
-    def implausible(r, code):
-        row = {d["child_id"]: d for d in r["demonstration"]["rows"]}["demo_full_release"]
-        assert row["body_velocity_free_stream_ratio"] < 0.01, row
-        assert row["body_velocity_plausible"] is False, row
-        # It must still be REPORTED, not dropped -- the number is the evidence.
-        assert row["body_velocity_m_s"] is not None, row
-        assert not row["transport"]["moved_downstream"], row
-    exercise("body_velocity_sampled_in_the_interface_is_flagged",
-             variant(demo_full_release=dict(body_velocity=4.06e-6,
-                                            transport_shift_cells=0)),
-             implausible)
-
-    # The cohesive route must be reported as a measured margin, so that
-    # "the clot never tore" is visible as a quantified distance from tearing
-    # rather than as an absence in the output.
-    def margin(r, code):
-        m = r["cohesive_margin"]
-        assert m["margin_factor"] > 1000, m
-        assert not m["cohesive_failure_occurred"], m
-        assert m["children_scored"] == r["children_admissible"], m
-        assert "ADHESIVE" in m["interpretation"], m
-    exercise("cohesive_margin_is_reported", variant(), margin)
-
     # THE GENERATOR MUST REFUSE the configuration that produced nine nulls.
     # A reporting test cannot catch this: by the time the assessor runs, the
     # measurement is already missing and "no PHASE_CLOT_DEBOND lines" is the
@@ -2321,559 +1752,15 @@ def main() -> int:
         # first one's reason -- a test that passes while checking nothing.
         pristine = controls_path.read_text()
         for label, mutate, expected in (
-            ("fixedValue on a required-strength child",
-             lambda c: c["series"]["required_strength"].__setitem__(
-                 "wall_condition", "fixedValue"),
-             "must use clotWallAdhesion"),
-            ("a breakable required-strength child",
-             lambda c: [
-                 child.__setitem__("adhesive_strength_pa", 2.0)
-                 for child in c["children"]
-                 if child["series"] == "required_strength"
-             ],
-             "must be unbreakable"),
-            # At 1000-8000/s the traction is 13-106 Pa. A breakable bond of a
-            # few Pa debonds in the first step or two, and the child measures
-            # a clot coming OFF rather than one bending. The strain column
-            # would still be populated, so nothing downstream would notice.
-            ("a breakable deformation child",
-             lambda c: [
-                 child.__setitem__("adhesive_strength_pa", 1.2)
-                 for child in c["children"]
-                 if child["series"] == "deformation"
-             ],
-             "detaches before it deforms"),
-            # A venous rate here reproduces the 0.53% strain this series was
-            # built to escape, and the table would report "does not deform"
-            # about an experiment that never left the venous range.
-            ("a venous rate in the deformation series",
-             lambda c: [
-                 child.__setitem__("wall_shear_rate_1_s", 200.0)
-                 for child in c["children"]
-                 if child["child_id"] == "deform_s4000"
-             ],
-             "not on the deformation axis"),
-            # BOTH OF THESE COST RUN 20260817-210800. They are here so the
-            # next field and the next geometry are refused at generation, on a
-            # laptop, instead of in a paid Colab session after blockMesh.
-            #
-            # A core/shell dome whose SHELL ANNULUS is thinner than about three
-            # interface widths never reaches chi = 1, so the core's modulus and
-            # permeability get applied to material that is not solid. The
-            # initialiser catches it -- "max chi over shell cells is 0.902" --
-            # but only after the mesh is built and the session is spent.
-            ("a core/shell dome whose shell annulus is too thin",
-             lambda c: c["series"]["eulerian_stage3_li"].update(
-                 {"core_shell": True,
-                  "clot_override": dict(
-                      c["series"]["eulerian_stage3_li"]["clot_override"],
-                      core_radius_m=3.5e-6)}
-             ) or [
-                 child.update({"G_core_pa": 40.0, "k0p_core_m2": 1e-14})
-                 for child in c["children"]
-                 if child["child_id"].startswith("stage3_li_")
-             ],
-             "interface widths, below the 3.0"),
-            # A source-33 child with no core and no stated reason. Silence
-            # here reads as an oversight, so it is treated as one: the series'
-            # central claim is "the core cannot fail, so what fails is the
-            # shell", and a child without a core has abandoned it.
-            ("a waived core with no reason given",
-             lambda c: c["series"]["eulerian_stage3_li"].pop(
-                 "core_shell_waiver"),
-             "core_shell_waiver"),
-            # n_outer_correctors is an Eulerian-path override. On the
-            # partitioned path nOuterCorrectors IS the shared FSI number, and
-            # every OFF child is compared against every other one at the same
-            # value -- so a per-child setting there would desynchronise the
-            # comparison silently, which is the same class of defect as the
-            # stronglyCoupledFSI guard that could never fire because it read a
-            # key that did not exist.
-            ("a per-child nOuterCorrectors on the partitioned path",
-             lambda c: [
-                 child.update({"n_outer_correctors": 5})
-                 for child in c["children"]
-                 if child["child_id"] == "growth_shear050"
-             ],
-             "Eulerian-path override"),
-            # THE LODGED-CLOT PLACEMENT GUARDS, added with the throat_lodged
-            # series. They exist because run 20260903-105830 was lost to a
-            # geometry assumption that no offline check exercised: the mesh
-            # was verified and the code consuming it was not. These three are
-            # the ways a lodged clot can be placed wrongly, and each must be
-            # refused by the generator rather than by the initialiser in a
-            # paid Colab session.
-            # THE TWO-VELOCITY DEPENDENCY GUARDS, added with em_2vel. Both
-            # halves of that change have to be on together or the solver
-            # describes two different materials in one step: the phase field
-            # and be ride the SKELETON while the fluid drag still pins U toward
-            # the LABORATORY frame. A half-applied formulation is worse than
-            # neither half, and it would not announce itself -- the run would
-            # complete and the clot would simply be carried by the wrong thing,
-            # which is the defect em_2vel exists to fix.
-            ("two_velocity_skeleton without eulerian_brinkman",
-             lambda c: [
-                 child.update({"eulerian_brinkman": False})
-                 for child in c["children"]
-                 if child["child_id"] == "em_2vel"
-             ],
-             "requires eulerian_brinkman"),
-            ("two_velocity_skeleton without eulerian_solid",
-             lambda c: [
-                 child.update({"eulerian_solid": False})
-                 for child in c["children"]
-                 if child["child_id"] == "em_2vel"
-             ],
-             "requires eulerian_solid"),
-            ("a lodged clot overlapping the taper",
-             lambda c: c["series"]["throat_lodged"]["geometry_override"]
-             .update({"injury_centre_x_m": 2.3e-4}),
-             "would be cut by the taper wall"),
-            ("a lodged clot reaching past the outlet",
-             lambda c: c["series"]["throat_lodged"]["geometry_override"]
-             .update({"injury_centre_x_m": 3.1e-4}),
-             "past the outlet"),
-            ("a lodged clot leaving an unresolved lumen",
-             lambda c: c["series"]["throat_lodged"]["clot_override"]
-             .update({"height_m": 1.8e-5}),
-             "interface widths, below the 3.0 floor"),
-            # And the journey guard must NOT have been weakened by the branch
-            # the lodged placement added: a throat child WITHOUT
-            # clot_in_throat must still be refused for a clot in the taper.
-            ("a journey clot that reaches into the taper",
-             lambda c: c["series"]["throat_occlusion"]["geometry_override"]
-             .update({"injury_centre_x_m": 1.1e-4}),
-             "clear of the narrowing"),
-            # S10 (2026-09-22): the three root-cause switches. Written with
-            # the guards, not after them. The first is the one that matters
-            # most: a refusal placed inside the two-velocity block that WRITES
-            # the keys could never fire here, and the child would run the
-            # shipped behaviour under a name claiming the fix.
-            ("an S10 key on a child without two_velocity_skeleton",
-             lambda c: [
-                 child.update({"two_velocity_skeleton": False})
-                 for child in c["children"]
-                 if child["child_id"] == "em51_G400_s10"
-             ],
-             "only written on the two-velocity path"),
-            ("network_pressure_reference deposited without the content "
-             "force basis",
-             lambda c: [
-                 child.update({"phase_force_basis": "legacy"})
-                 for child in c["children"]
-                 if child["child_id"] == "em51_G400_s10"
-             ],
-             "needs content_model true and phase_force_basis 'content'"),
-            ("a misspelt S10 value",
-             lambda c: [
-                 child.update({"released_carrier": "materiel"})
-                 for child in c["children"]
-                 if child["child_id"] == "em51_G400_s10"
-             ],
-             "is not one of rigidBody, material"),
-            # S11 (2026-09-23): the dependencies between the six switches.
-            # Each is a combination that would otherwise ship silently --
-            # an anti-diffusive compact force, an unbounded explicit term, or
-            # a clot edge whose force meets the lumen's mobility.
-            ("faceGradient with a law that softens",
-             lambda c: [
-                 child.update({"network_pressure_model": "poleCubic"})
-                 for child in c["children"]
-                 if child["child_id"] == "em53_G400_s11"
-             ],
-             "needs network_pressure_model convexExcess"),
-            ("faceGradient without the stability bounds",
-             lambda c: [
-                 child.update({"explicit_stability_bounds": "off"})
-                 for child in c["children"]
-                 if child["child_id"] == "em53_G400_s11"
-             ],
-             "it needs explicit_stability_bounds on"),
-            ("networkAbsent relaxation with the cell inverse",
-             lambda c: [
-                 child.update({"block_face_inverse": "cellInverse"})
-                 for child in c["children"]
-                 if child["child_id"] == "em53_G400_s11"
-             ],
-             "the lumen's skeleton mobility"),
-            ("convexExcess without the deposited reference",
-             lambda c: [
-                 child.update({"network_pressure_reference": "nominal"})
-                 for child in c["children"]
-                 if child["child_id"] == "em53_G400_s11"
-             ],
-             "it needs network_pressure_reference deposited"),
-            ("a misspelt S11 value",
-             lambda c: [
-                 child.update({"stress_face_transmission": "serial"})
-                 for child in c["children"]
-                 if child["child_id"] == "em53_G400_s11"
-             ],
-             "is not one of linear, series"),
-            # S12 (2026-09-23): the intrinsic drag's dependencies. The
-            # floor on top is the one that matters most -- a second,
-            # calibrated drag under a name that claims the anchored one.
-            ("intrinsic drag with the dilute floor on top",
-             lambda c: [
-                 child.update({"skeleton_dilute_drag_rate": 1.0e6})
-                 for child in c["children"]
-                 if child["child_id"] == "em55_G400_s12"
-             ],
-             "would add the calibrated floor this basis retires"),
-            ("intrinsic drag without a guaranteed argument",
-             lambda c: [
-                 child.update({"network_pressure_model": "poleCubic",
-                               "network_pressure_force": "stressDivergence"})
-                 for child in c["children"]
-                 if child["child_id"] == "em55_G400_s12"
-             ],
-             "held inside (0, phiSMax) only by"),
-            ("intrinsic drag on a constant permeability",
-             lambda c: [
-                 child.update({"permeability_model": "constant"})
-                 for child in c["children"]
-                 if child["child_id"] == "em56_G4_s12"
-             ],
-             "re-evaluates the kozenyCarmanSolid law at a"),
-            ("a misspelt S12 value",
-             lambda c: [
-                 child.update({"drag_occupancy_basis": "intrinsinc"})
-                 for child in c["children"]
-                 if child["child_id"] == "em56_G4_s12"
-             ],
-             "is not one of legacy, intrinsic"),
-            # S13 (2026-09-23): the grid-scale restoring's dependencies.
-            ("presence weight on a law with no additive excess",
-             lambda c: [
-                 child.update({"network_pressure_model": "poleCubic",
-                               "network_pressure_force": "stressDivergence",
-                               "drag_occupancy_basis": "legacy",
-                               "skeleton_dilute_drag_rate": 1.0e6})
-                 for child in c["children"]
-                 if child["child_id"] == "em58_G400_s13"
-             ],
-             "re-weights the convexExcess partial pressure"),
-            ("presence weight with no residual to ramp at",
-             lambda c: [
-                 child.update({"residual_chi": 0.0})
-                 for child in c["children"]
-                 if child["child_id"] == "em57_G4_s13"
-             ],
-             "residual_chi must be positive"),
-            ("flux-consistent stretch on the one-velocity path",
-             lambda c: [
-                 child.update({"be_stretch_gradient": "fluxConsistent"})
-                 for child in c["children"]
-                 if child["child_id"] == "stage3_xu_eul"
-             ],
-             "it needs two_velocity_skeleton and eulerian_solid"),
-            ("a misspelt S13 value",
-             lambda c: [
-                 child.update({"be_stretch_gradient": "fluxConsistant"})
-                 for child in c["children"]
-                 if child["child_id"] == "em57_G4_s13"
-             ],
-             "is not one of cellGradient, fluxConsistent"),
-            # S14 (2026-09-23): rupture at the critical stretch and the
-            # tangent elastic bound.
-            ("rupture without the tangent dt bound",
-             lambda c: [
-                 child.update({"elastic_stability_stiffness": "modulus"})
-                 for child in c["children"]
-                 if child["child_id"] == "em60_G400_s14"
-             ],
-             "it needs elastic_stability_stiffness tangent"),
-            ("tangent bound with the bounds off",
-             lambda c: [
-                 child.update({"elastic_stability_stiffness": "tangent"})
-                 for child in c["children"]
-                 if child["child_id"] == "stage3_xu_eul"
-             ],
-             "it needs explicit_stability_bounds on"),
-            ("a critical stretch that is not a stretch",
-             lambda c: [
-                 child.update({"network_critical_stretch": 0.9})
-                 for child in c["children"]
-                 if child["child_id"] == "em59_G4_s14"
-             ],
-             "must exceed 1"),
-            ("a critical stretch nothing reads",
-             lambda c: [
-                 child.update({"network_critical_stretch": 3.0})
-                 for child in c["children"]
-                 if child["child_id"] == "stage3_xu_eul"
-             ],
-             "silently inert"),
-            ("a misspelt S14 value",
-             lambda c: [
-                 child.update({"network_rupture": "criticalStrech"})
-                 for child in c["children"]
-                 if child["child_id"] == "em59_G4_s14"
-             ],
-             "is not one of off, criticalStretch"),
-            # S15 (2026-09-24): the core/shell label from the contents, and
-            # progressive damage (source 32 Eq. 6).
-            ("a composition label with no contents",
-             lambda c: [
-                 child.update({"material_label_basis": "contentComposition"})
-                 for child in c["children"]
-                 if child["child_id"] == "stage3_xu_eul"
-             ],
-             "it needs content_model true and a core_shell series"),
-            ("a misspelt S15 value",
-             lambda c: [
-                 child.update({"material_label_basis": "contentComposistion"})
-                 for child in c["children"]
-                 if child["child_id"] == "em61_G4_s15"
-             ],
-             "is not one of transportedLabel, contentComposition"),
-            ("a damage onset nothing reads",
-             lambda c: [
-                 child.update({"network_damage_onset_stretch": 2.5})
-                 for child in c["children"]
-                 if child["child_id"] == "em59_G4_s14"
-             ],
-             "silently inert"),
-            ("a damage onset that is not a stretch",
-             lambda c: [
-                 child.update({"network_damage_onset_stretch": 0.9})
-                 for child in c["children"]
-                 if child["child_id"] == "em62_G400_s15"
-             ],
-             "must exceed 1 and network_damage_stretch_scale"),
-            ("progressive damage without the tangent dt bound",
-             lambda c: [
-                 child.update({"elastic_stability_stiffness": "modulus"})
-                 for child in c["children"]
-                 if child["child_id"] == "em62_G400_s15"
-             ],
-             "network_rupture progressiveDamage bounds the tangent"),
-            # S16 (2026-09-24): terminal rupture with a timed release, the
-            # damage as content, the occupancy floor, the tensile pressure
-            # damage (research/designs/2026-09-24-S16-timed-terminal-
-            # rupture.md section 4). One negative per refusal; each was run
-            # once, directly, and refused for its stated reason (report 13).
-            ("a misspelt S16 value (damage transport)",
-             lambda c: _s16(c, "em63_G400_s16",
-                            damage_transport="contentPartion"),
-             "is not one of volumeFlux, contentPartition"),
-            ("a misspelt S16 value (floor basis)",
-             lambda c: _s16(c, "em63_G400_s16",
-                            skeleton_floor_basis="occupency"),
-             "is not one of intactWeight, occupancy"),
-            ("a misspelt S16 value (pressure damage)",
-             lambda c: _s16(c, "em63_G400_s16",
-                            network_pressure_damage="tensil"),
-             "is not one of off, tensile"),
-            ("a misspelt rupture law, reported as a value",
-             lambda c: _s16(c, "em63_G400_s16",
-                            network_rupture="terminalReleese"),
-             "is not one of off, criticalStretch, progressiveDamage, "
-             "terminalRelease"),
-            ("terminal release with lc <= 1",
-             lambda c: _s16(c, "em63_G400_s16", network_critical_stretch=1.0),
-             "is the rupture stretch lc and must exceed 1"),
-            ("terminal release with tau <= 0",
-             lambda c: _s16(c, "em63_G400_s16", network_release_time_s=0.0),
-             "network_release_time_s 0.0 must be a positive"),
-            ("terminal release, lc <= lf, progressive part on",
-             lambda c: _s16(c, "em63_G400_s16", network_critical_stretch=2.0),
-             "must exceed network_damage_onset_stretch"),
-            ("terminal release without contentPartition",
-             lambda c: _s16(c, "em63_G400_s16", damage_transport="volumeFlux"),
-             "holds only with damage_transport contentPartition"),
-            ("terminal release without the occupancy floor",
-             lambda c: _s16(c, "em63_G400_s16",
-                            skeleton_floor_basis="intactWeight"),
-             "holds only with skeleton_floor_basis occupancy"),
-            ("terminal release without the tensile damage",
-             lambda c: _s16(c, "em63_G400_s16",
-                            network_pressure_damage="off"),
-             "holds only with network_pressure_damage tensile"),
-            ("S16 switches without a rupture law",
-             lambda c: _s16(c, "em63_G400_s16", network_rupture="off",
-                            network_release_time_s=None,
-                            network_damage_progressive=None,
-                            network_critical_stretch=None,
-                            network_damage_onset_stretch=None,
-                            network_damage_stretch_scale=None),
-             "network_rupture off has none"),
-            # The S16 content_model refusal is SHADOWED: every child that can
-            # reach it needs network_pressure_reference deposited, which
-            # needs content_model first. This negative records which refusal
-            # actually fires.
-            ("a content partition with no contents",
-             lambda c: _s16(c, "em63_G400_s16", content_model=False,
-                            material_label_basis="transportedLabel"),
-             "so it needs content_model true"),
-            ("a content partition on a non-M-matrix scheme",
-             lambda c: _s16(c, "em63_G400_s16",
-                            content_transport_scheme="limitedLinear"),
-             "is non-negative only on an M-matrix predictor"),
-            ("the occupancy floor with no floor",
-             lambda c: c["series"]["throat_embolus"].__setitem__(
-                 "skeleton_diffuse_domain", False),
-             "so there is no floor and the switch would be silently inert"),
-            ("a release time nothing reads",
-             lambda c: _s16(c, "em62_G400_s15", network_release_time_s=3.3e-4),
-             "is read only under network_rupture terminalRelease"),
-            ("a progressive switch nothing reads",
-             lambda c: _s16(c, "em61_G4_s15", network_damage_progressive=True),
-             "is read only under network_rupture terminalRelease"),
-            ("a damage onset nothing reads (terminal-only)",
-             lambda c: _s16(c, "em63_G400_s16",
-                            network_damage_progressive=False,
-                            network_critical_stretch=2.0),
-             "is read only by the progressive part"),
-            ("a wall budget that is not positive",
-             lambda c: _s16(c, "em63_G400_s16", wall_budget_h=0.0),
-             "wall_budget_h 0.0 must be a positive"),
-            ("a final-relaxation switch that is not a boolean",
-             lambda c: _s16(c, "em65_G4_s16_final",
-                            final_relaxation_unity="yes"),
-             "final_relaxation_unity 'yes' must be true or false"),
-            # S17 (2026-09-26): fibre-form release, implicit elastic
-            # coupling, the time-accurate start-up (research/designs/
-            # 2026-09-26-S17-frozen-release-implicit-elastic-startup.md
-            # section 4). One negative per refusal; each was run once,
-            # directly, and refused for its stated reason (report 16).
-            ("a misspelt S17 value (elastic coupling)",
-             lambda c: _s16(c, "em66_G400_s17",
-                            elastic_coupling="implicitTangnet"),
-             "is not one of explicit, implicitTangent"),
-            ("a misspelt fibre release, reported as a value",
-             lambda c: _s16(c, "em66_G400_s17", network_rupture="fibreReleese"),
-             "terminalRelease, fibreRelease"),
-            ("fibre release without contentPartition",
-             lambda c: _s16(c, "em68_G400_s17_law",
-                            damage_transport="volumeFlux"),
-             "fibreRelease releases a ruptured cell to zero stress, which "
-             "holds only with damage_transport contentPartition"),
-            ("fibre release without the occupancy floor",
-             lambda c: _s16(c, "em68_G400_s17_law",
-                            skeleton_floor_basis="intactWeight"),
-             "holds only with skeleton_floor_basis occupancy"),
-            ("fibre release with lc <= 1",
-             lambda c: _s16(c, "em68_G400_s17_law",
-                            network_critical_stretch=1.0),
-             "fibreRelease: network_critical_stretch 1.0 is the rupture "
-             "stretch lc and must exceed 1"),
-            ("fibre release with tau <= 0",
-             lambda c: _s16(c, "em68_G400_s17_law",
-                            network_release_time_s=-3.3e-4),
-             "network_release_time_s -0.00033 must be a positive"),
-            ("fibre release without beDetRenormalise",
-             lambda c: _s16(c, "em68_G400_s17_law", be_det_renormalise=False),
-             "needs be_det_renormalise true"),
-            ("implicit tangent without fibre release",
-             lambda c: _s16(c, "em63_G400_s16",
-                            elastic_coupling="implicitTangent"),
-             "implicitTangent needs network_rupture fibreRelease"),
-            ("implicit tangent without the series face stress",
-             lambda c: _s16(c, "em66_G400_s17",
-                            stress_face_transmission="linear"),
-             "stress_face_transmission series is required"),
-            ("PCG for the Vs predictor",
-             lambda c: _s16(c, "em66_G400_s17", vs_linear_solver="PCG"),
-             "vs_linear_solver PCG is symmetric-only"),
-            ("a Vs solver nothing reads",
-             lambda c: _s16(c, "em69_G400_s17_noimpl",
-                            vs_linear_solver="PBiCGStab"),
-             "vs_linear_solver is read only under elastic_coupling "
-             "implicitTangent"),
-            ("Final 1 with nCorrectors < 6, not a discriminator",
-             lambda c: _s16(c, "em66_G400_s17", n_correctors=4),
-             "Fewer is allowed only in a named discriminator"),
-            ("a corrector count that is not a positive integer",
-             lambda c: _s16(c, "em66_G400_s17", n_correctors=0),
-             "n_correctors 0 must be a positive integer"),
-            ("a misspelt discriminator",
-             lambda c: _s16(c, "s17_D2_nc4", s17_discriminator="D4"),
-             "s17_discriminator 'D4' is not one of"),
-            ("a discriminator without the Final-1 start-up",
-             lambda c: _s16(c, "s17_D3_dt18", final_relaxation_unity=False),
-             "without final_relaxation_unity it would be silently inert"),
-            ("a control that drifts from its production child",
-             lambda c: _s16(c, "em69_G400_s17_noimpl", k0p_m2=2e-13),
-             "S17 control check: em69_G400_s17_noimpl differs from "
-             "em66_G400_s17 in k0p_m2"),
-            ("a control without its named switch",
-             lambda c: _s16(c, "em70_G4_s17_noimpl",
-                            elastic_coupling="implicitTangent"),
-             "does not differ from em67_G4_s17 in its named switch "
-             "elastic_coupling"),
-            # S17b (2026-09-27): slack fibres, field-unit fibre arithmetic,
-            # the wall face in both reconstructs (research/designs/
-            # 2026-09-27-S17b-slack-fibre-field-units-wall-face.md section 2).
-            # One negative per refusal; each was run once, directly, and
-            # refused for its stated reason (report 13).
-            ("a misspelt fibre_slack",
-             lambda c: _s16(c, "em71_G400_s17b", fibre_slack="V1"),
-             "fibre_slack 'V1' is not one of off, v1."),
-            ("a misspelt fibre_arithmetic",
-             lambda c: _s16(c, "em71_G400_s17b", fibre_arithmetic="field"),
-             "fibre_arithmetic 'field' is not one of shipped, fieldUnits."),
-            ("a misspelt skeleton_wall_face",
-             lambda c: _s16(c, "em71_G400_s17b", skeleton_wall_face="zero"),
-             "skeleton_wall_face 'zero' is not one of shipped, zeroed."),
-            ("V1 slack without fibre release",
-             lambda c: _s16(c, "em62_G400_s15", fibre_slack="v1"),
-             "fibre_slack v1 acts on the pending share's fibre; it needs "
-             "network_rupture fibreRelease"),
-            ("field units with no partition to assemble",
-             lambda c: _s16(c, "em62_G400_s15", fibre_arithmetic="fieldUnits"),
-             "without damage_transport contentPartition there are none, so it "
-             "would be silently inert"),
-            ("the wall face zeroed with no two-velocity reconstructs",
-             lambda c: _s16(c, "em_free", skeleton_wall_face="zeroed"),
-             "without two_velocity_skeleton it would be silently inert"),
-            ("an S17b control that drifts from em71",
-             lambda c: _s16(c, "em73_G400_s17b_noimpl", k0p_m2=2e-13),
-             "S17 control check: em73_G400_s17b_noimpl differs from "
-             "em71_G400_s17b in k0p_m2"),
-            ("em74 without its named switch",
-             lambda c: _s16(c, "em74_G400_s17b_noA3",
-                            skeleton_wall_face="zeroed"),
-             "does not differ from em71_G400_s17b in its named switch "
-             "skeleton_wall_face"),
-            # S18 (2026-09-29): the soft stage (research/designs/2026-09-29-
-            # S18-no-frozen-pressure-content-weight-network-viscosity.md,
-            # rev. 10, section 2). One negative per refusal; each was run
-            # once, directly, and refused for its stated reason (25b).
-            ("a misspelt frozen_pending_pressure",
-             lambda c: _s16(c, "em76_G4_s18", frozen_pending_pressure="None"),
-             "frozen_pending_pressure 'None' is not one of shipped, none."),
-            ("a misspelt wall_patch_split",
-             lambda c: _s16(c, "em76_G4_s18", wall_patch_split="splitted"),
-             "wall_patch_split 'splitted' is not one of shipped, split."),
-            ("a misspelt cplus_order",
-             lambda c: _s16(c, "em76_G4_s18", cplus_order="AB"),
-             "cplus_order 'AB' is not one of shipped, shared."),
             ("a misspelt network_pressure_weight",
              lambda c: _s16(c, "em76_G4_s18", network_pressure_weight="contentratio"),
              "network_pressure_weight 'contentratio' is not one of"),
-            ("an S18 switch without fibre release",
-             lambda c: _s16(c, "em62_G400_s15", cplus_order="shared"),
-             "cplus_order act on the pending fibre"),
             ("the content weight with no residual ramp",
              lambda c: _s16(c, "em76_G4_s18", residual_chi=0.0),
              "network_pressure_weight contentRatio ramps to zero below residual_chi"),
-            ("em76 drifting from em72",
-             lambda c: _s16(c, "em76_G4_s18", k0p_m2=2e-13),
-             "S18 parent check: em76_G4_s18 differs from em72_G4_s17b in k0p_m2"),
-            ("em76 without one of its named switches",
-             lambda c: _s16(c, "em76_G4_s18", wall_patch_split=None),
-             "S18 parent check: em76_G4_s18 does not differ from em72_G4_s17b "
-             "in its named switch wall_patch_split"),
-            # S18p (2026-10-01): the em76 attribution probe (research/designs/
-            # 2026-10-01-S18p-em76-attribution-probe.md, rev. 2). One negative
-            # per refusal; each was run once, directly.
             ("a misspelt proj_site_log",
              lambda c: _s16(c, "em78_G4_s18p_ctl", proj_site_log="on"),
              "proj_site_log 'on' is not one of no, yes."),
-            ("proj_site_log without fibre release",
-             lambda c: _s16(c, "em62_G400_s15", proj_site_log="yes"),
-             "without network_rupture fibreRelease neither site runs"),
             ("em78 drifting from em76",
              lambda c: _s16(c, "em78_G4_s18p_ctl", k0p_m2=2e-13),
              "S18p parent check: em78_G4_s18p_ctl differs from em76_G4_s18 in k0p_m2"),
@@ -2881,7 +1768,6 @@ def main() -> int:
              lambda c: _s16(c, "em79_G4_s18p_Cnp", network_pressure_weight="contentRatio"),
              "S18p parent check: em79_G4_s18p_Cnp does not differ from em76_G4_s18 "
              "in its named key network_pressure_weight"),
-            # S19 (2026-10-04): module-level S19_REFUSALS, one per refusal.
             *S19_REFUSALS,
         ):
             broken = copy.deepcopy(json.loads(pristine))
@@ -2905,37 +1791,6 @@ def main() -> int:
             if (root / "runs").exists():
                 shutil.rmtree(root / "runs")
 
-        # S16 section 4, THE ONE COMBINATION THAT MUST BE ACCEPTED: lc <= lf
-        # is buildable terminal-only (network_damage_progressive false, no
-        # onset/scale keys), so D2's measured alternatives (1.55-1.80,
-        # 1.9-2.1) stay buildable under D3 = drop (red-team Change 6). A
-        # refusal list that also refused this would be over-broad.
-        allowed = copy.deepcopy(json.loads(pristine))
-        _s16(allowed, "em63_G400_s16", network_critical_stretch=2.0,
-             network_damage_progressive=False,
-             network_damage_onset_stretch=None,
-             network_damage_stretch_scale=None)
-        controls_path.write_text(json.dumps(allowed, indent=2))
-        done = subprocess.run(
-            [sys.executable, str(root / "scripts" / "create_cases.py")],
-            capture_output=True, text=True,
-        )
-        if done.returncode != 0:
-            raise AssertionError(
-                "the generator REFUSED terminal-only lc <= lf, which S16 "
-                "section 4 allows: "
-                + (done.stdout + done.stderr).strip().splitlines()[-1])
-        props = (root / "runs" / "em63_G400_s16" / "constant"
-                 / "phaseClotProperties").read_text()
-        for needed in ("networkDamageProgressive off;",
-                       "networkCriticalStretch 2.0;"):
-            if needed not in props:
-                raise AssertionError(
-                    f"terminal-only child lacks {needed!r} in its dictionary")
-        print(f"generator accepts: {'terminal-only lc <= lf':<42} -> "
-              f"networkDamageProgressive off, networkCriticalStretch 2.0")
-        if (root / "runs").exists():
-            shutil.rmtree(root / "runs")
         controls_path.write_text(pristine)
 
     # ---- THE TWO-VELOCITY GATE: FIRES, DOES NOT FIRE SPURIOUSLY, AND IS
@@ -3359,9 +2214,7 @@ def main() -> int:
                s17_vs_entry_refused)
 
     def s17_gates():
-        good = ("PHASE_CLOT_S17_CONFIG networkRupture=fibreRelease "
-                "elasticCoupling=implicitTangent beDetRenormalise=yes "
-                "pendingForm=fibre\n")
+        good = "PHASE_CLOT_S17_CONFIG pendingForm=fibre\n"   # S21: .C:2341
         row = ("PHASE_CLOT_S17 time=1.5e-03 step=10 deltaT=4e-07 "
                "transferB1Max={tr} transfers=3 resetCells=1 "
                "rotRatioMedian={rot} rotCells=5 rotLdtMedian=4e-4 "
@@ -3372,10 +2225,7 @@ def main() -> int:
                "w1MaxDeg=0.3 w1Over5=0 w1Over10=0 pendingPressureMax=0 "
                "elasticCoupling=implicitTangent nuElMax=3 nuNetMax=0.1\n")
         spec = {"child_id": "em66_G400_s17",
-                "s17": {"networkRupture": "fibreRelease",
-                        "elasticCoupling": "implicitTangent",
-                        "beDetRenormalise": "yes", "pendingForm": "fibre",
-                        "nCorrectors": 6}}
+                "s17": {"pendingForm": "fibre", "nCorrectors": 6}}
         base = dict(tr=1.004, rot=1.00003, eig=4e-16, uni=0, proj=0, sp=0,
                     p2=0.97)
         r = ac.s17_report(good + row.format(**base), spec)
@@ -3388,7 +2238,7 @@ def main() -> int:
                                ("p2", 1.3, "p2")):
             r = ac.s17_report(good + row.format(**{**base, key: bad}), spec)
             assert r[gate] is False, (gate, r[gate])
-        r = ac.s17_report(good.replace("implicitTangent", "explicit")
+        r = ac.s17_report(good.replace("pendingForm=fibre", "pendingForm=none")
                           + row.format(**base), spec)
         assert r["config_matches_child"] is False, r["config_mismatched_keys"]
     run_direct("s17_gates_fail_on_their_negatives", s17_gates)
@@ -3421,8 +2271,7 @@ def main() -> int:
                s17b_taut_entry_refused)
 
     def s17b_gates():
-        cfg = ("PHASE_CLOT_S17B_CONFIG fibreSlack=v1 fibreArithmetic=fieldUnits "
-               "skeletonWallFace=zeroed\n")
+        cfg = ""        # S21: no S17B_CONFIG line; fibreSlack v1 is built in
         row = ("PHASE_CLOT_S17B time=1.5e-03 step=10 slackEvents=2 "
                "slackDdMax={dd} slackMuMax={mu} slackAtRest=0 "
                "slackQpMax={qp} slackPreTRatioMax=0.5 slackPreQpRatioMax=0.2 "
@@ -3431,13 +2280,11 @@ def main() -> int:
                "transfers=3 p2Max={p2} w2Max={w2}\n"
                "PHASE_CLOT_VS_SPLIT time=1.5e-03 slip={slip}\n"
                "PHASE_CLOT_FACE_SKELETON time=1.5e-03 maxFaceVs=0.01\n")
-        spec = {"child_id": "em71_G400_s17b",
-                "s17b": {"fibreSlack": "v1", "fibreArithmetic": "fieldUnits",
-                         "skeletonWallFace": "zeroed"}}
+        spec = {"child_id": "em76_G4_s18"}       # S21: child.json has no s17b block
         base = dict(dd=0, mu=0.99, qp=0, above=0, p2=0.97, w2=0.97, slip=0.05)
         r = ac.s17b_report(cfg + row.format(**base), spec)
-        for g in ("config_matches_child", "slack_dd", "taut_le_pending",
-                  "w2", "p2", "g8"):
+        assert r["config_matches_child"] is None, r["config_matches_child"]
+        for g in ("slack_dd", "taut_le_pending", "w2", "p2", "g8"):
             assert r[g] is True, (g, r[g])
         # design section 8 d: |dd| is the gate; the rest are conformance
         for key, bad, gate in (("dd", 1e-300, "slack_dd"),
@@ -3460,12 +2307,10 @@ def main() -> int:
     # per switch: scripts/check_s18_soft.py).
     def s18_gates():
         spec = {"child_id": "em76_G4_s18", "s17": {"nCorrectors": 6},
-                "s18": {"frozenPendingPressure": "none", "wallPatchSplit": "split",
-                        "networkPressureWeight": "contentRatio", "cplusOrder": "shared"}}
+                "s18": {"networkPressureWeight": "contentRatio"}}
 
         def log(slip=0.001, fp=0.0, ws=0.0, x2=16e-6, dtlim=1.0):
-            out = ["PHASE_CLOT_S18_CONFIG frozenPendingPressure=none wallPatchSplit=split "
-                   "networkPressureWeight=contentRatio cplusOrder=shared\n",
+            out = ["PHASE_CLOT_S18_CONFIG networkPressureWeight=contentRatio\n",
                    "PHASE_CLOT_MOMENTUM time=0 clotXbar=0\n"]
             for k, x in ((1, 7e-6), (2, x2)):
                 t = k*1e-3
@@ -3595,47 +2440,13 @@ def main() -> int:
         print(f"   batch 60: {len(filt)} child built ({last})")
     run_direct("batch_60_filter_generates", launch_batch_60)
 
-    def launch_batch_59():
-        filt = _batches[59].split()
-        rc, built, last = _filtered_generation(filt)
-        assert rc == 0, f"batch 59's filter was refused: {last}"
-        assert len(filt) == 4 and sorted(built) == sorted(filt), (built, filt)
-        print(f"   batch 59: {len(filt)} children built ({last})")
-    run_direct("batch_59_filter_generates", launch_batch_59)
-
-    def launch_batch_58():
-        filt = _batches[58].split()
-        rc, built, last = _filtered_generation(filt)
-        assert rc == 0, f"batch 58's filter was refused: {last}"
-        assert len(filt) == 12 and sorted(built) == sorted(filt), (built, filt)
-        print(f"   batch 58: {len(filt)} children built ({last})")
-    run_direct("batch_58_filter_generates", launch_batch_58)
-
+    # S21: batches 58 and 59 and their S17 control pairs are retired children, so
+    # their filter tests are cut; a filter naming a retired child is refused.
     def launch_negatives():
-        b59 = _batches[59].split()
-        for label, kw, expected in (
-            ("em73 alone: its reference em71 is not built",
-             dict(filt=["em73_G400_s17b_noimpl"]),
-             "S17 control check: the control em73_G400_s17b_noimpl is being built "
-             "but its reference em71_G400_s17b is not"),
-            ("batch 59: em73's child.json drifts in a non-switch key",
-             dict(filt=b59, patch_generator=(
-                 "        matrix.append(spec)\n",
-                 "        if child_id == 'em73_G400_s17b_noimpl':\n"
-                 "            spec['G_pa'] = 2*spec['G_pa']\n"
-                 "        matrix.append(spec)\n")),
-             "S17 control check: em73_G400_s17b_noimpl's child.json differs from "
-             "em71_G400_s17b's in G_pa"),
-            ("batch 59: a batch-58 control's entry drifts (em69)",
-             dict(filt=b59, mutate_controls=lambda c: next(
-                 x for x in c["children"]
-                 if x["child_id"] == "em69_G400_s17_noimpl").__setitem__("k0p_m2", 2e-13)),
-             "S17 control check: em69_G400_s17_noimpl differs from em66_G400_s17 in k0p_m2"),
-        ):
-            rc, _built, last = _filtered_generation(**kw)
-            assert rc != 0, f"{label}: ACCEPTED; it must be refused"
-            assert expected in last, f"{label}: refused for the WRONG reason: {last}"
-            print(f"   refused: {label} -> {last}")
+        rc, _built, last = _filtered_generation(filt=["em72_G4_s17b"])
+        assert rc != 0, "a filter naming a retired child was ACCEPTED"
+        assert "matched no child" in last, f"refused for the WRONG reason: {last}"
+        print(f"   refused: a retired child in the filter -> {last[:120]}")
     run_direct("launch_filter_negatives_are_refused", launch_negatives)
     run_direct("free_shell_watcher_fires_and_stays_silent",
                free_shell_watcher_fixtures)
