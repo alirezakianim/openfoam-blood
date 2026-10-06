@@ -1756,7 +1756,10 @@ def xu_parent_check(children: dict) -> None:
                 f"Xu parent check: {cid} differs from {XU_PARENT} in "
                 f"{', '.join(extra)} -- beyond the keys the design changes "
                 f"(design section 1).")
-    for cid in xu[1:]:
+    # R0 (S21 V21-7 reference): xu5_id is xu5_g250's identity twin and differs
+    # from its siblings only in end_time_s / wall_budget_h, as in the clean
+    # generator. Refusal logic only; no generated file changes.
+    for cid in [c for c in xu if c != "xu5_id"][1:]:
         extra = sorted(_flat_diff(children[cid], children[xu[0]])
                        - XU_SIBLINGS_DIFFER_IN)
         if extra:
