@@ -14,6 +14,7 @@
 #include <cmath>   // std::isfinite, for the skeleton divergence guard
 #include <chrono>  // per-phase wall clock; see tSkeleton_ et al. in the header
 #include <sstream> // S18p: the %.17g cell dump
+#include <sys/resource.h>  // S22: getrusage, the record's rssGB
 
 // The Eulerian elastic strain transport, SHARED UNCHANGED with the stage-1
 // gate application that qualified it (run 20260816-221135: spatial order
@@ -700,6 +701,20 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
             "networkViscosityTau", 2.5e-4
         )
     ),
+    // S22: the default is PARDISO (section 2.4). blockSolverReproducible is
+    // read strictly in the constructor body (section 4: a bool or refused).
+    blockLinearSolver_
+    (
+        phaseClotProperties_.lookupOrDefault<word>
+        (
+            "blockLinearSolver", "pardiso"
+        )
+    ),
+    blockSolverThreads_
+    (
+        phaseClotProperties_.lookupOrDefault<label>("blockSolverThreads", 0)
+    ),
+    blockSolverReproducible_(blockCoupled::blockSolverReproducibleDefault),
     phiSkel_
     (
         IOobject
@@ -2171,6 +2186,118 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
                 << " solution directions (S19 section 2)." << exit(FatalError);
         }
     }
+    // ---- S22, THE BLOCK'S LINEAR SOLVER ----------------------------------
+    // research/designs/2026-10-07-S22-pardiso-block-solver.md rev. 2
+    // (APPROVED 2026-10-07), sections 2.3-2.6 and 4: the values first, then
+    // the keys outside blockCoupled; MKL is loaded here, before step 1, so
+    // the config line below can echo its version and library.
+    if (blockLinearSolver_ != "pardiso" && blockLinearSolver_ != "umfpack")
+    {
+        FatalErrorInFunction
+            << "blockLinearSolver '" << blockLinearSolver_ << "' is not "
+            << "recognised: use pardiso or umfpack (S22 section 4)."
+            << exit(FatalError);
+    }
+    if (blockSolverThreads_ < 0)
+    {
+        FatalErrorInFunction
+            << "blockSolverThreads " << blockSolverThreads_ << " is negative: "
+            << "use 0 (MKL_NUM_THREADS, else the physical cores; OpenBLAS "
+            << "untouched under umfpack) or a positive count (S22 section 4)."
+            << exit(FatalError);
+    }
+    if (phaseClotProperties_.found("blockSolverReproducible"))
+    {
+        const ITstream& reproIs =
+            phaseClotProperties_.lookup("blockSolverReproducible");
+        if
+        (
+            reproIs.size() != 1
+         || !reproIs[0].isWord()
+         || !Switch(reproIs[0].wordToken(), true).valid()
+        )
+        {
+            FatalErrorInFunction
+                << "blockSolverReproducible "
+                << static_cast<const tokenList&>(reproIs) << " is not a bool: "
+                << "use true or false (S22 section 4)." << exit(FatalError);
+        }
+        blockSolverReproducible_ = Switch(reproIs[0].wordToken());
+    }
+    if (!s19BlockCoupled())
+    {
+        static const char* const s22Keys[] =
+        {
+            "blockLinearSolver",
+            "blockSolverThreads",
+            "blockSolverReproducible"
+        };
+        for (const char* const key : s22Keys)
+        {
+            if (phaseClotProperties_.found(key))
+            {
+                FatalErrorInFunction
+                    << "phaseClotProperties key `" << key << "` is read only "
+                    << "under momentumPressureCoupling blockCoupled; under "
+                    << momentumPressureCoupling_ << " it would be silently "
+                    << "inert (S22 section 4)." << exit(FatalError);
+            }
+        }
+    }
+    label s22SolverThreads = 0;
+    std::string s22ThreadsSource("none");
+    label s22MklMaxThreads = 0;
+    std::string s22MklVersion("none");
+    std::string s22MklLibrary("none");
+    if (s19BlockCoupled() && blockLinearSolver_ == "pardiso")
+    {
+        int nThreads = 0;
+        std::string err;
+        if
+        (
+            !blockCoupled::resolveThreads
+            (
+                blockSolverThreads_, nThreads, s22ThreadsSource, err
+            )
+        )
+        {
+            FatalErrorInFunction
+                << err.c_str() << exit(FatalError);
+        }
+        const char* mklRt = std::getenv("PHASE_CLOT_MKL_RT");
+        const std::string mklPath =
+            mklRt ? std::string(mklRt)
+          : std::string(blockCoupled::mklRuntimeSoname);
+        blockPardiso_.reset(new blockCoupled::PardisoLU());
+        if
+        (
+            !blockPardiso_->load
+            (
+                mklPath, nThreads, bool(blockSolverReproducible_), err
+            )
+        )
+        {
+            FatalErrorInFunction
+                << "momentumPressureCoupling blockCoupled, blockLinearSolver "
+                << "pardiso: " << err.c_str() << exit(FatalError);
+        }
+        s22SolverThreads = blockPardiso_->threads();
+        s22MklMaxThreads = blockPardiso_->mklMaxThreads();
+        s22MklVersion = blockPardiso_->version();
+        std::replace(s22MklVersion.begin(), s22MklVersion.end(), ' ', '_');
+        s22MklLibrary = blockPardiso_->library();
+    }
+    else if (s19BlockCoupled() && blockSolverThreads_ > 0)
+    {
+        std::string err;
+        if (!blockCoupled::setOpenblasThreads(blockSolverThreads_, err))
+        {
+            FatalErrorInFunction
+                << err.c_str() << exit(FatalError);
+        }
+        s22SolverThreads = blockSolverThreads_;
+        s22ThreadsSource = "blockSolverThreads";
+    }
     Info<< "PHASE_CLOT_S19_CONFIG"
         << " momentumPressureCoupling=" << momentumPressureCoupling_
         << " networkViscosity=" << networkViscosity_
@@ -2183,6 +2310,21 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
               /skeletonVolumeFraction_
            )
         << " nCorrectorsUsed=" << (s19BlockCoupled() ? "no" : "yes")
+        // S22 section 2.7 (none outside blockCoupled; the MKL keys none
+        // under umfpack; mklVersion with its spaces as underscores).
+        << " blockLinearSolver="
+        << (s19BlockCoupled() ? blockLinearSolver_ : word("none"))
+        << " solverThreads=" << s22SolverThreads
+        << " solverThreadsSource=" << s22ThreadsSource.c_str()
+        << " mklMaxThreads=" << s22MklMaxThreads
+        << " blockSolverReproducible="
+        << (
+               s19BlockCoupled()
+             ? (blockSolverReproducible_ ? "true" : "false")
+             : "none"
+           )
+        << " mklVersion=" << s22MklVersion.c_str()
+        << " mklLibrary=" << s22MklLibrary.c_str()
         << endl;
 
     // S17 A, THE INITIAL CONDITION: the fibre is read all-or-none; on a
@@ -13403,13 +13545,59 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveBlockCoupledStep()
         x0[blockCoupled::idx(i, 3)] = Vs_[i].y();
         x0[blockCoupled::idx(i, 4)] = p[i];
     }
-    if (!blockLU_.valid())
-    {
-        blockLU_.reset(new blockCoupled::UmfpackLU());
-    }
+    // S22 section 2.4: PARDISO (loaded in the constructor) or UMFPACK.
+    const bool pardisoB = (blockLinearSolver_ == "pardiso");
     blockCoupled::Step st;
-    blockCoupled::solveStep(bm, coef, nNonOrth, x0, blockLU_(), st);
-    if (st.status != UMFPACK_OK)
+    if (pardisoB)
+    {
+        blockCoupled::solveStep(bm, coef, nNonOrth, x0, blockPardiso_(), st);
+    }
+    else
+    {
+        if (!blockLU_.valid())
+        {
+            blockLU_.reset(new blockCoupled::UmfpackLU());
+        }
+        blockCoupled::solveStep(bm, coef, nNonOrth, x0, blockLU_(), st);
+    }
+    // S22 sections 2.8 and 4: any PARDISO error, and any perturbed pivot,
+    // is refused; iparm 15-17 and the matrix in place of UMFPACK's
+    // estimates.
+    if (pardisoB && st.status == blockCoupled::PardisoLU::statusPerturbed)
+    {
+        FatalErrorInFunction
+            << "momentumPressureCoupling blockCoupled, blockLinearSolver "
+            << "pardiso: phase 22 perturbed " << st.perturbedPivots
+            << " pivot(s) (perturbedPivots, iparm 14). A perturbed pivot can "
+            << "silence a singular matrix, so it is refused as UMFPACK's "
+            << "singular-matrix warning is (S22 sections 2.8, 4)."
+            << " The matrix: n=" << st.n << " nnz=" << st.nnz
+            << " rowSumMin=" << st.rowSumMin << " rowSumMax=" << st.rowSumMax
+            << "; PARDISO's memory (KB): iparm15=" << st.iparm15KB
+            << " iparm16=" << st.iparm16KB << " iparm17=" << st.iparm17KB
+            << exit(FatalError);
+    }
+    if (pardisoB && st.status != blockCoupled::PardisoLU::statusOk)
+    {
+        FatalErrorInFunction
+            << "momentumPressureCoupling blockCoupled, blockLinearSolver "
+            << "pardiso: PARDISO error " << st.status << " in phase "
+            << blockPardiso_->failedPhase() << " at stage " << st.stage
+            << " (phases: 11 analysis, 22 numeric factorisation, 33 "
+            << "back-substitution, -1 release; oneMKL's pardiso errors are "
+            << "-1 to -15; the matrix checker, iparm 27, runs on the first "
+            << "analysis and reports an unsorted or invalid CSR there. Stage "
+            << "4 is the setup: -1000 a cell without two independent "
+            << "neighbours for R3, -1001 a non-zero R3 boundary weight). "
+            << "Any error other than 0 is refused (S22 sections 2.8, 4)."
+            << " The matrix: n=" << st.n << " nnz=" << st.nnz
+            << " rowSumMin=" << st.rowSumMin << " rowSumMax=" << st.rowSumMax
+            << "; PARDISO's memory (KB): iparm15=" << st.iparm15KB
+            << " iparm16=" << st.iparm16KB << " iparm17=" << st.iparm17KB
+            << " perturbedPivots=" << st.perturbedPivots
+            << exit(FatalError);
+    }
+    if (!pardisoB && st.status != UMFPACK_OK)
     {
         FatalErrorInFunction
             << "momentumPressureCoupling blockCoupled: UMFPACK status "
@@ -13564,13 +13752,31 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveBlockCoupledStep()
         maxesB << " uMax=" << uMaxB << " vsMax=" << vsMaxB
                << " pMax=" << pMaxB;
 
+        // S22 section 2.7 (red team 03 F6): the process's peak resident set,
+        // getrusage ru_maxrss (KB on Linux) / 1e6.
+        struct rusage usageB;
+        if (getrusage(RUSAGE_SELF, &usageB) != 0)
+        {
+            FatalErrorInFunction
+                << "S22: getrusage(RUSAGE_SELF) failed; the record's rssGB "
+                << "cannot be read (S22 section 2.7)." << exit(FatalError);
+        }
+        const scalar rssGB = scalar(usageB.ru_maxrss)/1e6;
+
         Info<< "PHASE_CLOT_S19 time=" << runTime.userTimeValue()
             << " step=" << runTime.timeIndex()
             << " mode=blockCoupled"
+            << " linearSolver=" << blockLinearSolver_
             << " tSolve=" << st.tSolve
             << " tNumeric=" << st.tNum
             << " tSymbolic=" << st.tSym
-            << " symbolicCount=" << label(blockLU_->symbolicCount())
+            << " symbolicCount="
+            << label
+               (
+                   pardisoB
+                 ? blockPardiso_->symbolicCount()
+                 : blockLU_->symbolicCount()
+               )
             << " backSubstitutions=" << st.nBack
             << " linRes=" << linRes
             << " linResScaled=" << linResScaled
@@ -13583,6 +13789,17 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveBlockCoupledStep()
             << " lunz=" << st.lunz
             << " numericPeakGB=" << st.numericPeakGB
             << " noffdiag=" << st.noffdiag
+            // S22 section 2.7: -1 where the backend has no such figure.
+            << " perturbedPivots=" << st.perturbedPivots
+            << " irSteps=" << st.irSteps
+            << " solverThreads="
+            << (
+                   pardisoB
+                 ? label(blockPardiso_->threads())
+                 : blockSolverThreads_
+               )
+            << " mklPeakGB=" << st.mklPeakGB
+            << " rssGB=" << rssGB
             << " rowSumMin=" << st.rowSumMin
             << " rowSumMax=" << st.rowSumMax
             << " contResAbs=" << contResAbs

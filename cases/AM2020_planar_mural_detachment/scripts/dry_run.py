@@ -900,6 +900,115 @@ S19_REFUSALS = (
 )
 
 
+# ---- S22, THE BLOCK STEP'S LINEAR SOLVER (batch 71; design 2026-10-07-S22-pardiso-
+# block-solver rev. 2.1 sections 4 and 7) ----
+#
+# One negative per generator refusal (create_cases.py s22_key_refusal), module-level so
+# each runs alone: `python3 -B -c "import dry_run; dry_run.s22_generator_negatives('<label>')"`
+# from the scripts directory. (label, mutate(controls), the refusal's own words).
+S22_REFUSALS = (
+    ("a misspelt block_linear_solver",
+     lambda c: _s16(c, "S22v_G40_C", block_linear_solver="mkl"),
+     "block_linear_solver 'mkl' is not one of pardiso, umfpack (S22 section 4)."),
+    ("a non-string block_linear_solver",
+     lambda c: _s16(c, "S22v_G40_C", block_linear_solver=True),
+     "block_linear_solver True is not one of pardiso, umfpack (S22 section 4)."),
+    ("a negative block_solver_threads",
+     lambda c: _s16(c, "S22v_G40_E", block_solver_threads=-1),
+     "block_solver_threads -1 must be an integer >= 0"),
+    ("a fractional block_solver_threads",
+     lambda c: _s16(c, "S22v_G40_E", block_solver_threads=1.5),
+     "block_solver_threads 1.5 must be an integer >= 0"),
+    ("a boolean block_solver_threads",
+     lambda c: _s16(c, "S22v_G40_E", block_solver_threads=True),
+     "block_solver_threads True must be an integer >= 0"),
+    ("a non-bool block_solver_reproducible",
+     lambda c: _s16(c, "S22v_G40_C", block_solver_reproducible="yes"),
+     "block_solver_reproducible 'yes' must be true or false (S22 section 4)."),
+    ("a label block_solver_reproducible",
+     lambda c: _s16(c, "S22v_G40_C", block_solver_reproducible=1),
+     "block_solver_reproducible 1 must be true or false (S22 section 4)."),
+    ("block_solver_reproducible under umfpack",
+     lambda c: _s16(c, "S22v_G40_A", block_solver_reproducible=True),
+     "block_solver_reproducible is MKL's conditional-numerical-reproducibility switch; under "
+     "block_linear_solver umfpack it would be silently inert"),
+    ("block_linear_solver without blockCoupled",
+     lambda c: _s16(c, "S22v_G40_C", momentum_pressure_coupling=None, network_viscosity=None, tau_v_s=None,
+                    _tau_v_s_status=None),
+     "block_linear_solver is read only under momentum_pressure_coupling blockCoupled"),
+    ("block_solver_threads without blockCoupled",
+     lambda c: _s16(c, "em78_G4_s18p_ctl", block_solver_threads=2),
+     "block_solver_threads is read only under momentum_pressure_coupling blockCoupled"),
+    ("block_solver_reproducible without blockCoupled",
+     lambda c: _s16(c, "em78_G4_s18p_ctl", block_solver_reproducible=False),
+     "block_solver_reproducible is read only under momentum_pressure_coupling blockCoupled"),
+    ("an unknown solver_library",
+     lambda c: _s16(c, "S22v_G40_A0", solver_library="p1"),
+     "solver_library 'p1' is not one of p2prime (S22 section 7)."),
+    ("solver_library p2prime without block_linear_solver umfpack",
+     lambda c: _s16(c, "S22v_G40_A0", block_linear_solver="pardiso"),
+     "solver_library p2prime runs the P2-prime solver, which has only UMFPACK"),
+    ("solver_library p2prime with a thread count P2' ignores",
+     lambda c: _s16(c, "S22v_G40_A0", block_solver_threads=1),
+     "solver_library p2prime runs the P2-prime solver, which has only UMFPACK"),
+    ("S22v_G40_E drifting from its parent",
+     lambda c: _s16(c, "S22v_G40_E", k0p_m2=2e-15),
+     "FSF parent check: S22v_G40_E differs from S22v_G40_A in k0p_m2"),
+    ("S22v_G40_C without its named key",
+     lambda c: _s16(c, "S22v_G40_C", block_linear_solver="umfpack"),
+     "FSF parent check: S22v_G40_C does not differ from S22v_G40_A in its named key block_linear_solver"),
+)
+
+
+def s22_generator_negatives(only: str | None = None) -> None:
+    """Each S22 generator refusal, seen to fire for its stated reason on a fresh copy
+    (all of them, or the one whose label contains `only`)."""
+    import copy
+    ran = 0
+    with tempfile.TemporaryDirectory(prefix="am2020-s22-neg-") as tmp:
+        root = build_case(Path(tmp))
+        shutil.rmtree(root / "runs")
+        controls_path = root / "constant" / "mainCaseControls.json"
+        pristine = controls_path.read_text()
+        for label, mutate, expected in S22_REFUSALS:
+            if only is not None and only not in label:
+                continue
+            broken = copy.deepcopy(json.loads(pristine))
+            mutate(broken)
+            controls_path.write_text(json.dumps(broken, indent=1))
+            done = subprocess.run(
+                [sys.executable, "-B", str(root / "scripts" / "create_cases.py")],
+                capture_output=True, text=True)
+            said = (done.stdout + done.stderr).strip().splitlines()
+            last = said[-1] if said else ""
+            if done.returncode == 0:
+                raise AssertionError(f"the generator ACCEPTED {label}; it must refuse")
+            if expected not in last:
+                raise AssertionError(f"the generator refused {label} for the WRONG reason: {last}")
+            print(f"generator refuses: {label:<58} -> {last[:96]}")
+            shutil.rmtree(root / "runs", ignore_errors=True)
+            ran += 1
+        controls_path.write_text(pristine)
+        # the pristine controls still generate (a negative that always fails proves nothing)
+        done = subprocess.run([sys.executable, "-B", str(root / "scripts" / "create_cases.py")],
+                              capture_output=True, text=True)
+        assert done.returncode == 0, f"the pristine controls were refused: {(done.stdout + done.stderr)[-300:]}"
+        # S22 keys are written to the dictionary only for a child that names them, with the exact words
+        # the solver reads (S22 sections 2.4-2.6), and never to any of the 18 earlier children.
+        props = lambda cid: (root / "runs" / cid / "constant" / "phaseClotProperties").read_text()
+        assert "blockLinearSolver umfpack;" in props("S22v_G40_A")
+        assert "blockLinearSolver pardiso;" in props("S22v_G40_C") and "blockSolverThreads" not in props("S22v_G40_C")
+        assert "blockSolverThreads 1;" in props("S22v_G40_E") and "blockSolverThreads 1;" in props("S22v_G40_B")
+        assert not any(k in props(c) for c in ("fsf_G40_klo_v250", "fsf_G4_kxu_r3_40", "em76_G4_s18")
+                       for k in ("blockLinearSolver", "blockSolverThreads", "blockSolverReproducible"))
+        assert (root / "runs" / "S22v_G40_A0" / "child.env").is_file()
+        assert not any((root / "runs" / c / "child.env").exists() for c in ("S22v_G40_A", "fsf_G40_klo_v250"))
+        shutil.rmtree(root / "runs", ignore_errors=True)
+    assert ran > 0, f"no S22 negative matches {only!r}"
+    print(f"   {ran} S22 generator negatives refused; the written keys are exactly the named ones")
+
+
+
 # ---- XU 2017 FIGURE 5 (batch 61; design 2026-09-29-case-xu2017-fig5 rev. 4) ----
 #
 # Module-level, so the docket probe (research/investigations/20260929-1430-
@@ -1472,7 +1581,7 @@ def s21_generator_negatives() -> None:
     with tempfile.TemporaryDirectory(prefix="am2020-s21-gen-") as tmp:
         root = build_case(Path(tmp))
         n = len(json.loads((root / "runs" / "matrix.json").read_text()))
-        assert n == 18, f"the pristine copy generated {n} children, expected 18"
+        assert n == 26, f"the pristine copy generated {n} children, expected 26 (18 kept + the 8 S22 validation twins of BATCH 71)"
         shutil.rmtree(root / "runs")
         controls_path = root / "constant" / "mainCaseControls.json"
         props_path = root / "template" / "constant" / "phaseClotProperties"
@@ -1585,12 +1694,12 @@ def watcher_stopped(r, code):
 
 def main() -> int:
     # S21 (docket 20261005-1621, pipeline pass 2b): the kept set only. Every
-    # scenario below runs on the 18 kept children of throat_embolus, xu2017_fig5
+    # scenario below runs on the 18 kept children (+ the 8 S22 twins) of throat_embolus, xu2017_fig5
     # and throat_free_shell; the scenarios of the retired series (growth,
     # required strength, demonstration, transport, tear, source 33, deformation)
     # and the generator negatives of the deleted refusals are cut (the pre-S21
     # file: release-4198bb17).
-    KEPT = 18
+    KEPT = 26   # the 18 kept children + the 8 S22 validation twins of BATCH 71
 
     def healthy(r, code):
         assert code == 0, f"exit {code}"
@@ -1662,6 +1771,7 @@ def main() -> int:
             assert s10["fct_records"] > 1, s10["fct_records"]
         exercise(g3l_label, variant(fsf_G4_kxu_v250=dict(fct=g3l_fct)), g3l_kept)
     run_direct("s21_generator_refuses_built_in_and_deleted_keys", s21_generator_negatives)
+    run_direct("s22_generator_refuses_bad_solver_keys", s22_generator_negatives)
 
 
     # --- THE PARSER ITSELF --------------------------------------------------

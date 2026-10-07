@@ -137,6 +137,22 @@ run_child() {
     echo "[$child_id] starting"
     ( cd "$case" || exit 1
       set +e
+      # S22 section 7, arm A0: runs/<child>/child.env exists only for a child that
+      # names solver_library (create_cases.py writes it). It is sourced HERE, in
+      # this child's own subshell and before foamRun, so its exports reach this
+      # child's solver and no other. It `return`s non-zero to refuse (an empty
+      # PHASE_CLOT_P2PRIME_LIBBIN: the P2-prime library was not built); the child
+      # is then not solved, and its exit code is recorded as for a failed setup.
+      # For every other child the file is absent and this is a no-op.
+      if [ -f "$case/child.env" ]; then
+        . "$case/child.env"
+        env_code=$?
+        if [ "$env_code" -ne 0 ]; then
+          echo "$env_code" > run-exit-code.txt
+          echo "[$child_id] child.env refused with exit $env_code; not solving"
+          exit 0
+        fi
+      fi
       start_seconds=$SECONDS
       # THE LOG FILE IS UNAFFECTED BY CONCURRENCY. `tee` writes
       # log.phaseClotAxisymmetricFluid inside THIS child's own directory --

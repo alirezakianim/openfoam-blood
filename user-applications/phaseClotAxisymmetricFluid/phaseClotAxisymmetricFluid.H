@@ -1184,6 +1184,17 @@ class phaseClotAxisymmetricFluid
         word momentumPressureCoupling_;
         word networkViscosity_;
         scalar networkViscosityTau_;
+        //  S22 (research/designs/2026-10-07-S22-pardiso-block-solver.md rev.
+        //  2, APPROVED by Alireza 2026-10-07, sections 2.4-2.6; read only
+        //  under blockCoupled): blockLinearSolver "pardiso" (the default, MKL
+        //  PARDISO through blockCoupled::PardisoLU) or "umfpack" (P2's
+        //  UMFPACK path); blockSolverThreads (>= 0, default 0: MKL_NUM_THREADS
+        //  or the physical cores under pardiso, OpenBLAS untouched under
+        //  umfpack); blockSolverReproducible (MKL's CNR mode, default
+        //  blockCoupled::blockSolverReproducibleDefault).
+        word blockLinearSolver_;
+        label blockSolverThreads_;
+        Switch blockSolverReproducible_;
         //  S19b (research/designs/2026-10-04-S19b-lumen-elimination.md rev.
         //  2, APPROVED 2026-10-04, section 2.6): blockCoupledLumen
         //  "eliminate" (the default: a lumen cell's Vs is not an unknown,
@@ -1624,8 +1635,13 @@ class phaseClotAxisymmetricFluid
     label s18pPresentDumped_;
     damagePartitionKernel::PassengersDebug<scalar> s18pKernelDbg_;
     //- S19: the UMFPACK factorisation, its symbolic part kept while the
-    //  block's CSR pattern is unchanged (blockCoupled only; empty otherwise).
+    //  block's CSR pattern is unchanged (blockCoupled with blockLinearSolver
+    //  umfpack only; empty otherwise).
     autoPtr<blockCoupled::UmfpackLU> blockLU_;
+    //- S22: the PARDISO factorisation and its MKL, loaded in the constructor
+    //  before PHASE_CLOT_S19_CONFIG (blockCoupled with blockLinearSolver
+    //  pardiso only; empty otherwise).
+    autoPtr<blockCoupled::PardisoLU> blockPardiso_;
 
     label nPhaseCorrectors_;
 

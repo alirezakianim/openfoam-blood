@@ -39,6 +39,17 @@
         the fluxes. Without it (identityRows) the system is S19a's, byte for
         byte (K14).
 
+      - S22 (research/designs/2026-10-07-S22-pardiso-block-solver.md rev. 2,
+        APPROVED by Alireza 2026-10-07, section 2): a second LU, PardisoLU,
+        MKL PARDISO on the CSR of A itself (analysis on a pattern change by
+        UmfpackLU's test, numeric factorisation every step, one PARDISO
+        back-substitution each). MKL is never linked: PardisoLU dlopen's
+        libmkl_rt RTLD_LOCAL and takes its entry points through dlsym, typed
+        by the prototypes declared below (LP64, MKL_INT = int), so a UMFPACK
+        run never has MKL in its process. solveStep is one template over the
+        LU; each LU fills its own Step statistics (stats, solveStats), and
+        the UMFPACK instantiation makes P2's calls in P2's order.
+
     Units: the momentum rows are volume-integrated and kinematic (fvMatrix
     units: the shipped UEqn/VsEqn diag and source); K, Kres are 1/s; the p row
     is the face-flux sum in m^3/s.
@@ -54,6 +65,39 @@
 #include <chrono>
 #include <algorithm>
 #include <utility>
+#include <string>
+#include <cstring>
+#include <cstdlib>
+#include <cstdio>
+#include <cctype>
+#include <limits>
+#include <thread>
+#include <dlfcn.h>
+
+// S22 section 2.3: the MKL entry points PardisoLU takes through dlsym, as
+// declared by mkl_pardiso.h and mkl_service.h for LP64 (MKL_INT = int;
+// _MKL_DSS_HANDLE_t = void*). Declared, never defined or called by name: no
+// object here references an MKL symbol, so nothing links MKL. The lower-case
+// names of the design (mkl_set_num_threads, ...) are mkl_service.h macros for
+// these C symbols. A compile that includes the two MKL headers beside this
+// file (V22-2) turns any mismatch into a conflicting-declaration error.
+extern "C"
+{
+    void pardiso
+    (
+        void* pt, const int* maxfct, const int* mnum, const int* mtype,
+        const int* phase, const int* n, const void* a, const int* ia,
+        const int* ja, int* perm, const int* nrhs, int* iparm,
+        const int* msglvl, void* b, void* x, int* error
+    );
+    void pardisoinit(void* pt, const int* mtype, int* iparm);
+    void MKL_Set_Num_Threads(int nth);
+    void MKL_Set_Dynamic(int bool_MKL_DYNAMIC);
+    int MKL_Get_Max_Threads(void);
+    void MKL_Get_Version_String(char* buffer, int len);
+    long long int MKL_Peak_Mem_Usage(int reset);
+    int MKL_CBWR_Set(int);
+}
 
 namespace blockCoupled
 {
@@ -872,6 +916,8 @@ inline void cscOfCsr
     }
 }
 
+struct Step;
+
 class UmfpackLU
 {
     void* symbolic_;
@@ -936,6 +982,18 @@ public:
 
     long symbolicCount() const { return symbolicCount_; }
     double rcond() const { return rcond_; }
+
+    //- S22 section 2.2: the status of a good factor() and backSolve().
+    static const int statusOk = UMFPACK_OK;
+
+    //- S22 section 2.2: UMFPACK's statistics into the step after factor()
+    //  (P2's Info reads, verbatim; defined after Step).
+    void stats(Step& s) const;
+
+    //- S22 section 2.2: UMFPACK reports no refinement steps and no MKL
+    //  memory; the step keeps -1 for both.
+    void solveStats(Step&) const
+    {}
 
     //- UMFPACK's Info after the last call (after factor(): the numeric
     //  factorisation's statistics; -1 where UMFPACK reported none).
@@ -1113,7 +1171,7 @@ inline void scaledResidualNorms
 
 struct Step
 {
-    int status = 0;        // UMFPACK status (UMFPACK_OK = 0), or -1000 setup
+    int status = 0;        // the LU's status (0 = OK, both), or -1000 setup
     int stage = 0;         // 1 symbolic, 2 numeric, 3 solve, 4 setup
     int nIdentity = 0;
     int nEliminated = 0;   // S19b: lumen cells whose Vs is not an unknown
@@ -1130,6 +1188,13 @@ struct Step
     double lunzEstimate = -1, numericSizeEstimateGB = -1, peakMemoryEstimateGB = -1;
     double rowSumMin = 0, rowSumMax = 0;
     double rsNorm = 0, bsNorm = 0;  // ||R^-1(Ax - b)||_2, ||R^-1 b||_2
+    // S22 section 2.7 (-1 under UMFPACK): pivots perturbed by phase 22
+    // (iparm 14), the most refinement steps over the step's
+    // back-substitutions (iparm 7), MKL's peak (mkl_peak_mem_usage, GB), and
+    // PARDISO's memory iparm 15-17 (KB) for the failure message (section 2.8).
+    int perturbedPivots = -1, irSteps = -1;
+    double mklPeakGB = -1;
+    double iparm15KB = -1, iparm16KB = -1, iparm17KB = -1;
     std::vector<double> x;
     // Face fluxes and their parts: F = phiFf Fu + phiSf Fv - rA Xp + cE El.
     std::vector<double> F, Fu, Fv, Xp, El;
@@ -1137,12 +1202,586 @@ struct Step
     std::vector<double> cellSum;   // sum over the cell's faces of outward F
 };
 
+
+//- S22 section 2.2: P2's UMFPACK Info reads (solveStep, P2 L1176-1191),
+//  moved here verbatim; called right after factor(), as they were.
+inline void UmfpackLU::stats(Step& s) const
+{
+    s.rcond = rcond();
+    {
+        const double* si = symbolicInfo();
+        const double unit = si[UMFPACK_SIZE_OF_UNIT];
+        s.strategyUsed = si[UMFPACK_STRATEGY_USED];
+        s.orderingUsed = si[UMFPACK_ORDERING_USED];
+        s.lunzEstimate = si[UMFPACK_LNZ_ESTIMATE] + si[UMFPACK_UNZ_ESTIMATE];
+        s.numericSizeEstimateGB = si[UMFPACK_NUMERIC_SIZE_ESTIMATE]*unit/1e9;
+        s.peakMemoryEstimateGB = si[UMFPACK_PEAK_MEMORY_ESTIMATE]*unit/1e9;
+        if (s.status == UMFPACK_OK)
+        {
+            const double* ni = info();
+            s.lunz = ni[UMFPACK_LNZ] + ni[UMFPACK_UNZ];
+            s.numericPeakGB = ni[UMFPACK_PEAK_MEMORY]*unit/1e9;
+            s.noffdiag = ni[UMFPACK_NOFF_DIAG];
+        }
+    }
+}
+
+
+// ---------------------------------------------------------------------------
+//  S22: MKL PARDISO, loaded at run time (design sections 2.1, 2.3, 2.5, 2.6)
+// ---------------------------------------------------------------------------
+
+//- S22 section 3.2: THE DEFAULT OF blockSolverReproducible (the key absent).
+//  ONE constant. Rev. 2.1 (Alireza 2026-10-07, "Physical cores,
+//  reproducible"; docket 20261007-0134 report 05: CNR at the 6 physical
+//  cores bitwise identical in 7/7 repeats at 0.93x the default mode's
+//  refactorisation): true.
+static const bool blockSolverReproducibleDefault = true;
+
+//- S22 section 2.3: dlopen'ed when PHASE_CLOT_MKL_RT is unset (MKL 2026.1's
+//  soname, red team 03 F3), and the version MKL must report (section 4).
+static const char* const mklRuntimeSoname = "libmkl_rt.so.3";
+static const char* const mklPinnedVersion = "2026.1";
+
+//- mkl_types.h and mkl_service.h values (the V22-2 compile asserts them).
+static const int mklCbwrAuto = 2;          // MKL_CBWR_AUTO
+static const int mklCbwrSuccess = 0;       // MKL_CBWR_SUCCESS
+static const int mklPeakMemEnable = 1;     // MKL_PEAK_MEM_ENABLE
+static const int mklPeakMem = 2;           // MKL_PEAK_MEM
+
+typedef decltype(&::pardiso) MklPardisoFn;
+typedef decltype(&::pardisoinit) MklPardisoInitFn;
+typedef decltype(&::MKL_Set_Num_Threads) MklSetNumThreadsFn;
+typedef decltype(&::MKL_Set_Dynamic) MklSetDynamicFn;
+typedef decltype(&::MKL_Get_Max_Threads) MklGetMaxThreadsFn;
+typedef decltype(&::MKL_Get_Version_String) MklGetVersionStringFn;
+typedef decltype(&::MKL_Peak_Mem_Usage) MklPeakMemUsageFn;
+typedef decltype(&::MKL_CBWR_Set) MklCbwrSetFn;
+
+
+//- S22 section 4: true when MKL's version string names the pinned version,
+//  "Version 2026.1" followed by a non-digit or the end (2026.10 is not it).
+inline bool mklVersionPinned(const std::string& v)
+{
+    const std::string key = std::string("Version ") + mklPinnedVersion;
+    const std::size_t at = v.find(key);
+    if (at == std::string::npos)
+    {
+        return false;
+    }
+    const std::size_t end = at + key.size();
+    return end == v.size() || !std::isdigit(static_cast<unsigned char>(v[end]));
+}
+
+
+//- S22 section 2.5 (rev. 2.1): the physical cores, the distinct
+//  (physical_package_id, core_id) pairs of the online CPUs under
+//  <root>/devices/system/cpu (root "/sys"). False when any of it cannot be
+//  read or parsed ("unreadable": the caller falls back).
+inline bool readSmallFile(const std::string& path, std::string& text)
+{
+    text.clear();
+    FILE* f = std::fopen(path.c_str(), "r");
+    if (!f)
+    {
+        return false;
+    }
+    char buf[4096];
+    const std::size_t got = std::fread(buf, 1, sizeof buf - 1, f);
+    std::fclose(f);
+    buf[got] = '\0';
+    text = buf;
+    while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back())))
+    {
+        text.erase(text.size() - 1);
+    }
+    return !text.empty();
+}
+
+inline bool parseNonNegative(const std::string& s, long& v)
+{
+    if (s.empty() || !std::isdigit(static_cast<unsigned char>(s[0])))
+    {
+        return false;
+    }
+    char* end = nullptr;
+    v = std::strtol(s.c_str(), &end, 10);
+    return *end == '\0';
+}
+
+inline bool physicalCores(const std::string& root, int& n)
+{
+    n = 0;
+    const std::string cpu = root + "/devices/system/cpu/";
+    std::string online;
+    if (!readSmallFile(cpu + "online", online))
+    {
+        return false;
+    }
+    std::vector<std::pair<long, long>> pairs;
+    std::size_t at = 0;
+    while (at <= online.size())
+    {
+        const std::size_t comma = std::min(online.find(',', at), online.size());
+        const std::string range = online.substr(at, comma - at);
+        const std::size_t dash = range.find('-');
+        long lo = 0, hi = 0;
+        if
+        (
+            !parseNonNegative(range.substr(0, dash), lo)
+         || !parseNonNegative(dash == std::string::npos ? range.substr(0, dash) : range.substr(dash + 1), hi)
+         || hi < lo
+        )
+        {
+            return false;
+        }
+        for (long c = lo; c <= hi; ++c)
+        {
+            const std::string topo = cpu + "cpu" + std::to_string(c) + "/topology/";
+            std::string pkgS, coreS;
+            long pkg = 0, core = 0;
+            if
+            (
+                !readSmallFile(topo + "physical_package_id", pkgS)
+             || !readSmallFile(topo + "core_id", coreS)
+             || !parseNonNegative(pkgS, pkg)
+             || !parseNonNegative(coreS, core)
+            )
+            {
+                return false;
+            }
+            pairs.push_back(std::make_pair(pkg, core));
+        }
+        at = comma + 1;
+    }
+    std::sort(pairs.begin(), pairs.end());
+    n = int(std::unique(pairs.begin(), pairs.end()) - pairs.begin());
+    return n > 0;
+}
+
+
+//- S22 section 2.5 (rev. 2.1): MKL's thread count under pardiso.
+//  blockSolverThreads > 0 is used as given; 0 is MKL_NUM_THREADS when set (a
+//  positive integer, or refused), else the physical cores of sysfsRoot
+//  (physicalCores), else, only when sysfs is unreadable,
+//  std::thread::hardware_concurrency() (0, unknown: refused). source names
+//  the one used (blockSolverThreads, MKL_NUM_THREADS, physicalCores,
+//  hardwareConcurrency).
+inline bool resolveThreads
+(
+    const int requested, int& n, std::string& source, std::string& err,
+    const std::string& sysfsRoot = "/sys"
+)
+{
+    n = 0;
+    source = "none";
+    if (requested < 0)
+    {
+        err = "blockSolverThreads " + std::to_string(requested)
+            + " is negative: use 0 (MKL_NUM_THREADS, else the physical"
+              " cores) or a positive count (S22 section 4).";
+        return false;
+    }
+    if (requested > 0)
+    {
+        n = requested;
+        source = "blockSolverThreads";
+        return true;
+    }
+    const char* env = std::getenv("MKL_NUM_THREADS");
+    if (env)
+    {
+        char* end = nullptr;
+        const long v = std::strtol(env, &end, 10);
+        if (end == env || *end != '\0' || v < 1 || v > std::numeric_limits<int>::max())
+        {
+            err = std::string("blockSolverThreads 0 reads MKL_NUM_THREADS, which is \"")
+                + env + "\", not a positive integer (S22 section 2.5).";
+            return false;
+        }
+        n = int(v);
+        source = "MKL_NUM_THREADS";
+        return true;
+    }
+    if (physicalCores(sysfsRoot, n))
+    {
+        source = "physicalCores";
+        return true;
+    }
+    n = int(std::thread::hardware_concurrency());
+    source = "hardwareConcurrency";
+    if (n < 1)
+    {
+        err = "blockSolverThreads 0 with MKL_NUM_THREADS unset and "
+            + sysfsRoot + "/devices/system/cpu unreadable: "
+              "std::thread::hardware_concurrency() reports no count; set "
+              "blockSolverThreads (S22 section 2.5).";
+        return false;
+    }
+    return true;
+}
+
+
+//- S22 section 2.5: blockSolverThreads n > 0 under umfpack sets OpenBLAS's
+//  thread count through dlsym(RTLD_DEFAULT); refused if the process has no
+//  openblas_set_num_threads (section 4).
+inline bool setOpenblasThreads(const int n, std::string& err)
+{
+    dlerror();
+    void* f = dlsym(RTLD_DEFAULT, "openblas_set_num_threads");
+    if (!f)
+    {
+        const char* e = dlerror();
+        err = "blockSolverThreads " + std::to_string(n)
+            + " under blockLinearSolver umfpack: openblas_set_num_threads is"
+              " not in the process (dlsym(RTLD_DEFAULT): "
+            + std::string(e ? e : "no message")
+            + "), so UMFPACK's BLAS thread count cannot be set (S22 section 4).";
+        return false;
+    }
+    reinterpret_cast<void (*)(int)>(f)(n);
+    return true;
+}
+
+
+//- S22 section 2.1: MKL PARDISO (mtype 11, real unsymmetric) on the CSR of
+//  A. Phase 11 (analysis) when the CSR pattern differs from the kept one,
+//  by UmfpackLU's test; 22 (numeric) every factor(); 33 per backSolve(); -1
+//  (release) before a new analysis and in the destructor. iparm as
+//  benchmarked (docket 20261007-0134 benchkit/bench_pardiso.cpp): pardisoinit
+//  for mtype 11, then (1-based numbers, as the design) 8 = 2, 10 = 13,
+//  11 = 1, 13 = 1, 18 = -1, 35 = 1, 27 = 1 on the first analysis only, and
+//  34 = the thread count under CNR. The arrays are 0-based (iparm 8 is
+//  iparm_[7]).
+class PardisoLU
+{
+public:
+
+    //- factor() and backSolve(): PARDISO's error (0 = OK), or
+    //  statusPerturbed when phase 22 perturbed a pivot (section 2.8; positive,
+    //  as UMFPACK's singular-matrix warning).
+    static const int statusOk = 0;
+    static const int statusPerturbed = 1;
+
+private:
+
+    void* lib_;
+    MklPardisoFn pardiso_;
+    MklPardisoInitFn pardisoInit_;
+    MklSetNumThreadsFn setNumThreads_;
+    MklSetDynamicFn setDynamic_;
+    MklGetMaxThreadsFn getMaxThreads_;
+    MklGetVersionStringFn getVersionString_;
+    MklPeakMemUsageFn peakMemUsage_;
+    MklCbwrSetFn cbwrSet_;
+    std::string path_, library_, version_;
+    int threads_;
+    int mklMaxThreads_;
+    void* pt_[64];
+    int iparm_[64];
+    int iparmIn_[64];
+    bool live_;       // pt_ holds an analysis; phase -1 releases it
+    bool checked_;    // the matrix checker (iparm 27) has run
+    int n_;
+    std::vector<int> Ap_, Ai_;
+    std::vector<double> b_;
+    long symbolicCount_;
+    int failedPhase_;
+    int irMax_;
+
+    PardisoLU(const PardisoLU&);
+    void operator=(const PardisoLU&);
+
+    static double now()
+    {
+        return std::chrono::duration<double>
+        (
+            std::chrono::steady_clock::now().time_since_epoch()
+        ).count();
+    }
+
+    template<class Fn>
+    bool symbol(const char* name, Fn& fn, std::string& err)
+    {
+        dlerror();
+        void* p = dlsym(lib_, name);
+        if (!p)
+        {
+            const char* e = dlerror();
+            err = "dlsym(\"" + std::string(name) + "\") in " + path_
+                + " failed: " + std::string(e ? e : "no message")
+                + ". Set blockLinearSolver umfpack or install mkl==2026.1.0"
+                  " (S22 sections 2.3, 4).";
+            return false;
+        }
+        fn = reinterpret_cast<Fn>(p);
+        return true;
+    }
+
+    //- One PARDISO call on the kept pattern; dummies where the phase reads
+    //  no values (the oneMKL examples' form).
+    int phase(const int ph, const double* a, double* b, double* x)
+    {
+        const int mtype = 11, maxfct = 1, mnum = 1, nrhs = 1, msglvl = 0;
+        int error = 0;
+        double ddum = 0;
+        pardiso_
+        (
+            pt_, &maxfct, &mnum, &mtype, &ph, &n_, a ? a : &ddum,
+            Ap_.data(), Ai_.data(), nullptr, &nrhs, iparm_, &msglvl,
+            b ? b : &ddum, x ? x : &ddum, &error
+        );
+        return error;
+    }
+
+public:
+
+    PardisoLU()
+    :
+        lib_(nullptr), pardiso_(nullptr), pardisoInit_(nullptr),
+        setNumThreads_(nullptr), setDynamic_(nullptr),
+        getMaxThreads_(nullptr), getVersionString_(nullptr),
+        peakMemUsage_(nullptr), cbwrSet_(nullptr), threads_(0),
+        mklMaxThreads_(0), live_(false), checked_(false), n_(-1), symbolicCount_(0),
+        failedPhase_(0), irMax_(-1)
+    {
+        std::memset(pt_, 0, sizeof pt_);
+        for (int k = 0; k < 64; ++k)
+        {
+            iparm_[k] = 0;
+            iparmIn_[k] = 0;
+        }
+    }
+
+    ~PardisoLU()
+    {
+        if (live_)
+        {
+            phase(-1, nullptr, nullptr, nullptr);
+        }
+    }
+
+    //- S22 sections 2.3, 2.5, 2.6: dlopen(path, RTLD_NOW | RTLD_LOCAL), the
+    //  eight entry points, CNR mode (mkl_cbwr_set(MKL_CBWR_AUTO), refused
+    //  unless MKL_CBWR_SUCCESS) before any other MKL call when reproducible, the pinned
+    //  version, mkl_set_dynamic(0) and mkl_set_num_threads(threads) once, the
+    //  peak-memory counter, then pardisoinit and the benchmarked iparm.
+    //  False with err set on any refusal of section 4.
+    bool load
+    (
+        const std::string& path, const int threads, const bool reproducible,
+        std::string& err
+    )
+    {
+        path_ = path;
+        if (path.empty())
+        {
+            err = "PHASE_CLOT_MKL_RT is set but empty: it must name libmkl_rt"
+                  " (S22 section 2.3).";
+            return false;
+        }
+        dlerror();
+        lib_ = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+        if (!lib_)
+        {
+            const char* e = dlerror();
+            err = "dlopen(\"" + path + "\", RTLD_NOW | RTLD_LOCAL) failed: "
+                + std::string(e ? e : "no message")
+                + ". Set blockLinearSolver umfpack or install mkl==2026.1.0"
+                  " (S22 sections 2.3, 4).";
+            return false;
+        }
+        if
+        (
+            !symbol("pardiso", pardiso_, err)
+         || !symbol("pardisoinit", pardisoInit_, err)
+         || !symbol("MKL_Set_Num_Threads", setNumThreads_, err)
+         || !symbol("MKL_Set_Dynamic", setDynamic_, err)
+         || !symbol("MKL_Get_Max_Threads", getMaxThreads_, err)
+         || !symbol("MKL_Get_Version_String", getVersionString_, err)
+         || !symbol("MKL_Peak_Mem_Usage", peakMemUsage_, err)
+         || !symbol("MKL_CBWR_Set", cbwrSet_, err)
+        )
+        {
+            return false;
+        }
+        if (reproducible)
+        {
+            const int r = cbwrSet_(mklCbwrAuto);
+            if (r != mklCbwrSuccess)
+            {
+                err = "blockSolverReproducible true: mkl_cbwr_set(MKL_CBWR_AUTO)"
+                      " returned " + std::to_string(r)
+                    + ", not MKL_CBWR_SUCCESS (S22 section 2.6).";
+                return false;
+            }
+        }
+        char buf[256];
+        std::memset(buf, 0, sizeof buf);
+        getVersionString_(buf, int(sizeof buf) - 1);
+        version_ = buf;
+        if (!mklVersionPinned(version_))
+        {
+            err = "MKL at " + path + " reports \"" + version_ + "\", not the"
+                  " pinned " + std::string(mklPinnedVersion)
+                + ": PARDISO runs only on the MKL the benchmark measured (S22"
+                  " section 4). Install mkl==2026.1.0 or set"
+                  " blockLinearSolver umfpack.";
+            return false;
+        }
+        setDynamic_(0);
+        setNumThreads_(threads);
+        threads_ = threads;
+        mklMaxThreads_ = getMaxThreads_();
+        peakMemUsage_(mklPeakMemEnable);
+        Dl_info di;
+        library_ =
+            (dladdr(reinterpret_cast<void*>(pardiso_), &di) && di.dli_fname)
+          ? std::string(di.dli_fname) : path;
+
+        const int mtype = 11;
+        pardisoInit_(pt_, &mtype, iparmIn_);
+        iparmIn_[7] = 2;       // iparm 8: at most 2 refinement steps
+        iparmIn_[9] = 13;      // iparm 10: pivot perturbation 1e-13
+        iparmIn_[10] = 1;      // iparm 11: scaling
+        iparmIn_[12] = 1;      // iparm 13: matching
+        iparmIn_[17] = -1;     // iparm 18: report the factor nnz
+        iparmIn_[34] = 1;      // iparm 35: zero-based ia, ja
+        if (reproducible)
+        {
+            iparmIn_[33] = threads;    // iparm 34: CNR at the thread count n
+        }
+        std::memcpy(iparm_, iparmIn_, sizeof iparm_);
+        return true;
+    }
+
+    long symbolicCount() const { return symbolicCount_; }
+    int threads() const { return threads_; }
+    int mklMaxThreads() const { return mklMaxThreads_; }
+    const std::string& version() const { return version_; }
+    const std::string& library() const { return library_; }
+
+    //- The PARDISO phase whose error the last failing call returned (11,
+    //  22, 33 or -1); 0 when none failed.
+    int failedPhase() const { return failedPhase_; }
+
+    //- Phase -1 when a new pattern needs a new analysis, then 11, on the
+    //  CSR of A; 22 every call. Returns statusOk, a PARDISO error (stage 1
+    //  analysis or its release, 2 numeric) or statusPerturbed (stage 2).
+    int factor(const Csr& A, double& tSym, double& tNum, int& stage)
+    {
+        tSym = 0;
+        tNum = 0;
+        stage = 0;
+        irMax_ = -1;
+        const bool keptPattern = (live_ && A.n == n_ && A.p == Ap_ && A.i == Ai_);
+        if (!keptPattern)
+        {
+            const double t0 = now();
+            if (live_)
+            {
+                const int er = phase(-1, nullptr, nullptr, nullptr);
+                live_ = false;
+                std::memset(pt_, 0, sizeof pt_);
+                if (er != 0)
+                {
+                    stage = 1;
+                    failedPhase_ = -1;
+                    return er;
+                }
+            }
+            std::memcpy(iparm_, iparmIn_, sizeof iparm_);
+            if (!checked_)
+            {
+                iparm_[26] = 1;   // iparm 27: the matrix checker, first analysis
+            }
+            n_ = A.n;
+            Ap_ = A.p;
+            Ai_ = A.i;
+            live_ = true;
+            const int ea = phase(11, A.x.data(), nullptr, nullptr);
+            checked_ = true;
+            tSym = now() - t0;
+            if (ea != 0)
+            {
+                n_ = -1;
+                stage = 1;
+                failedPhase_ = 11;
+                return ea;
+            }
+            ++symbolicCount_;
+        }
+        const double t1 = now();
+        const int en = phase(22, A.x.data(), nullptr, nullptr);
+        tNum = now() - t1;
+        if (en != 0)
+        {
+            stage = 2;
+            failedPhase_ = 22;
+            return en;
+        }
+        if (iparm_[13] > 0)
+        {
+            stage = 2;
+            return statusPerturbed;
+        }
+        return statusOk;
+    }
+
+    //- Phase 33: A x = b on factor()'s factorisation of the same A.
+    int backSolve(const Csr& A, const std::vector<double>& b, std::vector<double>& x)
+    {
+        x.assign(A.n, 0.0);
+        b_ = b;
+        const int es = phase(33, A.x.data(), b_.data(), x.data());
+        if (es != 0)
+        {
+            failedPhase_ = 33;
+        }
+        irMax_ = std::max(irMax_, iparm_[6]);
+        return es;
+    }
+
+    //- S22 section 2.7, after factor(): lunz = iparm 18, numericPeakGB =
+    //  max(iparm 15, iparm 16 + iparm 17) KB / 1e6 and orderingUsed = iparm
+    //  2 after an OK factor; rcond, strategyUsed and noffdiag -1 (UMFPACK
+    //  only); perturbedPivots = iparm 14; iparm 15-17 for the message.
+    void stats(Step& s) const
+    {
+        s.rcond = -1;
+        s.strategyUsed = -1;
+        s.noffdiag = -1;
+        s.orderingUsed = iparm_[1];
+        s.perturbedPivots = iparm_[13];
+        s.iparm15KB = iparm_[14];
+        s.iparm16KB = iparm_[15];
+        s.iparm17KB = iparm_[16];
+        if (s.status == statusOk)
+        {
+            s.lunz = iparm_[17];
+            s.numericPeakGB =
+                std::max(double(iparm_[14]), double(iparm_[15]) + double(iparm_[16]))/1e6;
+        }
+    }
+
+    //- S22 section 2.7, after the back-substitutions: irSteps (the most
+    //  over this step's phase-33 calls) and MKL's peak, mkl_peak_mem_usage
+    //  (MKL_PEAK_MEM) bytes / 1e9.
+    void solveStats(Step& s) const
+    {
+        s.irSteps = irMax_;
+        s.mklPeakGB = double(peakMemUsage_(mklPeakMem))/1e9;
+    }
+};
+
 //- One step: assemble, factor, k back-substitutions, fluxes. x0 holds the
 //  old state (its p is p^n, the start of the explicit correction).
+//  S22 section 2.2: one template over the LU (UmfpackLU, PardisoLU).
+template<class LU>
 inline void solveStep
 (
     const Mesh& m, const Coeffs& c, const int nNonOrth,
-    const std::vector<double>& x0, UmfpackLU& lu, Step& s
+    const std::vector<double>& x0, LU& lu, Step& s
 )
 {
     const int N = m.nCells;
@@ -1173,24 +1812,8 @@ inline void solveStep
     s.nnz = A.p[A.n];
     rowAbsSumRange(A, s.rowSumMin, s.rowSumMax);
     s.status = lu.factor(A, s.tSym, s.tNum, s.stage);
-    s.rcond = lu.rcond();
-    {
-        const double* si = lu.symbolicInfo();
-        const double unit = si[UMFPACK_SIZE_OF_UNIT];
-        s.strategyUsed = si[UMFPACK_STRATEGY_USED];
-        s.orderingUsed = si[UMFPACK_ORDERING_USED];
-        s.lunzEstimate = si[UMFPACK_LNZ_ESTIMATE] + si[UMFPACK_UNZ_ESTIMATE];
-        s.numericSizeEstimateGB = si[UMFPACK_NUMERIC_SIZE_ESTIMATE]*unit/1e9;
-        s.peakMemoryEstimateGB = si[UMFPACK_PEAK_MEMORY_ESTIMATE]*unit/1e9;
-        if (s.status == UMFPACK_OK)
-        {
-            const double* ni = lu.info();
-            s.lunz = ni[UMFPACK_LNZ] + ni[UMFPACK_UNZ];
-            s.numericPeakGB = ni[UMFPACK_PEAK_MEMORY]*unit/1e9;
-            s.noffdiag = ni[UMFPACK_NOFF_DIAG];
-        }
-    }
-    if (s.status != UMFPACK_OK)
+    lu.stats(s);
+    if (s.status != LU::statusOk)
     {
         return;
     }
@@ -1225,7 +1848,7 @@ inline void solveStep
         (
             std::chrono::steady_clock::now() - t0
         ).count();
-        if (st != UMFPACK_OK)
+        if (st != LU::statusOk)
         {
             s.status = st;
             s.stage = 3;
@@ -1236,6 +1859,7 @@ inline void solveStep
             pStar[P] = xc[lay.col[idx(P, 4)]];
         }
     }
+    lu.solveStats(s);
     residualNorms(A, xc, rhs, s.rNorm, s.bNorm);
     scaledResidualNorms(A, xc, rhs, s.rsNorm, s.bsNorm);
 

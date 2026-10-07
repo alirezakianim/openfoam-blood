@@ -2618,6 +2618,11 @@ S19_LINRES_MAX = 1e-10     # G6: linRes and linResScaled, every step
 # APPROVED 2026-10-04), section 4: G6 extended to linResScaled, and G9.
 S19_NUMERIC_PEAK_GB_MAX = 1.0   # G9: numericPeakGB (UMFPACK peak, GB), every step
 S19_TNUMERIC_MAX = 5.0          # G9: tNumeric (numeric factorisation, s), every step
+# S22 (research/designs/2026-10-07-S22-pardiso-block-solver.md rev. 2, APPROVED
+# 2026-10-07), sections 3.3 and 7: under blockLinearSolver pardiso G9 also gates
+# MKL's own peak; G22-4 (no perturbed pivot) and G22-5's rssGB, every step.
+S22_MKL_PEAK_GB_MAX = 2.0       # G9 under pardiso: mklPeakGB (MKL's peak, GB)
+S22_RSS_GB_MAX = 4.0            # G22-5: rssGB (the process's peak RSS, GB)
 # S19b (research/designs/2026-10-04-S19b-lumen-elimination.md rev. 2, APPROVED
 # 2026-10-04), section 4: C1 and D1 compare n with 5 x nCells, nCells read
 # from the case's own mesh (the constant/polyMesh/owner header note), never
@@ -2656,6 +2661,12 @@ def s19_report(text: str, spec: dict | None = None, case: Path | None = None) ->
     - G8r (networkViscosity kelvinVoigt only): r3Power <= 0 every step;
     - G9 (S19a section 4, the factor's memory and cost): numericPeakGB <= 1.0
       AND tNumeric <= 5.0 s every step; a missing field fails (read as inf);
+      S22 section 3.3: under blockLinearSolver pardiso also mklPeakGB <= 2.0;
+    - S22 (section 2.7; the backend is the config echo's blockLinearSolver, and
+      a config line without it is a pre-S22 binary, UMFPACK): G22-4 under
+      pardiso, perturbedPivots = 0 every step; G22-5 on an S22 log, rssGB <=
+      4 every step; g22_backend, every record's linearSolver is the config's
+      (each None where it does not apply; a missing field fails);
     - S19b section 4, C1 (blockCoupledLumen identityRows children; the control
       is the control): the config echoes blockCoupledLumen=identityRows and
       every record has lumenIdentityRows > 0 and n = 5 x nCells;
@@ -2667,6 +2678,8 @@ def s19_report(text: str, spec: dict | None = None, case: Path | None = None) ->
       offline by scripts/s19b_e1_score.py from uMax/vsMax/pMax.
     Watches (not gated): bodySlipRms, symbolicCount, tSolve, rcond, r3Max,
     etaN; S19a: noffdiag (max; expected 0), rowSumMin (min), rowSumMax (max),
+    S22: rcond and noffdiag are UMFPACK's (None under pardiso, which logs -1),
+    irSteps (max, pardiso), solverThreads (the config echo),
     n and nnz of the last record (each over the records that carry the field;
     None if none does). G1, G2, G3 and V1 are scored against batch 64 OFFLINE."""
     num = r"(-?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?|-?nan|-?inf)"
@@ -2697,6 +2710,12 @@ def s19_report(text: str, spec: dict | None = None, case: Path | None = None) ->
                                            and out["config_tau_matches"])
     block = want.get("momentumPressureCoupling") == "blockCoupled"
     r3 = want.get("networkViscosity") == "kelvinVoigt"
+    # S22: the backend, from the solver's own config echo.
+    cfg22 = out["config"] or {}
+    s22_log = "blockLinearSolver" in cfg22
+    solver = (None if out["config"] is None else cfg22.get("blockLinearSolver", "umfpack"))
+    pardiso = solver == "pardiso"
+    out["linear_solver"] = solver
     lines = re.findall(r"^PHASE_CLOT_S19 (.*)$", text, re.M)
     rows = [kv(ln) for ln in lines]
     steps = len(re.findall(r"^Time = (\S+)", text, re.M))
@@ -2715,9 +2734,25 @@ def s19_report(text: str, spec: dict | None = None, case: Path | None = None) ->
     out["g7"] = None if not rows else all(r.get("kMatch") == 0.0 and r.get("kresMatch") == 0.0 for r in rows)
     out["numeric_peak_gb_max"] = max((r.get("numericPeakGB", math.inf) for r in rows), default=None)
     out["t_numeric_max"] = max((r.get("tNumeric", math.inf) for r in rows), default=None)
+    out["mkl_peak_gb_max"] = (max((r.get("mklPeakGB", math.inf) for r in rows), default=None)
+                              if pardiso else None)
     out["g9"] = None if not rows else all(
         r.get("numericPeakGB", math.inf) <= S19_NUMERIC_PEAK_GB_MAX
-        and r.get("tNumeric", math.inf) <= S19_TNUMERIC_MAX for r in rows)
+        and r.get("tNumeric", math.inf) <= S19_TNUMERIC_MAX
+        and (not pardiso or r.get("mklPeakGB", math.inf) <= S22_MKL_PEAK_GB_MAX) for r in rows)
+    # S22 section 7: G22-4 (pardiso) and G22-5 (any S22 log), every step.
+    out["perturbed_pivots_max"] = (max((r.get("perturbedPivots", math.inf) for r in rows), default=None)
+                                   if pardiso else None)
+    out["g22_4"] = (None if not pardiso or not rows else
+                    all(r.get("perturbedPivots", math.inf) == 0.0 for r in rows))
+    out["rss_gb_max"] = (max((r.get("rssGB", math.inf) for r in rows), default=None)
+                         if s22_log else None)
+    out["g22_5"] = (None if not s22_log or not rows else
+                    all(r.get("rssGB", math.inf) <= S22_RSS_GB_MAX for r in rows))
+    rec_solvers = [m.group(1) if m else None for m in
+                   (re.search(r"\blinearSolver=(\w+)", ln) for ln in lines)]
+    out["g22_backend"] = (None if not s22_log or not rows else
+                          all(v == solver for v in rec_solvers))
     # G4: Q0 and the logged patch fluxes come from the module G2 uses.
     q0 = None
     logged = {}
@@ -2774,12 +2809,17 @@ def s19_report(text: str, spec: dict | None = None, case: Path | None = None) ->
         "body_slip_rms_max": max((r.get("bodySlipRms", 0.0) for r in rows), default=None),
         "symbolic_count_last": rows[-1].get("symbolicCount") if rows else None,
         "t_solve_max": max((r.get("tSolve", 0.0) for r in rows), default=None),
-        "rcond_min": min((r.get("rcond", math.inf) for r in rows), default=None),
+        "rcond_min": (None if pardiso else
+                      min((r.get("rcond", math.inf) for r in rows), default=None)),
         "lumen_identity_rows_last": rows[-1].get("lumenIdentityRows") if rows else None,
         "lumen_eliminated_last": rows[-1].get("lumenEliminated") if rows else None,
         "r3_max_max": max((r.get("r3Max", 0.0) for r in rows), default=None) if r3 else None,
         "eta_n": rows[-1].get("etaN") if (rows and r3) else None,
-        "noffdiag_max": max((r["noffdiag"] for r in rows if "noffdiag" in r), default=None),
+        "noffdiag_max": (None if pardiso else
+                         max((r["noffdiag"] for r in rows if "noffdiag" in r), default=None)),
+        "ir_steps_max": (max((r["irSteps"] for r in rows if "irSteps" in r), default=None)
+                         if pardiso else None),
+        "solver_threads": cfg22.get("solverThreads"),
         "row_sum_min_min": min((r["rowSumMin"] for r in rows if "rowSumMin" in r), default=None),
         "row_sum_max_max": max((r["rowSumMax"] for r in rows if "rowSumMax" in r), default=None),
         "n_last": rows[-1].get("n") if rows else None,

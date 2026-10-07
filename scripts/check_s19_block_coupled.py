@@ -42,6 +42,18 @@ coupled-solve/), sections 2, 5 and 12.
    only its gate (nCells from a temporary case's polyMesh/owner note). The
    E1 scorer's self-test (scripts/s19b_e1_score.py --self-test) passes.
 
+8. S22 (research/designs/2026-10-07-S22-pardiso-block-solver.md rev. 2.1,
+   APPROVED by Alireza 2026-10-07; section 5's readers, V22-1): the kernel test
+   runs the templated solveStep on UmfpackLU (K1-K15, P2's numbers) and K16
+   (PardisoLU's load refusal, the thread count with the physical-core source,
+   the version pin), which need no MKL; a planted change in UmfpackLU::stats,
+   in the template's stats call, in the thread or version rules each FAILS;
+   source pins on the three keys and their defaults, the refusals, the
+   dispatch, the config echo and record keys, MKL never linked and dlopen'ed
+   RTLD_LOCAL, each with a mutation; the assessor on a healthy pardiso log
+   (rcond and noffdiag watches None; G9 with mklPeakGB; G22-4, G22-5,
+   g22_backend) with each S22 mutation flipping only its gate.
+
 SuiteSparse is found from $SUITESPARSE_ROOT (include/suitesparse, lib), then
 /usr, /usr/local, /opt/homebrew. If none has umfpack.h this guard FAILS (exit
 2): the design forbids skipping the check (section 2, Build).
@@ -152,6 +164,24 @@ MUTATIONS = [
      [("        s.x[i] = xc[lay.col[i]];\n",
        "        s.x[i] = lay.row[i] < 0 ? x0[i] : xc[lay.col[i]];\n")],
      "FAIL K15 eliminate = identityRows, max|d|/max|x| <= 1e-12: lumen Vs (= U)"),
+    # S22 (V22-1): the UMFPACK path's statistics and the template.
+    ("S22: UmfpackLU::stats loses NOFF_DIAG",
+     [("            s.noffdiag = ni[UMFPACK_NOFF_DIAG];\n", "            s.noffdiag = -1;\n")],
+     "FAIL K12 NOFF_DIAG == 0"),
+    ("S22: the template skips lu.stats",
+     [("    lu.stats(s);\n", "")],
+     "FAIL K12 NOFF_DIAG == 0"),
+    ("S22: a negative blockSolverThreads accepted",
+     [("    if (requested < 0)\n", "    if (false)\n")],
+     "FAIL K16 resolveThreads: a negative count is refused"),
+    ("S22: the physical-core count is the cpu count (pairs not made distinct)",
+     [("    n = int(std::unique(pairs.begin(), pairs.end()) - pairs.begin());\n",
+       "    n = int(pairs.size());\n")],
+     "FAIL K16 resolveThreads: 0 without MKL_NUM_THREADS is the distinct (package, core) pairs of the online cpus"),
+    ("S22: the version pin accepts 2026.10",
+     [("    return end == v.size() || !std::isdigit(static_cast<unsigned char>(v[end]));\n",
+       "    return true;\n")],
+     "FAIL K16 mklVersionPinned refuses 2026.10"),
 ]
 
 # Mutations of the SOLVER text: (name, [(anchor, replacement)], the pin that
@@ -197,6 +227,35 @@ SOURCE_MUTATIONS = [
     ("S19b maxima at the stream's default precision",
      [("        maxesB.precision(17);\n", "")],
      "S19b: uMax, vsMax, pMax at 17 significant digits over every cell"),
+    # S22: the defaults, the refusals and the new log keys.
+    ("S22 default flipped to umfpack",
+     [('            "blockLinearSolver", "pardiso"\n', '            "blockLinearSolver", "umfpack"\n')],
+     "S22: blockLinearSolver, default pardiso"),
+    ("S22 perturbed pivots accepted",
+     [("    if (pardisoB && st.status == blockCoupled::PardisoLU::statusPerturbed)\n",
+       "    if (false)\n")],
+     "S22: a perturbed pivot is refused"),
+    ("S22 keys accepted outside blockCoupled",
+     [("            if (phaseClotProperties_.found(key))\n", "            if (false)\n")],
+     "S22: the three keys are refused outside blockCoupled"),
+    ("S22 record loses mklPeakGB",
+     [('            << " mklPeakGB=" << st.mklPeakGB\n', "")],
+     "S22: PHASE_CLOT_S19 logs the S22 keys"),
+    ("S22 config loses the thread source",
+     [('        << " solverThreadsSource=" << s22ThreadsSource.c_str()\n', "")],
+     "S22: PHASE_CLOT_S19_CONFIG echoes the S22 keys"),
+]
+
+# S22: mutations of the KERNEL text that the kernel pins must see.
+KERNEL_SOURCE_MUTATIONS = [
+    ("S22 MKL dlopen'ed RTLD_GLOBAL",
+     [("        lib_ = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);\n",
+       "        lib_ = dlopen(path.c_str(), RTLD_NOW | RTLD_GLOBAL);\n")],
+     "S22: MKL is dlopen'ed RTLD_NOW | RTLD_LOCAL by PardisoLU"),
+    ("S22 CNR set after the version call",
+     [("        if (reproducible)\n        {\n            const int r = cbwrSet_(mklCbwrAuto);",
+       "        if (false)\n        {\n            const int r = cbwrSet_(mklCbwrAuto);")],
+     "S22: CNR (mkl_cbwr_set, refused unless MKL_CBWR_SUCCESS) is the first MKL call"),
 ]
 
 
@@ -371,6 +430,81 @@ def assessor_gates() -> int:
     return status
 
 
+# S22: a healthy pardiso log -- the S19 healthy record under PARDISO's
+# conventions (rcond, strategyUsed, noffdiag -1) with the new keys; the config
+# echoes the backend. Each mutation flips only its gate.
+S22_HEALTHY = [(k, {"rcond": "-1", "strategyUsed": "-1", "noffdiag": "-1", "orderingUsed": "3"}.get(k, v))
+               for k, v in S19_HEALTHY]
+S22_HEALTHY.insert(3, ("linearSolver", "pardiso"))
+S22_HEALTHY += [("perturbedPivots", "0"), ("irSteps", "1"), ("solverThreads", "6"),
+                ("mklPeakGB", "0.69"), ("rssGB", "1.9")]
+S22_CONFIG = (" blockLinearSolver=pardiso solverThreads=6 solverThreadsSource=physicalCores "
+              "mklMaxThreads=6 blockSolverReproducible=true mklVersion=Intel(R)_oneAPI_Math_Kernel_"
+              "Library_Version_2026.1-Product_Build mklLibrary=/usr/local/lib/libmkl_rt.so.3")
+S22_GATES = ("g0", "g6", "g7", "g9", "d1", "g22_4", "g22_5", "g22_backend")
+S22_MUTATIONS = [
+    ("mklPeakGB 2.5 on one step", 1, {"mklPeakGB": "2.5"}, "g9"),
+    ("mklPeakGB missing on one step", 2, {"mklPeakGB": None}, "g9"),
+    ("perturbedPivots 1 on one step", 0, {"perturbedPivots": "1"}, "g22_4"),
+    ("perturbedPivots missing on one step", 1, {"perturbedPivots": None}, "g22_4"),
+    ("rssGB 4.5 on one step", 2, {"rssGB": "4.5"}, "g22_5"),
+    ("rssGB missing on one step", 0, {"rssGB": None}, "g22_5"),
+    ("a record from the other backend", 1, {"linearSolver": "umfpack"}, "g22_backend"),
+]
+
+
+def assessor_s22() -> int:
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("assess_case_s22", ASSESS)
+    a = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(a)
+    status = 0
+
+    def log(mutate=None) -> str:
+        return s19_log(mutate, healthy=S22_HEALTHY).replace(
+            "blockCoupledLumen=eliminate", "blockCoupledLumen=eliminate" + S22_CONFIG, 1)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        case = Path(tmp)
+        (case / "constant/polyMesh").mkdir(parents=True)
+        (case / "constant/polyMesh/owner").write_text(
+            'FoamFile\n{\n    note        "nPoints: 63758 nCells: %d nFaces: 125958 '
+            'nInternalFaces: 62202";\n}\n' % S19_NCELLS)
+        r = a.s19_report(log(), S19_SPEC, case)
+        got = {g: r[g] for g in S22_GATES}
+        w = r["watch"]
+        ok = (all(v is True for v in got.values()) and r["linear_solver"] == "pardiso"
+              and w["rcond_min"] is None and w["noffdiag_max"] is None and w["ir_steps_max"] == 1.0
+              and w["solver_threads"] == "6" and r["mkl_peak_gb_max"] == 0.69 and r["rss_gb_max"] == 1.9
+              and r["perturbed_pivots_max"] == 0.0)
+        print(f"{'OK  ' if ok else 'FAIL'} S22 assessor healthy pardiso log -> "
+              + ", ".join(f"{g} {v}" for g, v in got.items())
+              + f", rcond_min {w['rcond_min']}, noffdiag_max {w['noffdiag_max']} (n/a under pardiso), "
+              f"mkl_peak_gb_max {r['mkl_peak_gb_max']}, rss_gb_max {r['rss_gb_max']}")
+        if not ok:
+            status = 1
+        for name, step, edit, gate in S22_MUTATIONS:
+            m = a.s19_report(log((step, edit)), S19_SPEC, case)
+            got = {g: m[g] for g in S22_GATES}
+            ok = got[gate] is False and all(got[g] is True for g in S22_GATES if g != gate)
+            print(f"{'OK  ' if ok else 'FAIL'} S22 assessor mutation '{name}' -> "
+                  + ", ".join(f"{g} {v}" for g, v in got.items()) + f" (must flip only {gate})")
+            if not ok:
+                status = 1
+        # The P2-format log (no blockLinearSolver echo) is UMFPACK: the S22
+        # gates are None, the UMFPACK watches are kept, G9 has no MKL clause.
+        r = a.s19_report(s19_log(), S19_SPEC, case)
+        ok = (r["linear_solver"] == "umfpack" and r["g22_4"] is None and r["g22_5"] is None
+              and r["g22_backend"] is None and r["g9"] is True and r["watch"]["noffdiag_max"] == 0.0
+              and r["watch"]["rcond_min"] == 1e-12 and r["mkl_peak_gb_max"] is None)
+        print(f"{'OK  ' if ok else 'FAIL'} S22 assessor on a P2-format UMFPACK log -> linear_solver "
+              f"{r['linear_solver']}, g22_4 {r['g22_4']}, g22_5 {r['g22_5']}, g22_backend {r['g22_backend']}, "
+              f"noffdiag_max {r['watch']['noffdiag_max']}, rcond_min {r['watch']['rcond_min']}")
+        if not ok:
+            status = 1
+    return status
+
+
 def e1_self_test() -> int:
     """S19b E1's offline scorer passes its own synthetic self-test."""
     r = subprocess.run([sys.executable, "-B", str(ROOT / "scripts/s19b_e1_score.py"), "--self-test"],
@@ -399,7 +533,9 @@ def compile_and_run(kernel_dir: Path, inc: Path, lib: Path) -> tuple[int, str]:
         c = subprocess.run(
             ["c++", "-std=c++14", "-O2", "-ffp-contract=off",
              "-I", str(kernel_dir), "-I", str(inc), str(KERNEL_TEST),
-             "-L", str(lib), "-lumfpack", f"-Wl,-rpath,{lib}", "-o", str(exe)],
+             "-L", str(lib), "-lumfpack", f"-Wl,-rpath,{lib}", "-o", str(exe)]
+            # S22: dlopen, in libdl before glibc 2.34
+            + (["-ldl"] if sys.platform.startswith("linux") else []),
             capture_output=True, text=True)
         if c.returncode != 0:
             return 99, c.stdout + c.stderr
@@ -411,7 +547,7 @@ def flat(s: str) -> str:
     return re.sub(r"\s+", "", s)
 
 
-def source_pins(src: str | None = None) -> list[str]:
+def source_pins(src: str | None = None, ktext: str | None = None) -> list[str]:
     """What must hold in the solver text (empty list: all hold)."""
     src = SOLVER.read_text() if src is None else src
     hdr = HEADER.read_text()
@@ -480,8 +616,43 @@ def source_pins(src: str | None = None) -> list[str]:
          '<<"tNumeric="<<st.tNum'),
         ("S19a log carries G6's and G9's keys",
          '<<"linResScaled="<<linResScaled'),
+        # S22 (section 5, red team 03 F10): numericPeakGB is each backend's own
+        # (PARDISO: max(iparm 15, iparm 16 + 17) KB/1e6); noffdiag is UMFPACK's
+        # and -1 under pardiso, where the assessor reads it as n/a.
         ("S19a log carries G6's and G9's keys",
          '<<"numericPeakGB="<<st.numericPeakGB<<"noffdiag="<<st.noffdiag'),
+        # S22 (research/designs/2026-10-07-S22-pardiso-block-solver.md rev. 2.1).
+        ("S22: blockLinearSolver, default pardiso",
+         'lookupOrDefault<word>("blockLinearSolver","pardiso")'),
+        ("S22: blockSolverThreads, default 0",
+         'lookupOrDefault<label>("blockSolverThreads",0)'),
+        ("S22: blockSolverReproducible's default is the kernel's one constant",
+         'blockSolverReproducible_(blockCoupled::blockSolverReproducibleDefault),'),
+        ("S22: the value refusals",
+         '"recognised:usepardisoorumfpack(S22section4)."'),
+        ("S22: the value refusals", 'if(blockSolverThreads_<0)'),
+        ("S22: the value refusals", '"usetrueorfalse(S22section4)."'),
+        ("S22: the three keys are refused outside blockCoupled",
+         'if(phaseClotProperties_.found(key)){FatalErrorInFunction<<"phaseClotPropertieskey`"<<key'),
+        ("S22: the dispatch",
+         'if(pardisoB){blockCoupled::solveStep(bm,coef,nNonOrth,x0,blockPardiso_(),st);}'
+         'else{if(!blockLU_.valid()){blockLU_.reset(newblockCoupled::UmfpackLU());}'
+         'blockCoupled::solveStep(bm,coef,nNonOrth,x0,blockLU_(),st);}'),
+        ("S22: a perturbed pivot is refused",
+         'if(pardisoB&&st.status==blockCoupled::PardisoLU::statusPerturbed){FatalErrorInFunction'),
+        ("S22: any PARDISO error is refused",
+         'if(pardisoB&&st.status!=blockCoupled::PardisoLU::statusOk){FatalErrorInFunction'),
+        ("S22: the UMFPACK refusal is P2's, on the UMFPACK path", 'if(!pardisoB&&st.status!=UMFPACK_OK)'),
+        ("S22: PHASE_CLOT_S19_CONFIG echoes the S22 keys",
+         '<<"blockLinearSolver="<<(s19BlockCoupled()?blockLinearSolver_:word("none"))'
+         '<<"solverThreads="<<s22SolverThreads<<"solverThreadsSource="<<s22ThreadsSource.c_str()'
+         '<<"mklMaxThreads="<<s22MklMaxThreads<<"blockSolverReproducible="'),
+        ("S22: PHASE_CLOT_S19_CONFIG echoes the S22 keys",
+         '<<"mklVersion="<<s22MklVersion.c_str()<<"mklLibrary="<<s22MklLibrary.c_str()'),
+        ("S22: PHASE_CLOT_S19 logs the S22 keys", '<<"mode=blockCoupled"<<"linearSolver="<<blockLinearSolver_'),
+        ("S22: PHASE_CLOT_S19 logs the S22 keys",
+         '<<"perturbedPivots="<<st.perturbedPivots<<"irSteps="<<st.irSteps<<"solverThreads="'),
+        ("S22: PHASE_CLOT_S19 logs the S22 keys", '<<"mklPeakGB="<<st.mklPeakGB<<"rssGB="<<rssGB'),
         # S19b section 2.6-2.7. S21 built blockCoupledLumen in at eliminate
         # (docket 20261005-1621 report 10). Retired with the code they pinned:
         # the read with default eliminate (hunk b15, release-4198bb17
@@ -502,11 +673,31 @@ def source_pins(src: str | None = None) -> list[str]:
     for name, pin in pins:
         if flat(pin) not in f:
             bad.append(f"solver pin missing: {name}")
+    # S22 sections 2.3, 2.6: the kernel's MKL loading.
+    k = KERNEL.read_text() if ktext is None else ktext
+    kf = flat(k)
+    kpins = [
+        ("S22: MKL is dlopen'ed RTLD_NOW | RTLD_LOCAL by PardisoLU",
+         "lib_=dlopen(path.c_str(),RTLD_NOW|RTLD_LOCAL);"),
+        ("S22: CNR (mkl_cbwr_set, refused unless MKL_CBWR_SUCCESS) is the first MKL call",
+         "if(reproducible){constintr=cbwrSet_(mklCbwrAuto);if(r!=mklCbwrSuccess)"),
+        ("S22: one templated solveStep", "template<classLU>inlinevoidsolveStep"),
+    ]
+    for name, pin in kpins:
+        if flat(pin) not in kf:
+            bad.append(f"solver pin missing: {name}")
+    # the CNR call precedes every other MKL call in load()
+    if kf.find("constintr=cbwrSet_(mklCbwrAuto);") > kf.find("getVersionString_(buf"):
+        bad.append("solver pin missing: S22: CNR (mkl_cbwr_set, refused unless MKL_CBWR_SUCCESS) is the first MKL call")
+    if "#include <mkl" in k or '#include "mkl' in k:
+        bad.append("kernel includes an MKL header (S22 section 2.3: prototypes are its own)")
     if '#include "blockCoupledKernel.H"' not in hdr:
         bad.append("header does not include blockCoupledKernel.H")
     opts = OPTIONS.read_text()
     if "-I/usr/include/suitesparse" not in opts or "-lumfpack" not in opts:
         bad.append("Make/options lacks -I/usr/include/suitesparse or -lumfpack")
+    if "mkl" in opts.lower():
+        bad.append("Make/options names MKL (S22 section 2.3: MKL is never linked)")
     return bad
 
 
@@ -560,7 +751,24 @@ def main() -> int:
                   f"pin '{must}' {'FAILS' if seen else 'still holds'}")
             if not seen:
                 status = 1
+    ktxt = KERNEL.read_text()
+    for name, edits, must in KERNEL_SOURCE_MUTATIONS:
+        text = ktxt
+        for a, b in edits:
+            if text.count(a) != 1:
+                print(f"FAIL kernel source mutation '{name}': anchor count {text.count(a)} != 1: {a[:60]}")
+                status = 1
+                break
+            text = text.replace(a, b)
+        else:
+            seen = f"solver pin missing: {must}" in source_pins(None, text)
+            print(f"{'OK  ' if seen else 'FAIL'} kernel source mutation '{name}' -> "
+                  f"pin '{must}' {'FAILS' if seen else 'still holds'}")
+            if not seen:
+                status = 1
     if assessor_gates() != 0:
+        status = 1
+    if assessor_s22() != 0:
         status = 1
     if e1_self_test() != 0:
         status = 1

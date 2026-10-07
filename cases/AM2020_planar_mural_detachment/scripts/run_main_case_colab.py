@@ -547,6 +547,146 @@ def run_children_and_archive(gate: Path, openfoam_bash: str, series_filter: str,
     return code, archive_code, child_ids
 
 
+# S22 (research/designs/2026-10-07-S22-pardiso-block-solver.md rev. 2.1,
+# APPROVED by Alireza 2026-10-07), sections 2.5 and 5: the pinned MKL the
+# solver dlopen's under blockLinearSolver pardiso (its default). The headers
+# are not needed: the solver declares its own prototypes and never links MKL.
+S22_MKL_PIN = "mkl==2026.1.0"
+S22_MKL_SONAME = "libmkl_rt.so.3"
+
+
+def s22_physical_cores() -> tuple[int, str]:
+    """The distinct (CORE, SOCKET) pairs of `lscpu -p=CORE,SOCKET` (rev. 2.1),
+    and its output. Refused (RuntimeError) when lscpu gives none: the thread
+    count is never guessed."""
+    r = subprocess.run(["lscpu", "-p=CORE,SOCKET"], capture_output=True, text=True)
+    pairs = {tuple(f.strip() for f in line.split(","))
+             for line in r.stdout.splitlines() if line.strip() and not line.startswith("#")}
+    if r.returncode != 0 or not pairs or any(len(p) != 2 or "" in p for p in pairs):
+        raise RuntimeError(
+            f"S22: `lscpu -p=CORE,SOCKET` exited {r.returncode} with no usable "
+            f"(CORE, SOCKET) pairs; MKL_NUM_THREADS cannot be set from the "
+            f"physical cores (design section 2.5). Output: {(r.stdout + r.stderr)[:400]!r}")
+    return len(pairs), r.stdout
+
+
+def s22_mkl_environment() -> dict:
+    """S22 sections 2.5 and 5: pip install the pinned MKL (3 attempts), export
+    PHASE_CLOT_MKL_RT (the installed libmkl_rt.so.3), MKL_NUM_THREADS = max(1,
+    physical cores // AM2020_CONCURRENCY) and KMP_BLOCKTIME=0, and return what
+    environment.json records: the MKL version, the physical and logical CPU
+    counts, the CPU model and the `lscpu -e` layout. A failed install is
+    recorded, not raised: a pardiso child then refuses at start-up, naming the
+    library, and never runs UMFPACK silently (V22-4)."""
+    import importlib.metadata
+    import site
+    import sysconfig
+    env: dict = {"mkl_pin": S22_MKL_PIN}
+    attempts = []
+    for attempt in (1, 2, 3):
+        r = subprocess.run([sys.executable, "-m", "pip", "install", "-q", S22_MKL_PIN],
+                           capture_output=True, text=True)
+        attempts.append({"attempt": attempt, "exit": r.returncode,
+                         "tail": (r.stdout + r.stderr)[-400:]})
+        if r.returncode == 0:
+            break
+        time.sleep(10 * attempt)
+    env["pip_attempts"] = attempts
+    env["mkl_installed"] = attempts[-1]["exit"] == 0
+    try:
+        env["mkl_version"] = importlib.metadata.version("mkl")
+    except importlib.metadata.PackageNotFoundError:
+        env["mkl_version"] = None
+    roots = [sysconfig.get_paths().get("data"), sys.prefix, "/usr/local",
+             getattr(site, "USER_BASE", None)]
+    lib = next((str(Path(r) / "lib" / S22_MKL_SONAME) for r in roots
+                if r and (Path(r) / "lib" / S22_MKL_SONAME).is_file()), None)
+    env["mkl_searched"] = [r for r in roots if r]
+    if lib:
+        os.environ["PHASE_CLOT_MKL_RT"] = lib
+    env["phase_clot_mkl_rt"] = os.environ.get("PHASE_CLOT_MKL_RT")
+    concurrency_text = os.environ.get("AM2020_CONCURRENCY", "1")
+    if not concurrency_text.isdigit() or int(concurrency_text) < 1:
+        raise RuntimeError(f"S22: AM2020_CONCURRENCY {concurrency_text!r} is not a positive "
+                           f"integer; MKL_NUM_THREADS cannot be set (design section 2.5).")
+    concurrency = int(concurrency_text)
+    physical, lscpu_p = s22_physical_cores()
+    logical = (len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity")
+               else os.cpu_count())
+    os.environ["MKL_NUM_THREADS"] = str(max(1, physical // concurrency))
+    os.environ["KMP_BLOCKTIME"] = "0"
+    model = None
+    cpuinfo = Path("/proc/cpuinfo")
+    if cpuinfo.is_file():
+        m = re.search(r"^model name\s*:\s*(.+)$", cpuinfo.read_text(), re.M)
+        model = m.group(1).strip() if m else None
+    lscpu_e = subprocess.run(["lscpu", "-e"], capture_output=True, text=True)
+    env.update({
+        "am2020_concurrency": concurrency,
+        "physical_cores": physical,
+        "logical_cpus": logical,
+        "nproc": logical,
+        "mkl_num_threads": os.environ["MKL_NUM_THREADS"],
+        "kmp_blocktime": os.environ["KMP_BLOCKTIME"],
+        "cpu_model": model,
+        "lscpu_p_core_socket": lscpu_p,
+        "lscpu_e": lscpu_e.stdout if lscpu_e.returncode == 0 else None,
+    })
+    print(f"[main-case] S22: {S22_MKL_PIN} installed={env['mkl_installed']} "
+          f"PHASE_CLOT_MKL_RT={env['phase_clot_mkl_rt']} physical={physical} "
+          f"logical={logical} MKL_NUM_THREADS={env['mkl_num_threads']} KMP_BLOCKTIME=0")
+    return env
+
+
+# S22 section 7, arm A0 (BATCH 71): the P2' solver, built beside the package's own.
+# The notebook clones tag digest-8497d46a7010 (it holds the token; the runner never
+# sees it) and passes the clone's solver directory here. P2' has the same library
+# name as the package's solver, so it is compiled into a SEPARATE FOAM_USER_LIBBIN,
+# and PHASE_CLOT_P2PRIME_LIBBIN names that directory for runs/<child>/child.env
+# (create_cases.py writes it for solver_library p2prime; Allrun sources it inside
+# the child's subshell and it prepends the directory to LD_LIBRARY_PATH).
+P2PRIME_LIB = "libphaseClotAxisymmetricFluid.so"
+
+
+def build_p2prime(bootstrap, solver_dir: Path, openfoam_bash: str, libbin: Path, artifact: Path) -> dict:
+    """Compile solver_dir (the P2' clone's user-applications/phaseClotAxisymmetricFluid)
+    into libbin and export PHASE_CLOT_P2PRIME_LIBBIN. Refused (RuntimeError) when the
+    directory is not a solver, the build fails, the library is missing, or it is
+    byte-identical to the package's own library (the two builds would then be one)."""
+    for need in ("Allwmake", "Make/files", "phaseClotAxisymmetricFluid.C"):
+        if not (solver_dir / need).is_file():
+            raise RuntimeError(f"P2-prime solver directory {solver_dir} has no {need}")
+    libbin.mkdir(parents=True, exist_ok=True)
+    if any(libbin.iterdir()):
+        raise RuntimeError(f"P2-prime libbin {libbin} is not empty; a stale library could be loaded")
+    # FOAM_USER_LIBBIN is exported AFTER the bashrc: sourcing it sets the variable.
+    built = bootstrap.bash(
+        openfoam_bash + f" && export FOAM_USER_LIBBIN={bootstrap.quoted(libbin)}"
+        f" && cd {bootstrap.quoted(solver_dir)} && bash ./Allwmake",
+        check=False,
+    )
+    (artifact / "log.Allwmake.p2prime").write_text(built.stdout)
+    lib = libbin / P2PRIME_LIB
+    info = {"solver_dir": str(solver_dir), "libbin": str(libbin), "compile_exit_code": built.returncode,
+            "library_exists": lib.is_file()}
+    if built.returncode != 0 or not lib.is_file():
+        raise RuntimeError(f"P2-prime build failed (exit {built.returncode}, library {lib} exists: {lib.is_file()}); "
+                           f"see log.Allwmake.p2prime")
+    info["sha256"] = sha256(lib)
+    own = bootstrap.bash(openfoam_bash + " && echo FOAM_USER_LIBBIN=$FOAM_USER_LIBBIN", check=False).stdout
+    own_dir = next((l.split("=", 1)[1].strip() for l in own.splitlines() if l.startswith("FOAM_USER_LIBBIN=")), "")
+    own_lib = Path(own_dir) / P2PRIME_LIB if own_dir else None
+    info["own_library"] = str(own_lib) if own_lib else None
+    if own_lib is not None and own_lib.is_file():
+        info["own_sha256"] = sha256(own_lib)
+        if info["own_sha256"] == info["sha256"]:
+            raise RuntimeError("the P2-prime library is byte-identical to the package's own: the two builds are one")
+    os.environ["PHASE_CLOT_P2PRIME_LIBBIN"] = str(libbin)
+    print(f"[main-case] P2-prime library built: {lib} sha256={info['sha256'][:12]} "
+          f"PHASE_CLOT_P2PRIME_LIBBIN={libbin}", flush=True)
+    return info
+
+
 def verify_repo_stamp(project: Path, expected: str, result: dict) -> None:
     """L1 (design 2026-10-05, change 5): RECOMPUTE the repo digest over the
     unpacked tree with the function and manifest carried in REPO_STAMP.json,
@@ -610,6 +750,15 @@ def main() -> int:
             "the notebook's verified EXPECTED_REPO_DIGEST. The runner "
             "recomputes the digest over the unpacked package from "
             "REPO_STAMP.json and refuses on a mismatch."
+        ),
+    )
+    parser.add_argument(
+        "--p2prime-solver", default="",
+        help=(
+            "S22 validation (BATCH 71) only: the P2-prime clone's "
+            "user-applications/phaseClotAxisymmetricFluid directory, built into a "
+            "separate FOAM_USER_LIBBIN for the child that names solver_library "
+            "p2prime. Empty (the default) builds nothing."
         ),
     )
     args = parser.parse_args()
@@ -709,6 +858,10 @@ def main() -> int:
             shutil.copy2(stamp, artifact / stamp.name)
             result["package_stamp"] = json.loads(stamp.read_text())
 
+        # S22 sections 2.5 and 5: the pinned MKL and its environment, before
+        # the solver is built and run (every child inherits the exports).
+        s22_env = s22_mkl_environment()
+        result["s22_mkl_installed"] = s22_env["mkl_installed"]
         solver = PROJECT_LOCAL / "user-applications" / "phaseClotAxisymmetricFluid"
         openfoam_bash = f"source {bootstrap.quoted(bootstrap.OF_BASHRC)}"
         compiled = bootstrap.bash(
@@ -722,6 +875,16 @@ def main() -> int:
         if compiled.returncode != 0:
             result["verdict"] = "COMPILE_FAILED"
             raise RuntimeError("user library compile failed")
+        # S22 section 7, arm A0: the P2' library, only when the notebook passes its clone.
+        p2prime = None
+        if args.p2prime_solver:
+            try:
+                p2prime = build_p2prime(bootstrap, Path(args.p2prime_solver), openfoam_bash,
+                                        CONTENT / "p2prime_libbin", artifact)
+            except RuntimeError:
+                result["verdict"] = "P2PRIME_COMPILE_FAILED"
+                raise
+            result["p2prime"] = p2prime
 
         ignore = shutil.ignore_patterns(
             "__pycache__", "*.pyc", "runs", "postProcessing", "log.*"
@@ -752,6 +915,8 @@ def main() -> int:
                 "git", "-C", str(bootstrap.OF_LOCAL), "rev-parse", "HEAD"
             ),
             **bootstrap.build_environment(),
+            "s22": s22_env,
+            "p2prime": p2prime,
         }
         (artifact / "environment.json").write_text(
             json.dumps(environment, indent=2) + "\n"

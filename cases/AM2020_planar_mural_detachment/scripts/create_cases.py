@@ -465,6 +465,90 @@ S19_SWITCHES = (
 )
 S19_KEYS = ("momentum_pressure_coupling", "network_viscosity", "tau_v_s")
 
+# S22 (research/designs/2026-10-07-S22-pardiso-block-solver.md rev. 2.1,
+# APPROVED by Alireza 2026-10-07), sections 2.4-2.6 and 4: the block step's
+# linear solver. (child key, dictionary key); written ONLY when the child
+# names them, so every earlier dictionary is byte-identical and an absent key
+# is the solver's default (blockLinearSolver pardiso, blockSolverThreads 0,
+# blockSolverReproducible true). The solver refuses all three outside
+# blockCoupled (S22 section 4); this generator refuses the same, and the one
+# combination the solver leaves silently inert (blockSolverReproducible under
+# umfpack, solver-engineer report 04 hand-off).
+S22_BLOCK_SOLVERS = ("pardiso", "umfpack")
+S22_KEYS = (
+    ("block_linear_solver", "blockLinearSolver"),
+    ("block_solver_threads", "blockSolverThreads"),
+    ("block_solver_reproducible", "blockSolverReproducible"),
+)
+# S22 section 7 arm A0: a child that runs on another solver LIBRARY than the
+# package's own. The only value is the P2' build the runner compiles into a
+# separate directory (run_main_case_colab.py --p2prime-solver); the generator
+# writes runs/<child>/child.env, which Allrun sources inside the child's
+# subshell before foamRun. It is never a dictionary key.
+SOLVER_LIBRARIES = ("p2prime",)
+SOLVER_LIBRARY_ENV = (
+    "# Written by create_cases.py for solver_library p2prime (S22 section 7, arm A0).\n"
+    "# Sourced by Allrun inside this child's subshell, before foamRun. `return` (not\n"
+    "# `exit`) so Allrun can record the refusal and skip the solve.\n"
+    'if [ -z "${PHASE_CLOT_P2PRIME_LIBBIN:-}" ]; then\n'
+    '    echo "child.env: PHASE_CLOT_P2PRIME_LIBBIN is empty: the P2-prime library was not built;'
+    ' refusing to run this child on the S22 library" >&2\n'
+    "    return 97\n"
+    "fi\n"
+    'export LD_LIBRARY_PATH="${PHASE_CLOT_P2PRIME_LIBBIN}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"\n'
+)
+
+
+def s22_key_refusal(child: dict) -> None:
+    """S22 section 4 on the CONTROLS entry, for EVERY child (the solver
+    refuses each of these at construction; a child carrying one would abort
+    on Colab, or run with the key silently inert)."""
+    cid = child["child_id"]
+    named = [k for k, _d in S22_KEYS if k in child]
+    block = str(child.get("momentum_pressure_coupling", "segregated")) == "blockCoupled"
+    if named and not block:
+        raise ValueError(
+            f"{cid}: {', '.join(named)} is read only under "
+            f"momentum_pressure_coupling blockCoupled; under segregated the key "
+            f"would be silently inert (S22 section 4).")
+    if "block_linear_solver" in child:
+        _s = child["block_linear_solver"]
+        if not isinstance(_s, str) or _s not in S22_BLOCK_SOLVERS:
+            raise ValueError(
+                f"{cid}: block_linear_solver {_s!r} is not one of "
+                f"{', '.join(S22_BLOCK_SOLVERS)} (S22 section 4).")
+    if "block_solver_threads" in child:
+        _n = child["block_solver_threads"]
+        if isinstance(_n, bool) or not isinstance(_n, int) or _n < 0:
+            raise ValueError(
+                f"{cid}: block_solver_threads {_n!r} must be an integer >= 0 "
+                f"(0 = MKL_NUM_THREADS, else the physical cores, under pardiso; "
+                f"OpenBLAS untouched under umfpack; S22 section 4).")
+    if "block_solver_reproducible" in child:
+        _r = child["block_solver_reproducible"]
+        if not isinstance(_r, bool):
+            raise ValueError(
+                f"{cid}: block_solver_reproducible {_r!r} must be true or false "
+                f"(S22 section 4).")
+        if child.get("block_linear_solver", "pardiso") == "umfpack":
+            raise ValueError(
+                f"{cid}: block_solver_reproducible is MKL's conditional-numerical-"
+                f"reproducibility switch; under block_linear_solver umfpack it would "
+                f"be silently inert (S22 section 2.6).")
+    if "solver_library" in child:
+        _l = child["solver_library"]
+        if not isinstance(_l, str) or _l not in SOLVER_LIBRARIES:
+            raise ValueError(
+                f"{cid}: solver_library {_l!r} is not one of "
+                f"{', '.join(SOLVER_LIBRARIES)} (S22 section 7).")
+        if child.get("block_linear_solver") != "umfpack" or any(
+                k in child for k in ("block_solver_threads", "block_solver_reproducible")):
+            raise ValueError(
+                f"{cid}: solver_library p2prime runs the P2-prime solver, which has "
+                f"only UMFPACK and ignores the S22 keys: the child must name "
+                f"block_linear_solver umfpack and no other S22 key, or the key "
+                f"would be silently inert (S22 section 7, arm A0).")
+
 
 def kept_option_refusal(child: dict, core_shell: bool) -> None:
     """Refuse, for EVERY child, a value or combination of the eight options that
@@ -790,6 +874,21 @@ FSF_PARENT_PAIRS = (
     # V21-6 (S21 section 1.1, CE amendment of docket 20261005-1621 report 07): the 0.2 ms window
     # as a twin, because the runner has no end-time cap. Frames are the parent's.
     ("fsf_id", "fsf_G4_kxu_v250", set(), {"end_time_s", "write_interval_s", "wall_budget_h"}),
+    # BATCH 71 (S22 section 7, the validation session): controls-only twins. Case 1
+    # is fsf_G40_klo_v250 at 0.6 ms with fields every 0.2 ms; case 2 is
+    # fsf_G4_kxu_r3_40 at 1.0 ms. Arms: A umfpack; E = A + OpenBLAS at 1 thread;
+    # B = pardiso at 1 thread; C = pardiso (every default); D = C again; A0 = A on the
+    # P2' library to 0.2 ms.
+    ("S22v_G40_A", "fsf_G40_klo_v250", {"block_linear_solver"},
+     {"end_time_s", "write_interval_s", "wall_budget_h"}),
+    ("S22v_G40_E", "S22v_G40_A", {"block_solver_threads"}, set()),
+    ("S22v_G40_B", "S22v_G40_A", {"block_linear_solver", "block_solver_threads"}, set()),
+    ("S22v_G40_C", "S22v_G40_A", {"block_linear_solver"}, set()),
+    ("S22v_G40_D", "S22v_G40_C", set(), set()),
+    ("S22v_G40_A0", "S22v_G40_A", {"solver_library"}, {"end_time_s", "wall_budget_h"}),
+    ("S22v_G4_A", "fsf_G4_kxu_r3_40", {"block_linear_solver"},
+     {"end_time_s", "write_interval_s", "wall_budget_h"}),
+    ("S22v_G4_C", "S22v_G4_A", {"block_linear_solver"}, set()),
 )
 
 
@@ -1337,6 +1436,7 @@ def main() -> int:
             free_shell_series_refusal(child, spec)
         frame_output_refusal(child, spec)
         kept_option_refusal(child, bool(spec.get("core_shell")))
+        s22_key_refusal(child)
 
         # Only the cohesive-tear series may set its own toughness, and it is
         # explicitly a SWEEP that reports how far below physiology it had to
@@ -2681,6 +2781,16 @@ def main() -> int:
         if "tau_v_s" in child:
             add_or_replace_entry(props, "networkViscosityTau",
                                  float(child["tau_v_s"]))
+        # S22 (2026-10-07): the block step's linear solver. Same contract:
+        # written only when named, so every earlier dictionary is identical.
+        # Validated by s22_key_refusal() (called with the series refusals).
+        for _key, _dict_key in S22_KEYS:
+            if _key not in child:
+                continue
+            _val = child[_key]
+            add_or_replace_entry(
+                props, _dict_key,
+                ("true" if _val else "false") if isinstance(_val, bool) else _val)
 
 
         # ON only for the demonstration series. Everywhere else the bond never
@@ -3368,6 +3478,14 @@ def main() -> int:
                 "networkViscosity": str(child.get("network_viscosity", "none")),
                 "networkViscosityTau": float(child.get("tau_v_s", 2.5e-4)),
             }
+        # S22: what the PHASE_CLOT_S19_CONFIG echo must show, and (A0) which
+        # library the child runs on -- ONLY for a child that names an S22 key,
+        # so every earlier child.json is byte-identical. Read by
+        # scripts/s22_validation_compare.py.
+        if any(_k in child for _k, _d in S22_KEYS):
+            spec["s22"] = {_k: child[_k] for _k, _d in S22_KEYS if _k in child}
+        if "solver_library" in child:
+            spec["solver_library"] = str(child["solver_library"])
         if "rho_kg_m3" in series:
             spec["plasma"] = {"rho_kg_m3": series["rho_kg_m3"],
                               "nu_m2_s": series["nu_m2_s"]}
@@ -3402,6 +3520,9 @@ def main() -> int:
                 json.dumps(_sd, indent=1) + "\n")
             spec["seed_theta_peak"] = _sd
         dictionary_key_refusal(case / "constant" / "phaseClotProperties")
+        if child.get("solver_library") == "p2prime":
+            # S22 section 7, arm A0: Allrun sources this before foamRun.
+            (case / "child.env").write_text(SOLVER_LIBRARY_ENV)
         (case / "child.json").write_text(json.dumps(spec, indent=2) + "\n")
         matrix.append(spec)
 
@@ -3426,7 +3547,16 @@ def main() -> int:
     'xu5_id': 21,
     'fsf_G4_kxu_r3_40': 5,
     'fsf_G4_kxu_nor3_40': 6,
-    'fsf_G4_kxu_seedq': 0}
+    'fsf_G4_kxu_seedq': 0,
+    # BATCH 71: A0 (the cheap control) first, then the case 1 arms, then case 2.
+    'S22v_G40_A0': 30,
+    'S22v_G40_A': 31,
+    'S22v_G40_E': 32,
+    'S22v_G40_B': 33,
+    'S22v_G40_C': 34,
+    'S22v_G40_D': 35,
+    'S22v_G4_A': 36,
+    'S22v_G4_C': 37}
     # S17 (design section 6): the mechanical control check, before anything
     # is ordered for launch. The controls-entry half runs for every pair; the
     # child.json half for the pairs whose control is built in this run

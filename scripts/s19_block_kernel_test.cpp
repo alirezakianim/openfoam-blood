@@ -45,6 +45,22 @@
 //       <= 1e-12; G6 fails (> 1e-10, both norms) on a 1e-6 error in any one
 //       class and passes on the exact solve. Run only when all else passed.
 //
+// S22 (research/designs/2026-10-07-S22-pardiso-block-solver.md rev. 2,
+// APPROVED by Alireza 2026-10-07): K1-K15 run the templated solveStep on
+// UmfpackLU, whose stats() holds P2's Info reads; K12 also requires the
+// PARDISO-only figures to stay -1 on the UMFPACK step. MKL has no macOS
+// build, so what runs here without it is K16:
+//   K16 PardisoLU::load on a library that does not exist is refused, naming
+//       the path and "set blockLinearSolver umfpack or install
+//       mkl==2026.1.0", and leaves no analysis to release; resolveThreads
+//       takes blockSolverThreads > 0 as given, refuses a negative count and
+//       a malformed MKL_NUM_THREADS, reads a valid one, and otherwise
+//       takes the physical cores, the distinct (package, core) pairs of
+//       the online cpus of a sysfs tree written here (rev. 2.1), and
+//       hardware_concurrency() only where that tree is unreadable or
+//       absent; mklVersionPinned accepts "Version 2026.1-"
+//       and refuses 2026.10, 2025.3 and an empty string.
+//
 // S19b (research/designs/2026-10-04-S19b-lumen-elimination.md rev. 2,
 // APPROVED by Alireza 2026-10-04, section 3). K1-K13 run identityRows (the
 // Coeffs default, eliminateLumen false); K12 and K13 are PINNED to it (F6)
@@ -68,6 +84,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <random>
+#include <string>
+#include <thread>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <sys/resource.h>
 
@@ -771,6 +791,9 @@ int main()
         check(s.noffdiag == 0, "K12", "NOFF_DIAG == 0", s.noffdiag);
         check(linResOf(s) <= 1e-12, "K12", "linRes <= 1e-12", linResOf(s));
         check(linResScaledOf(s) <= 1e-12, "K12", "linResScaled <= 1e-12", linResScaledOf(s));
+        check(s.perturbedPivots == -1 && s.irSteps == -1 && s.mklPeakGB == -1
+              && s.iparm15KB == -1 && s.iparm16KB == -1 && s.iparm17KB == -1, "K12",
+              "S22: the UMFPACK step leaves the PARDISO-only figures at -1", double(s.perturbedPivots));
     }
 
     // ---------------- K13 (S19a): the full-size block, the fixed path only ----------------
@@ -1052,6 +1075,79 @@ int main()
                 }
             }
         }
+    }
+
+    // ---- K16: S22 without MKL (design sections 2.3, 2.5, 4) ----
+    {
+        const std::string missing = "/nonexistent/s22_k16/libmkl_rt.so.3";
+        std::string err;
+        bool loaded = true;
+        {
+            PardisoLU plu;
+            loaded = plu.load(missing, 1, false, err);
+            check(!loaded && plu.symbolicCount() == 0, "K16", "load of a missing library is refused", double(loaded));
+        }
+        std::printf("K16 load refusal: %s\n", err.c_str());
+        check(err.find(missing) != std::string::npos, "K16", "the refusal names the path", 0.0);
+        check(err.find("Set blockLinearSolver umfpack or install mkl==2026.1.0") != std::string::npos,
+              "K16", "the refusal names the remedy", 0.0);
+        int n = -7;
+        std::string src;
+        bool ok = resolveThreads(3, n, src, err);
+        check(ok && n == 3 && src == "blockSolverThreads", "K16", "resolveThreads: blockSolverThreads 3 is used as given", double(n));
+        ok = resolveThreads(-1, n, src, err);
+        check(!ok, "K16", "resolveThreads: a negative count is refused", double(n));
+        setenv("MKL_NUM_THREADS", "2", 1);
+        ok = resolveThreads(0, n, src, err);
+        check(ok && n == 2 && src == "MKL_NUM_THREADS", "K16", "resolveThreads: 0 reads MKL_NUM_THREADS 2", double(n));
+        const char* bad[] = {"2x", "0", "-3", ""};
+        for (const char* b : bad)
+        {
+            setenv("MKL_NUM_THREADS", b, 1);
+            ok = resolveThreads(0, n, src, err);
+            char what[96];
+            std::snprintf(what, sizeof what, "resolveThreads: MKL_NUM_THREADS \"%s\" is refused", b);
+            check(!ok, "K16", what, double(n));
+        }
+        unsetenv("MKL_NUM_THREADS");
+        // rev. 2.1: the physical cores from a sysfs tree (written here), and
+        // hardware_concurrency() only when it is unreadable.
+        char tmpl[] = "/tmp/s22_k16_sysfsXXXXXX";
+        const char* root = mkdtemp(tmpl);
+        auto put = [&](const std::string& rel, const char* text)
+        {
+            const std::string path = std::string(root) + rel;
+            for (std::size_t q = 1; q < path.size(); ++q)
+                if (path[q] == '/') { mkdir(path.substr(0, q).c_str(), 0700); }
+            FILE* f = std::fopen(path.c_str(), "w");
+            if (f) { std::fputs(text, f); std::fclose(f); }
+        };
+        // cpus 0, 2, 3 online: (package, core) (0, 0) (0, 0) (1, 0) -> 2; cpu 1 offline, unwritten
+        put("/devices/system/cpu/online", "0,2-3\n");
+        put("/devices/system/cpu/cpu0/topology/physical_package_id", "0\n");
+        put("/devices/system/cpu/cpu0/topology/core_id", "0\n");
+        put("/devices/system/cpu/cpu2/topology/physical_package_id", "0\n");
+        put("/devices/system/cpu/cpu2/topology/core_id", "0\n");
+        put("/devices/system/cpu/cpu3/topology/physical_package_id", "1\n");
+        put("/devices/system/cpu/cpu3/topology/core_id", "0\n");
+        ok = root && resolveThreads(0, n, src, err, root);
+        check(ok && n == 2 && src == "physicalCores", "K16",
+              "resolveThreads: 0 without MKL_NUM_THREADS is the distinct (package, core) pairs of the online cpus", double(n));
+        const int hw = int(std::thread::hardware_concurrency());
+        put("/devices/system/cpu/online", "0-3\n");   // cpu1's topology is absent: unreadable
+        ok = root && resolveThreads(0, n, src, err, root);
+        check(hw > 0 ? (ok && n == hw && src == "hardwareConcurrency") : !ok, "K16",
+              "resolveThreads: an unreadable sysfs falls back to hardware_concurrency()", double(n));
+        ok = resolveThreads(0, n, src, err, "/nonexistent/s22_k16");
+        check(hw > 0 ? (ok && n == hw && src == "hardwareConcurrency") : !ok, "K16",
+              "resolveThreads: no sysfs falls back to hardware_concurrency()", double(n));
+        const char* good = "Intel(R) oneAPI Math Kernel Library Version 2026.1-Product Build 20260301 for Intel(R) 64 architecture applications";
+        check(mklVersionPinned(good), "K16", "mklVersionPinned accepts Version 2026.1-", 0.0);
+        check(!mklVersionPinned("Intel(R) oneAPI Math Kernel Library Version 2026.10-Product Build"), "K16",
+              "mklVersionPinned refuses 2026.10", 0.0);
+        check(!mklVersionPinned("Intel(R) oneAPI Math Kernel Library Version 2025.3-Product Build"), "K16",
+              "mklVersionPinned refuses 2025.3", 0.0);
+        check(!mklVersionPinned(""), "K16", "mklVersionPinned refuses an empty string", 0.0);
     }
 
     std::printf("%s: %d failure(s)\n", failures ? "KERNEL TEST FAILED" : "KERNEL TEST PASSED", failures);
