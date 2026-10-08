@@ -83,6 +83,7 @@ UNIT_CHECKS = [
     ("check_s12_intrinsic_drag", []),
     ("check_s14_network_rupture", []),
     ("check_s15_composition_label_and_damage", []),
+    ("check_s23_torn_network", []),   # S23 rev. 4.1: the torn-set pins and their planted defects; runs the 2-step kernel test itself
     ("check_scheme_coverage", []),
     ("check_stage2_case_generation", []),
     ("check_stage2_content_seeding", []),

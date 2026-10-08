@@ -1354,6 +1354,45 @@ def s23_generator_negatives(only: str | None = None) -> None:
 
 
 
+def filtered_generation(filt, mutate_controls=None, patch_generator=None):
+    with tempfile.TemporaryDirectory(prefix="am2020-launch-") as tmp:
+        root = build_case(Path(tmp))
+        shutil.rmtree(root / "runs")
+        if mutate_controls:
+            cp = root / "constant" / "mainCaseControls.json"
+            c = json.loads(cp.read_text())
+            mutate_controls(c)
+            cp.write_text(json.dumps(c, indent=1, ensure_ascii=False) + "\n")
+        if patch_generator:
+            gp = root / "scripts" / "create_cases.py"
+            old, rep = patch_generator
+            g = gp.read_text()
+            assert g.count(old) == 1, "generator patch anchor"
+            gp.write_text(g.replace(old, rep))
+        done = subprocess.run(
+            [sys.executable, "-B", str(root / "scripts" / "create_cases.py")] + list(filt),
+            capture_output=True, text=True)
+        built = ([e["child_id"] for e in json.loads((root / "runs" / "matrix.json").read_text())]
+                 if done.returncode == 0 else None)
+        lines = (done.stdout + done.stderr).strip().splitlines()
+        return done.returncode, built, (lines[-1] if lines else "")
+
+
+def launch_filters_generate(nbsel, batch: int, generate) -> None:
+    """BATCH 72 is two Colab sessions: each launch runs create_cases.py with ITS OWN filter, so each
+    filter must generate by itself (exactly its children) on a fresh copy. `generate` is
+    filtered_generation (or a stand-in); nbsel is check_notebook_batch_selector."""
+    nb = Path(__file__).resolve().parents[3] / "notebooks" / "AM2020_main_case_colab.ipynb"
+    parts = nbsel.notebook_names(nbsel.launch_cell(nb))["LAUNCHES"].get(batch)
+    assert parts, f"batch {batch} has no launches"
+    for lnum, (only, _hours) in sorted(parts.items()):
+        filt = only.split()
+        rc, built, last = generate(filt)
+        assert rc == 0, f"batch {batch} launch {lnum}'s filter was refused: {last}"
+        assert sorted(built) == sorted(filt), (lnum, built, filt)
+        print(f"   batch {batch} launch {lnum}: {len(filt)} children built, exactly the launch's filter ({last})")
+
+
 def reference_library_wiring() -> None:
     """The reference-library arm (S22 arm A0 and S23 arm (1')), offline: the notebook's pins and
     batch table agree with the generator's solver_library children, the build script's two release
@@ -1420,8 +1459,33 @@ def reference_library_wiring() -> None:
     refused(need(batches[72], controls), {"p2prime": "/x", "s22": "/y"}, "built for nothing")
     refused(need(batches[71], controls), {"p2prime": "/x", "s22": "/y"}, "built for nothing")
     refused({"p3"}, {"p3": "/x"}, "cannot build")
+    # BATCH 72 is TWO sessions (2026-10-08): launch 1 = (1)+(1') names solver_library s22 and clones the S22
+    # library; launch 2 = (2)+(3) names none and must pass nothing (the runner refuses a library built for
+    # nothing). The rule is the notebook's REFERENCE_LIBRARY_BY_LAUNCH, keyed by (batch, launch); here each
+    # launch's children are read against the controls, and EACH launch's exact runner argv (built by the
+    # notebook's own launch_plan / library_args / runner_argv, executed from its source) is parsed by the
+    # runner's own argparse and accepted by its own start-of-session check.
+    cell = nbsel.launch_cell(root / "notebooks" / "AM2020_main_case_colab.ipynb")
+    records = nbsel.check_launches(cell, controls, 72)
+    by = {(r["batch"], r["launch"]): r for r in records}
+    assert {(71, 1), (72, 1), (72, 2)} <= set(by), sorted(by)
+    assert by[(72, 1)]["children"] == ["S23v_G4_r3", "S23v_G4_r3_S22"], by[(72, 1)]["children"]
+    assert by[(72, 2)]["children"] == ["S23v_G4_nor3", "S23v_G40"], by[(72, 2)]["children"]
+    assert need(" ".join(by[(72, 1)]["children"]), controls) == {"s22"}
+    assert need(" ".join(by[(72, 2)]["children"]), controls) == set(), need(" ".join(by[(72, 2)]["children"]), controls)
+    assert by[(72, 1)]["library_passed"] == ["s22"] and by[(72, 2)]["library_passed"] == [], (by[(72, 1)], by[(72, 2)])
+    assert by[(71, 1)]["library_passed"] == ["p2prime"], by[(71, 1)]
+    assert "--s22-solver" in by[(72, 1)]["argv"] and "--s22-solver" not in by[(72, 2)]["argv"]
+    # the same two negatives on this function's own exec'd runner functions
+    check(need(" ".join(by[(72, 1)]["children"]), controls), {"p2prime": "", "s22": "/x"})
+    check(need(" ".join(by[(72, 2)]["children"]), controls), {"p2prime": "", "s22": ""})
+    refused(need(" ".join(by[(72, 2)]["children"]), controls), {"p2prime": "", "s22": "/x"}, "built for nothing")
+    refused(need(" ".join(by[(72, 1)]["children"]), controls), {"p2prime": "", "s22": ""}, "--s22-solver was not passed")
+    seen = nbsel.negatives(cell, controls, 72)
     print("   the reference-library wiring agrees: notebook pins, batch table, generator children, runner flags; "
-          "7 start-of-session cases seen both ways")
+          f"7 start-of-session cases seen both ways; {len(records)} launch argvs accepted by the runner's own parser "
+          f"(BATCH 72 launch 1 passes --s22-solver, launch 2 does not); {len(seen)} launch negatives each refused "
+          "for its stated reason")
 
 
 # ---- XU 2017 FIGURE 5 (batch 61; design 2026-09-29-case-xu2017-fig5 rev. 4) ----
@@ -2966,28 +3030,7 @@ def main() -> int:
     _batch, _batches = nbsel.parse(nbsel.source_of(
         Path(__file__).resolve().parents[3] / "notebooks" / "AM2020_main_case_colab.ipynb"))
 
-    def _filtered_generation(filt, mutate_controls=None, patch_generator=None):
-        with tempfile.TemporaryDirectory(prefix="am2020-launch-") as tmp:
-            root = build_case(Path(tmp))
-            shutil.rmtree(root / "runs")
-            if mutate_controls:
-                cp = root / "constant" / "mainCaseControls.json"
-                c = json.loads(cp.read_text())
-                mutate_controls(c)
-                cp.write_text(json.dumps(c, indent=1, ensure_ascii=False) + "\n")
-            if patch_generator:
-                gp = root / "scripts" / "create_cases.py"
-                old, rep = patch_generator
-                g = gp.read_text()
-                assert g.count(old) == 1, "generator patch anchor"
-                gp.write_text(g.replace(old, rep))
-            done = subprocess.run(
-                [sys.executable, "-B", str(root / "scripts" / "create_cases.py")] + list(filt),
-                capture_output=True, text=True)
-            built = ([e["child_id"] for e in json.loads((root / "runs" / "matrix.json").read_text())]
-                     if done.returncode == 0 else None)
-            lines = (done.stdout + done.stderr).strip().splitlines()
-            return done.returncode, built, (lines[-1] if lines else "")
+    _filtered_generation = filtered_generation   # module level: a docket probe calls it directly
 
     def launch_current_batch():
         filt = _batches[_batch].split()
@@ -2996,6 +3039,8 @@ def main() -> int:
         assert sorted(built) == sorted(filt), (built, filt)
         print(f"   batch {_batch}: {len(filt)} children built, exactly the filter ({last})")
     run_direct("the_notebook_batch_filter_generates", launch_current_batch)
+
+    run_direct("the_notebook_launch_filters_generate", lambda: launch_filters_generate(nbsel, _batch, _filtered_generation))
 
     def launch_batch_60():
         filt = _batches[60].split()

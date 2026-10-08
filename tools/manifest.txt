@@ -80,6 +80,7 @@ scripts/check_s14_network_rupture.py
 scripts/check_s15_composition_label_and_damage.py
 scripts/check_s19_block_coupled.py
 scripts/check_s21_config_equivalence.py
+scripts/check_s23_torn_network.py
 scripts/check_scheme_coverage.py
 scripts/check_stage2_case_generation.py
 scripts/check_stage2_content_seeding.py
@@ -92,6 +93,7 @@ scripts/s16_partition_kernel_test.cpp
 scripts/s17_fibre_kernel_test.cpp
 scripts/s17_offline_checks.py
 scripts/s18_fpe_kernel_test.cpp
+scripts/s23_torn_kernel_test.cpp
 scripts/s19_block_kernel_test.cpp
 scripts/s19a_block_kernel_reference.H
 scripts/s19b_e1_score.py
