@@ -638,40 +638,81 @@ def s22_mkl_environment() -> dict:
     return env
 
 
-# S22 section 7, arm A0 (BATCH 71): the P2' solver, built beside the package's own.
-# The notebook clones tag digest-8497d46a7010 (it holds the token; the runner never
-# sees it) and passes the clone's solver directory here. P2' has the same library
-# name as the package's solver, so it is compiled into a SEPARATE FOAM_USER_LIBBIN,
-# and PHASE_CLOT_P2PRIME_LIBBIN names that directory for runs/<child>/child.env
-# (create_cases.py writes it for solver_library p2prime; Allrun sources it inside
-# the child's subshell and it prepends the directory to LD_LIBRARY_PATH).
-P2PRIME_LIB = "libphaseClotAxisymmetricFluid.so"
+# REFERENCE LIBRARIES (S22 section 7 arm A0, BATCH 71; S23 section 7 arm (1'), BATCH 72):
+# an older release's solver, built beside the package's own. The notebook clones the tag
+# (it holds the token; the runner never sees it) and passes the clone's solver directory
+# here. A reference has the same library name as the package's solver, so it is compiled
+# into a SEPARATE FOAM_USER_LIBBIN, and the environment variable below names that
+# directory for runs/<child>/child.env (create_cases.py solver_library_env writes it for
+# the child that names solver_library; Allrun sources it inside that child's subshell and
+# it prepends the directory to LD_LIBRARY_PATH). name -> (the variable, the libbin
+# directory under /content, the label, the verdict when its build fails, the command-line
+# flag's attribute). BATCH 71 uses p2prime (tag digest-8497d46a7010); BATCH 72 uses s22
+# (tag digest-442b95afaec8).
+REFERENCE_LIBRARIES = {
+    "p2prime": ("PHASE_CLOT_P2PRIME_LIBBIN", "p2prime_libbin", "P2-prime", "P2PRIME_COMPILE_FAILED",
+                "p2prime_solver"),
+    "s22": ("PHASE_CLOT_S22_LIBBIN", "s22_libbin", "S22 reference", "S22REF_COMPILE_FAILED",
+            "s22_solver"),
+}
+P2PRIME_LIB = "libphaseClotAxisymmetricFluid.so"   # the library file, the same for every reference
 
 
-def build_p2prime(bootstrap, solver_dir: Path, openfoam_bash: str, libbin: Path, artifact: Path) -> dict:
-    """Compile solver_dir (the P2' clone's user-applications/phaseClotAxisymmetricFluid)
-    into libbin and export PHASE_CLOT_P2PRIME_LIBBIN. Refused (RuntimeError) when the
-    directory is not a solver, the build fails, the library is missing, or it is
-    byte-identical to the package's own library (the two builds would then be one)."""
+def reference_libraries_needed(series_filter: str, controls: Path) -> set:
+    """The solver_library names of the children this launch will build (all of them with no
+    filter), read from the controls. A child is selected by its id or its series, as Allrun and
+    create_cases.py select it."""
+    tokens = series_filter.split()
+    kids = json.loads(controls.read_text())["children"]
+    return {k["solver_library"] for k in kids
+            if "solver_library" in k
+            and (not tokens or k["child_id"] in tokens or k.get("series") in tokens)}
+
+
+def check_reference_libraries(needed: set, given: dict) -> None:
+    """Refuse at the START of the session (not when child.env refuses at the child): every
+    library a selected child names must have been passed, and no library is built for
+    nothing. `given` is name -> the solver directory string (empty = not passed)."""
+    unknown = sorted(needed - set(REFERENCE_LIBRARIES))
+    if unknown:
+        raise RuntimeError(f"a selected child names solver_library {unknown}, which this runner cannot build")
+    missing = sorted(n for n in needed if not given.get(n))
+    if missing:
+        flags = ", ".join("--" + REFERENCE_LIBRARIES[n][4].replace("_", "-") for n in missing)
+        raise RuntimeError(f"a selected child names solver_library {missing} but {flags} was not passed: "
+                           f"its child.env would refuse it (exit 97) after the whole session was spent")
+    surplus = sorted(n for n, v in given.items() if v and n not in needed)
+    if surplus:
+        raise RuntimeError(f"the {surplus} reference library was passed but no selected child names it "
+                           f"as solver_library: it would be built for nothing")
+
+
+def build_reference_library(bootstrap, name: str, solver_dir: Path, openfoam_bash: str, libbin: Path,
+                            artifact: Path) -> dict:
+    """Compile solver_dir (the clone's user-applications/phaseClotAxisymmetricFluid) into
+    libbin and export the reference's variable. Refused (RuntimeError) when the directory is
+    not a solver, the build fails, the library is missing, or it is byte-identical to the
+    package's own library (the two builds would then be one)."""
+    var, _dirname, label, _verdict, _attr = REFERENCE_LIBRARIES[name]
     for need in ("Allwmake", "Make/files", "phaseClotAxisymmetricFluid.C"):
         if not (solver_dir / need).is_file():
-            raise RuntimeError(f"P2-prime solver directory {solver_dir} has no {need}")
+            raise RuntimeError(f"{label} solver directory {solver_dir} has no {need}")
     libbin.mkdir(parents=True, exist_ok=True)
     if any(libbin.iterdir()):
-        raise RuntimeError(f"P2-prime libbin {libbin} is not empty; a stale library could be loaded")
+        raise RuntimeError(f"{label} libbin {libbin} is not empty; a stale library could be loaded")
     # FOAM_USER_LIBBIN is exported AFTER the bashrc: sourcing it sets the variable.
     built = bootstrap.bash(
         openfoam_bash + f" && export FOAM_USER_LIBBIN={bootstrap.quoted(libbin)}"
         f" && cd {bootstrap.quoted(solver_dir)} && bash ./Allwmake",
         check=False,
     )
-    (artifact / "log.Allwmake.p2prime").write_text(built.stdout)
+    (artifact / f"log.Allwmake.{name}").write_text(built.stdout)
     lib = libbin / P2PRIME_LIB
     info = {"solver_dir": str(solver_dir), "libbin": str(libbin), "compile_exit_code": built.returncode,
             "library_exists": lib.is_file()}
     if built.returncode != 0 or not lib.is_file():
-        raise RuntimeError(f"P2-prime build failed (exit {built.returncode}, library {lib} exists: {lib.is_file()}); "
-                           f"see log.Allwmake.p2prime")
+        raise RuntimeError(f"{label} build failed (exit {built.returncode}, library {lib} exists: {lib.is_file()}); "
+                           f"see log.Allwmake.{name}")
     info["sha256"] = sha256(lib)
     own = bootstrap.bash(openfoam_bash + " && echo FOAM_USER_LIBBIN=$FOAM_USER_LIBBIN", check=False).stdout
     own_dir = next((l.split("=", 1)[1].strip() for l in own.splitlines() if l.startswith("FOAM_USER_LIBBIN=")), "")
@@ -680,11 +721,16 @@ def build_p2prime(bootstrap, solver_dir: Path, openfoam_bash: str, libbin: Path,
     if own_lib is not None and own_lib.is_file():
         info["own_sha256"] = sha256(own_lib)
         if info["own_sha256"] == info["sha256"]:
-            raise RuntimeError("the P2-prime library is byte-identical to the package's own: the two builds are one")
-    os.environ["PHASE_CLOT_P2PRIME_LIBBIN"] = str(libbin)
-    print(f"[main-case] P2-prime library built: {lib} sha256={info['sha256'][:12]} "
-          f"PHASE_CLOT_P2PRIME_LIBBIN={libbin}", flush=True)
+            raise RuntimeError(f"the {label} library is byte-identical to the package's own: the two builds are one")
+    os.environ[var] = str(libbin)
+    print(f"[main-case] {label} library built: {lib} sha256={info['sha256'][:12]} "
+          f"{var}={libbin}", flush=True)
     return info
+
+
+def build_p2prime(bootstrap, solver_dir: Path, openfoam_bash: str, libbin: Path, artifact: Path) -> dict:
+    """BATCH 71's entry point, unchanged in behaviour (build_reference_library for p2prime)."""
+    return build_reference_library(bootstrap, "p2prime", solver_dir, openfoam_bash, libbin, artifact)
 
 
 def verify_repo_stamp(project: Path, expected: str, result: dict) -> None:
@@ -759,6 +805,15 @@ def main() -> int:
             "user-applications/phaseClotAxisymmetricFluid directory, built into a "
             "separate FOAM_USER_LIBBIN for the child that names solver_library "
             "p2prime. Empty (the default) builds nothing."
+        ),
+    )
+    parser.add_argument(
+        "--s22-solver", default="",
+        help=(
+            "S23 validation (BATCH 72) only: the clone of the S22 release's "
+            "user-applications/phaseClotAxisymmetricFluid directory, built into a "
+            "separate FOAM_USER_LIBBIN (s22_libbin) for the child that names "
+            "solver_library s22. Empty (the default) builds nothing."
         ),
     )
     args = parser.parse_args()
@@ -875,16 +930,28 @@ def main() -> int:
         if compiled.returncode != 0:
             result["verdict"] = "COMPILE_FAILED"
             raise RuntimeError("user library compile failed")
-        # S22 section 7, arm A0: the P2' library, only when the notebook passes its clone.
-        p2prime = None
-        if args.p2prime_solver:
+        # Reference libraries (S22 arm A0: p2prime; S23 arm (1'): s22), only when the notebook
+        # passes the clone. Each selected child's solver_library must have been passed, and no
+        # library is built for nothing; both are refused here, before the first build.
+        reference_args = {"p2prime": args.p2prime_solver, "s22": args.s22_solver}
+        check_reference_libraries(
+            reference_libraries_needed(
+                series_filter, PROJECT_LOCAL / "cases" / "AM2020_planar_mural_detachment"
+                / "constant" / "mainCaseControls.json"),
+            reference_args)
+        references = {}
+        for _name, _solver in reference_args.items():
+            if not _solver:
+                continue
             try:
-                p2prime = build_p2prime(bootstrap, Path(args.p2prime_solver), openfoam_bash,
-                                        CONTENT / "p2prime_libbin", artifact)
+                references[_name] = build_reference_library(
+                    bootstrap, _name, Path(_solver), openfoam_bash,
+                    CONTENT / REFERENCE_LIBRARIES[_name][1], artifact)
             except RuntimeError:
-                result["verdict"] = "P2PRIME_COMPILE_FAILED"
+                result["verdict"] = REFERENCE_LIBRARIES[_name][3]
                 raise
-            result["p2prime"] = p2prime
+            result[_name if _name == "p2prime" else "s22_reference"] = references[_name]
+        p2prime = references.get("p2prime")
 
         ignore = shutil.ignore_patterns(
             "__pycache__", "*.pyc", "runs", "postProcessing", "log.*"
@@ -917,6 +984,7 @@ def main() -> int:
             **bootstrap.build_environment(),
             "s22": s22_env,
             "p2prime": p2prime,
+            "s22_reference": references.get("s22"),
         }
         (artifact / "environment.json").write_text(
             json.dumps(environment, indent=2) + "\n"

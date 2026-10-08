@@ -245,11 +245,22 @@ def check_statements(old_runs, new_runs, ids):
     return bad
 
 
+def pinned_to_s22(new_runs, cid) -> bool:
+    """S23 rev. 4.1 section 13.2 item 5 (docket 20261007-0840, case-engineer report 25): a child pinned to
+    solver_library s22 gains exactly two things over the pre-S21 generator's output, a child.env and the
+    child.json member `solver_library`. Nothing else may differ (the checks below still compare it all)."""
+    return json.loads((new_runs / cid / "child.json").read_text()).get("solver_library") == "s22"
+
+
 def check_files(old_runs, new_runs, ids):
     bad = []
     skip = ("constant/phaseClotProperties", "child.json")
     for cid in ids:
-        o, n = tree_hashes(old_runs / cid, skip), tree_hashes(new_runs / cid, skip)
+        pin = pinned_to_s22(new_runs, cid)
+        if pin and not (new_runs / cid / "child.env").is_file():
+            bad.append(f"(5) {cid}: pinned to s22 but has no child.env")
+        sk = skip + (("child.env",) if pin else ())
+        o, n = tree_hashes(old_runs / cid, sk), tree_hashes(new_runs / cid, sk)
         # S21 pass 2b: the one fvSchemes entry no solver line reads any more, div(qPhi,w)
         # (the fvm::div(qPhi, w_) call left with the w branch), is removed; the old file
         # minus exactly that line must equal the new one byte for byte.
@@ -264,9 +275,12 @@ def check_files(old_runs, new_runs, ids):
             bad.append(f"(5) {cid}: files differ: {diff[:4]}")
         oj = json.loads((old_runs / cid / "child.json").read_text())
         nj = json.loads((new_runs / cid / "child.json").read_text())
-        if strip_builtin(oj) != strip_builtin(nj):
-            keys = sorted(k for k in set(strip_builtin(oj)) | set(strip_builtin(nj))
-                          if strip_builtin(oj).get(k) != strip_builtin(nj).get(k))
+        sj = strip_builtin(nj)
+        if pin:
+            sj.pop("solver_library", None)          # the one member the pin adds (an s22 child.json names it)
+        if strip_builtin(oj) != sj:
+            keys = sorted(k for k in set(strip_builtin(oj)) | set(sj)
+                          if strip_builtin(oj).get(k) != sj.get(k))
             bad.append(f"(5) {cid}: child.json differs beyond the built-in members: {keys[:5]}")
         if names_builtin(nj):
             bad.append(f"(5) {cid}: the new child.json names {sorted(names_builtin(nj))[:4]}")

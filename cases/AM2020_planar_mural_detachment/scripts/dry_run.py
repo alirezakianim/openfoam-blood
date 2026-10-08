@@ -944,7 +944,7 @@ S22_REFUSALS = (
      "block_solver_reproducible is read only under momentum_pressure_coupling blockCoupled"),
     ("an unknown solver_library",
      lambda c: _s16(c, "S22v_G40_A0", solver_library="p1"),
-     "solver_library 'p1' is not one of p2prime (S22 section 7)."),
+     "solver_library 'p1' is not one of p2prime, s22 (S22 section 7)."),
     ("solver_library p2prime without block_linear_solver umfpack",
      lambda c: _s16(c, "S22v_G40_A0", block_linear_solver="pardiso"),
      "solver_library p2prime runs the P2-prime solver, which has only UMFPACK"),
@@ -1007,6 +1007,421 @@ def s22_generator_negatives(only: str | None = None) -> None:
     assert ran > 0, f"no S22 negative matches {only!r}"
     print(f"   {ran} S22 generator negatives refused; the written keys are exactly the named ones")
 
+
+
+# ---- S23, THE TORN-NETWORK FIX (batch 72; design 2026-10-07-S23-torn-network-debris
+# rev. 3 sections 4 and 7) ----
+#
+# One negative per generator refusal (create_cases.py s23_key_refusal, and the BATCH 72
+# parent pairs), module-level so each runs alone:
+#   python3 -B -c "import dry_run; dry_run.s23_generator_negatives('<label>')"
+# from the scripts directory. (label, mutate(controls), the refusal's own words).
+# The children pinned to the S22 library by rev. 4.1 (design section 13.2 item 5: the 12 R3-off children),
+# plus fsb_ctl_r3 (kelvinVoigt at the solver default tau_v 2.5e-4 s, below the 5e-4 s floor; CE report 25).
+S23_PINNED_S22 = (
+    "em76_G4_s18", "em78_G4_s18p_ctl", "em79_G4_s18p_Cnp", "em78_id", "xu5_g250", "xu5_g500",
+    "xu5_g1000", "xu5_g2000", "xu5_id", "fsb_G40_klo_rest", "fs_G40_klo_rest_seg",
+    "fsf_G4_kxu_nor3_40", "fsb_ctl_r3")
+S23_REFUSALS = (
+    ("volumetric_tear_ratio = 1 (the boundary: R_c <= 1 is refused)",
+     lambda c: _s16(c, "S23v_G40", volumetric_tear_ratio=1.0),
+     "volumetric_tear_ratio 1.0 must be finite and exceed 1"),
+    ("volumetric_tear_ratio below 1",
+     lambda c: _s16(c, "S23v_G40", volumetric_tear_ratio=0.5),
+     "volumetric_tear_ratio 0.5 must be finite and exceed 1"),
+    ("a negative volumetric_tear_ratio",
+     lambda c: _s16(c, "S23v_G40", volumetric_tear_ratio=-21.95),
+     "volumetric_tear_ratio -21.95 must be finite and exceed 1"),
+    ("a NaN volumetric_tear_ratio",
+     lambda c: _s16(c, "S23v_G40", volumetric_tear_ratio=float("nan")),
+     "volumetric_tear_ratio nan must be finite and exceed 1"),
+    ("an infinite volumetric_tear_ratio",
+     lambda c: _s16(c, "S23v_G40", volumetric_tear_ratio=float("inf")),
+     "volumetric_tear_ratio inf must be finite and exceed 1"),
+    ("a boolean volumetric_tear_ratio",
+     lambda c: _s16(c, "S23v_G40", volumetric_tear_ratio=True),
+     "volumetric_tear_ratio True must be a number"),
+    ("a string volumetric_tear_ratio",
+     lambda c: _s16(c, "S23v_G40", volumetric_tear_ratio="21.95"),
+     "volumetric_tear_ratio '21.95' must be a number"),
+    ("volumetric_tear_ratio on a child that runs the S22 library",
+     lambda c: _s16(c, "S23v_G4_r3_S22", volumetric_tear_ratio=21.95),
+     "volumetric_tear_ratio is read only by the S23 solver; solver_library s22 runs the S22 reference library"),
+    ("volumetric_tear_ratio on an old child too (every child is checked)",
+     lambda c: _s16(c, "fsf_G40_klo_v250", volumetric_tear_ratio=0.0),
+     "volumetric_tear_ratio 0.0 must be finite and exceed 1"),
+    ("S23v_G40 drifting from its parent",
+     lambda c: _s16(c, "S23v_G40", k0p_m2=2e-15),
+     "FSF parent check: S23v_G40 differs from fsf_G40_klo_v250 in k0p_m2"),
+    ("S23v_G4_r3 drifting from its parent (a physics switch)",
+     lambda c: _s16(c, "S23v_G4_r3", tau_v_s=0.001),
+     "FSF parent check: S23v_G4_r3 differs from fsf_G4_kxu_r3_40 in tau_v_s"),
+    ("S23v_G4_r3_S22 without its named key solver_library",
+     lambda c: _s16(c, "S23v_G4_r3_S22", solver_library=None),
+     "FSF parent check: S23v_G4_r3_S22 does not differ from S23v_G4_r3 in its named key solver_library"),
+    ("S23v_G4_r3_S22 not ending at 30 ms (no end_time_s difference)",
+     lambda c: _s16(c, "S23v_G4_r3_S22", end_time_s=0.04),
+     "FSF parent check: S23v_G4_r3_S22 does not differ from S23v_G4_r3 in its named key end_time_s"),
+    ("an unknown solver_library on the S23 reference child",
+     lambda c: _s16(c, "S23v_G4_r3_S22", solver_library="s21"),
+     "solver_library 's21' is not one of p2prime, s22 (S22 section 7)."),
+    # ---- rev. 4.1 (design section 13.2 items 4 and 5): R3 required on the S23 build ----
+    # R1 (solver report 24): the marker's only value is tanDelta0.
+    ("R1: a marker value other than tanDelta0 (sensitivityLimit tanDelta1)",
+     lambda c: _s16(c, "S23v_G4_nor3", sensitivity_limit="tanDelta1"),
+     "sensitivity_limit 'tanDelta1' is not one of tanDelta0"),
+    ("R1: the marker value none (the solver refuses a PRESENT key that is not tanDelta0)",
+     lambda c: _s16(c, "S23v_G4_nor3", sensitivity_limit="none"),
+     "sensitivity_limit 'none' is not one of tanDelta0"),
+    ("R1: a non-string marker",
+     lambda c: _s16(c, "S23v_G4_nor3", sensitivity_limit=True),
+     "sensitivity_limit True is not one of tanDelta0"),
+    # R2: networkViscosity none (or absent) and not marked.
+    ("R2: network_viscosity absent on the S23 build (the dictionary default is none)",
+     lambda c: _s16(c, "S23v_G40", network_viscosity=None, tau_v_s=None, _tau_v_s_status=None),
+     "network_viscosity none (or absent: the default is none) is refused on the S23 build"),
+    ("R2: network_viscosity none, explicit, on a child other than S23v_G4_nor3",
+     lambda c: _s16(c, "S23v_G40", network_viscosity="none", tau_v_s=None, _tau_v_s_status=None),
+     "network_viscosity none (or absent: the default is none) is refused on the S23 build"),
+    ("WHITELIST: the labelled sensitivity child without its marker",
+     lambda c: _s16(c, "S23v_G4_nor3", sensitivity_limit=None),
+     "S23v_G4_nor3: network_viscosity none on the S23 build needs the explicit marker"),
+    ("WHITELIST: the marker on an R3-on child of the S23 build",
+     lambda c: _s16(c, "S23v_G40", sensitivity_limit="tanDelta0"),
+     "S23v_G40: sensitivity_limit is allowed only on S23v_G4_nor3"),
+    ("WHITELIST: the marker on an R3-off child pinned to the S22 library",
+     lambda c: _s16(c, "fsf_G4_kxu_nor3_40", sensitivity_limit="tanDelta0"),
+     "fsf_G4_kxu_nor3_40: sensitivity_limit is allowed only on S23v_G4_nor3"),
+    ("WHITELIST: the marker on the labelled child once it is pinned to another library (inert there)",
+     lambda c: _s16(c, "S23v_G4_nor3", solver_library="s22"),
+     "S23v_G4_nor3: sensitivity_limit is read only by the S23 solver"),
+    # the CE's tightening: the marker labels the R3-off limit only, so it cannot waive the tau_v floor.
+    ("MARKER + kelvinVoigt (tau_v 1.5 ms)",
+     lambda c: _s16(c, "S23v_G4_nor3", network_viscosity="kelvinVoigt", tau_v_s=0.0015),
+     "sensitivity_limit together with network_viscosity kelvinVoigt is refused"),
+    ("MARKER + kelvinVoigt with a tiny tau_v (the floor must not be waived by the marker)",
+     lambda c: _s16(c, "S23v_G4_nor3", network_viscosity="kelvinVoigt", tau_v_s=1e-9),
+     "sensitivity_limit together with network_viscosity kelvinVoigt is refused"),
+    # R3: kelvinVoigt without an explicit tau_v (the solver default 2.5e-4 s is below the floor).
+    ("R3: kelvinVoigt without an explicit tau_v_s",
+     lambda c: _s16(c, "S23v_G40", tau_v_s=None),
+     "network_viscosity kelvinVoigt on the S23 build needs an explicit tau_v_s"),
+    # R4: tau_v >= 5e-4 s. fsb_ctl_r3 has no BATCH parent pair, so it carries every tau_v here; it is
+    # unpinned (solver_library None) because the floor applies to the S23 build only.
+    ("R4: tau_v 4.99e-4 s (just below the floor)",
+     lambda c: _s16(c, "fsb_ctl_r3", solver_library=None, tau_v_s=4.99e-4),
+     "tau_v_s 0.000499 is below the 0.0005 s floor"),
+    ("R4: the double just below 5e-4 (the comparison is >=, to the last bit)",
+     lambda c: _s16(c, "fsb_ctl_r3", solver_library=None, tau_v_s=math.nextafter(5e-4, 0.0)),
+     "is below the 0.0005 s floor"),
+    ("R4: the solver default 2.5e-4 s written explicitly",
+     lambda c: _s16(c, "fsb_ctl_r3", solver_library=None, tau_v_s=2.5e-4),
+     "tau_v_s 0.00025 is below the 0.0005 s floor"),
+    ("R4: tau_v 1e-6 s",
+     lambda c: _s16(c, "fsb_ctl_r3", solver_library=None, tau_v_s=1e-6),
+     "tau_v_s 1e-06 is below the 0.0005 s floor"),
+    # nOuterCorrectors 1 (the end-of-step partition rule, section 13.6 hand-off)
+    ("nOuterCorrectors 2 on an S23-build arm",
+     lambda c: _s16(c, "S23v_G4_r3", n_outer_correctors=2),
+     "n_outer_correctors 2 is refused on the S23 build"),
+) + tuple(
+    # item 5: each of the 13 pinned children, unpinned ALONE, is refused on the S23 build (the pin is
+    # what lets it generate; fsb_ctl_r3 is the 13th, see its _why_solver_library)
+    (f"PIN: {cid} without solver_library s22 is refused on the S23 build",
+     (lambda cid_: (lambda c: _s16(c, cid_, solver_library=None)))(cid),
+     ("network_viscosity kelvinVoigt on the S23 build needs an explicit tau_v_s" if cid == "fsb_ctl_r3"
+      else "is refused on the S23 build: R3 is required"))
+    for cid in S23_PINNED_S22
+)
+
+
+S23_SOLVER_C = Path(__file__).resolve().parents[3] / "user-applications" / "phaseClotAxisymmetricFluid" / "phaseClotAxisymmetricFluid.C"
+
+
+def s23_solver_would_refuse(props_text: str):
+    """The constructor's R1-R4 and marker-with-kelvinVoigt FatalErrors, read off phaseClotProperties text the way
+    lookupOrDefault reads it (solver-engineer report 24; phaseClotAxisymmetricFluid.C, 'S23 rev. 4.1 section 13.2
+    item 4'). Returns None (accepted) or 'R1' (marker not tanDelta0), 'MK' (marker with a non-none networkViscosity),
+    'R2' (none, unmarked), 'R3' (kelvinVoigt without networkViscosityTau), 'R4' (tau_v < 5e-4 or not a number)."""
+    text = re.sub(r"//[^\n]*", "", props_text)
+
+    def entry(key):
+        m = re.search(rf"(?m)^\s*{key}\s+([^;\s]+)\s*;", text)
+        return None if m is None else m.group(1)
+    marker, nv, tau = entry("sensitivityLimit"), entry("networkViscosity") or "none", entry("networkViscosityTau")
+    if marker is not None and marker != "tanDelta0":
+        return "R1"
+    marked = marker == "tanDelta0"
+    if marked and nv != "none":
+        return "MK"
+    if nv == "none" and not marked:
+        return "R2"
+    if nv == "kelvinVoigt" and not marked:
+        if tau is None:
+            return "R3"
+        if not (float(tau) >= 5e-4):
+            return "R4"
+    return None
+
+
+def s23_solver_mirror_checks() -> None:
+    """(a) The mirror above is pinned to the solver's SOURCE (the floor literal, the comparison, the marker word and key,
+    the default); (b) report 24's negative dictionaries, one each, and the accepted ones, run through the mirror."""
+    assert S23_SOLVER_C.is_file(), f"the solver source is absent: {S23_SOLVER_C}"
+    src = S23_SOLVER_C.read_text()
+    pins = ('const scalar s23TauVFloor = 5e-4;', '!(networkViscosityTau_ >= s23TauVFloor)',
+            'sensitivityLimit_ != "tanDelta0"', 'lookupOrDefault<word>("sensitivityLimit", "none")',
+            'lookupOrDefault<word>("networkViscosity", "none")', '!phaseClotProperties_.found("networkViscosityTau")',
+            'if (s23Marked && networkViscosity_ != "none")', 'if (networkViscosity_ == "none" && !s23Marked)')
+    stale = lambda s: [pin for pin in pins if s.count(pin) != 1]
+    assert not stale(src), f"the solver source no longer has exactly one of {stale(src)}: the dry-run mirror is stale"
+    # the pin check can fail: each drift of the solver the mirror would not follow is seen (a scratch copy of the text)
+    for what, drifted in (("the floor 4.99e-4", src.replace('s23TauVFloor = 5e-4;', 's23TauVFloor = 4.99e-4;')),
+                          ("> instead of >=", src.replace('networkViscosityTau_ >= s23TauVFloor', 'networkViscosityTau_ > s23TauVFloor')),
+                          ("a second marker value", src.replace('sensitivityLimit_ != "tanDelta0"', 'sensitivityLimit_ != "tanDelta1"')),
+                          ("the marker allowed with kelvinVoigt", src.replace('if (s23Marked && networkViscosity_ != "none")', 'if (false)')),
+                          ("the R3-required refusal removed", src.replace('if (networkViscosity_ == "none" && !s23Marked)', 'if (false)'))):
+        assert drifted != src and stale(drifted), f"the pin check did not see {what}"
+    gen = (CASE / "scripts" / "create_cases.py").read_text()
+    assert "S23_TAU_V_FLOOR_S = 5e-4" in gen and 'S23_SENSITIVITY_VALUES = ("tanDelta0",)' in gen
+    base = ("networkViscosity kelvinVoigt;\nnetworkViscosityTau 0.0015;\n")
+    cases = (
+        ("accepted: kelvinVoigt 1.5e-3", base, None),
+        ("accepted: kelvinVoigt exactly 5e-4", "networkViscosity kelvinVoigt;\nnetworkViscosityTau 5e-4;\n", None),
+        ("accepted: kelvinVoigt exactly 0.0005", "networkViscosity kelvinVoigt;\nnetworkViscosityTau 0.0005;\n", None),
+        ("accepted: none with the marker", "networkViscosity none;\nsensitivityLimit tanDelta0;\n", None),
+        ("accepted: the marker with networkViscosity ABSENT (the default is none)", "sensitivityLimit tanDelta0;\n", None),
+        ("R1: sensitivityLimit tanDelta1", "networkViscosity none;\nsensitivityLimit tanDelta1;\n", "R1"),
+        ("R1: sensitivityLimit none (present)", "networkViscosity none;\nsensitivityLimit none;\n", "R1"),
+        ("R2: the key absent", "", "R2"),
+        ("R2: networkViscosity none, unmarked", "networkViscosity none;\n", "R2"),
+        ("R3: kelvinVoigt only", "networkViscosity kelvinVoigt;\n", "R3"),
+        ("R4: tau 4.99e-4", "networkViscosity kelvinVoigt;\nnetworkViscosityTau 4.99e-4;\n", "R4"),
+        ("R4: tau 2.5e-4 (the default, written)", "networkViscosity kelvinVoigt;\nnetworkViscosityTau 2.5e-4;\n", "R4"),
+        ("R4: tau NaN", "networkViscosity kelvinVoigt;\nnetworkViscosityTau nan;\n", "R4"),
+        ("MK: the marker with kelvinVoigt 1.5e-3", base + "sensitivityLimit tanDelta0;\n", "MK"),
+        ("MK: the marker with kelvinVoigt and a tiny tau (must not waive the floor)",
+         "networkViscosity kelvinVoigt;\nnetworkViscosityTau 1e-9;\nsensitivityLimit tanDelta0;\n", "MK"),
+    )
+    for label, text, want in cases:
+        got = s23_solver_would_refuse(text)
+        assert got == want, f"{label}: the mirror says {got!r}, report 24 says {want!r}"
+    print(f"   the solver's R1-R4 and marker+kelvinVoigt mirror is pinned to its source ({len(cases)} dictionaries, both sides, "
+          f"5e-4 and 0.0005 accepted, 4.99e-4 refused)")
+
+
+def s23_generator_negatives(only: str | None = None) -> None:
+    """Each S23 generator refusal, seen to fire for its stated reason on a fresh copy (all of
+    them, or the one whose label contains `only`); then the positive side: the key is written
+    only when named, the BATCH 72 children have the settings of their parents, and each
+    child.env refuses an unset, an empty and a library-less path when SOURCED."""
+    import copy
+    ran = 0
+    with tempfile.TemporaryDirectory(prefix="am2020-s23-neg-") as tmp:
+        root = build_case(Path(tmp))
+        shutil.rmtree(root / "runs")
+        controls_path = root / "constant" / "mainCaseControls.json"
+        pristine = controls_path.read_text()
+        for label, mutate, expected in S23_REFUSALS:
+            if only is not None and only not in label:
+                continue
+            broken = copy.deepcopy(json.loads(pristine))
+            mutate(broken)
+            controls_path.write_text(json.dumps(broken, indent=1))
+            done = subprocess.run(
+                [sys.executable, "-B", str(root / "scripts" / "create_cases.py")],
+                capture_output=True, text=True)
+            said = (done.stdout + done.stderr).strip().splitlines()
+            last = said[-1] if said else ""
+            if done.returncode == 0:
+                raise AssertionError(f"the generator ACCEPTED {label}; it must refuse")
+            if expected not in last:
+                raise AssertionError(f"the generator refused {label} for the WRONG reason: {last}")
+            print(f"generator refuses: {label:<64} -> {last[:96]}")
+            shutil.rmtree(root / "runs", ignore_errors=True)
+            ran += 1
+        controls_path.write_text(pristine)
+        if only is None:
+            # the pristine controls still generate, and a NAMED R_c is written exactly (a refusal
+            # that always fires proves nothing: 1.0000001 is accepted, 1.5 is written). fsb_ctl_r3 is
+            # used because it has no parent pair: no BATCH 72 child names the key, and a twin that did
+            # would be refused by the parent check
+            named = json.loads(pristine)
+            # fsb_ctl_r3 is pinned to the S22 library (which does not read R_c, so the key is refused there) and has no
+            # tau_v_s (refused on the S23 build): the twin carries both here
+            _s16(named, "fsb_ctl_r3", volumetric_tear_ratio=1.5, solver_library=None, tau_v_s=0.0015)
+            controls_path.write_text(json.dumps(named, indent=1))
+            done = subprocess.run([sys.executable, "-B", str(root / "scripts" / "create_cases.py")],
+                                  capture_output=True, text=True)
+            assert done.returncode == 0, f"a named R_c = 1.5 was refused: {(done.stdout + done.stderr)[-300:]}"
+            props = lambda cid: (root / "runs" / cid / "constant" / "phaseClotProperties").read_text()
+            assert "volumetricTearRatio 1.5;" in props("fsb_ctl_r3")
+            assert json.loads((root / "runs" / "fsb_ctl_r3" / "child.json").read_text())["s23"] == {"volumetric_tear_ratio": 1.5}
+            shutil.rmtree(root / "runs", ignore_errors=True)
+            named = json.loads(pristine)
+            _s16(named, "fsb_ctl_r3", volumetric_tear_ratio=1.0000001, solver_library=None, tau_v_s=0.0015)
+            controls_path.write_text(json.dumps(named, indent=1))
+            done = subprocess.run([sys.executable, "-B", str(root / "scripts" / "create_cases.py")],
+                                  capture_output=True, text=True)
+            assert done.returncode == 0, f"R_c = 1.0000001 (just above the boundary) was refused: {(done.stdout + done.stderr)[-300:]}"
+            shutil.rmtree(root / "runs", ignore_errors=True)
+            controls_path.write_text(pristine)
+        done = subprocess.run([sys.executable, "-B", str(root / "scripts" / "create_cases.py")],
+                              capture_output=True, text=True)
+        assert done.returncode == 0, f"the pristine controls were refused: {(done.stdout + done.stderr)[-300:]}"
+        props = lambda cid: (root / "runs" / cid / "constant" / "phaseClotProperties").read_text()
+        # the key is written for NO child that does not name it (all four BATCH 72 children and every earlier one)
+        every = sorted(p.name for p in (root / "runs").iterdir() if (p / "child.json").is_file())
+        assert len(every) == 30, len(every)
+        assert not [c for c in every if "volumetricTearRatio" in props(c)], "volumetricTearRatio written for a child that does not name it"
+        # rev. 4.1: the only child.json with an "s23" block is the labelled twin, and it carries the marker only
+        assert [c for c in every if "s23" in json.loads((root / "runs" / c / "child.json").read_text())] == ["S23v_G4_nor3"]
+        assert json.loads((root / "runs" / "S23v_G4_nor3" / "child.json").read_text())["s23"] == {"sensitivity_limit": "tanDelta0"}
+        # (1) and (1') are the same dictionary
+        assert props("S23v_G4_r3") == props("S23v_G4_r3_S22") == props("fsf_G4_kxu_r3_40")
+        # the twin is its (pinned) parent's dictionary plus the marker, written exactly as the solver reads it
+        assert props("S23v_G4_nor3") == props("fsf_G4_kxu_nor3_40").rstrip("\n") + "\n\nsensitivityLimit tanDelta0;\n"
+        assert props("S23v_G40") == props("fsf_G40_klo_v250")
+        # the marker is written for ONE child of the 30 (the whitelist), as a word, with nothing else near it
+        assert [c for c in every if "sensitivityLimit" in props(c)] == ["S23v_G4_nor3"]
+        assert len(re.findall(r"(?m)^\s*sensitivityLimit\s+tanDelta0;\s*$", props("S23v_G4_nor3"))) == 1
+        # child.env: the 2 earlier library children and the 13 pinned ones (item 5), nothing else
+        pinned = sorted(S23_PINNED_S22)
+        assert sorted(c for c in every if (root / "runs" / c / "child.env").exists()) == sorted(["S22v_G40_A0", "S23v_G4_r3_S22"] + pinned)
+        for c in ["S23v_G4_r3_S22"] + pinned:
+            assert json.loads((root / "runs" / c / "child.json").read_text())["solver_library"] == "s22", c
+        assert [c for c in every if json.loads((root / "runs" / c / "child.json").read_text()).get("solver_library") == "s22"] == sorted(["S23v_G4_r3_S22"] + pinned)
+        # nOuterCorrectors is 1 on the four arms (the end-of-step partition rule of the log; section 13.6 hand-off)
+        for c in ("S23v_G4_r3", "S23v_G4_r3_S22", "S23v_G4_nor3", "S23v_G40"):
+            fvs = (root / "runs" / c / "system" / "fvSolution").read_text()
+            assert re.findall(r"(?m)^\s*nOuterCorrectors\s+(\S+);", fvs) == ["1"], (c, re.findall(r"nOuterCorrectors\s+\S+;", fvs))
+        # the solver's own R1-R4 + marker/kelvinVoigt predicate (mirrored from its source text, below), applied to
+        # every generated dictionary: a child on the S23 build is accepted, a pinned child is exactly the kind the
+        # build would refuse (so the pin is necessary), and no child is both on the build and refused
+        for c in every:
+            lib = json.loads((root / "runs" / c / "child.json").read_text()).get("solver_library")
+            why = s23_solver_would_refuse(props(c))
+            if lib is None:
+                assert why is None, (c, why)
+            elif c in pinned:
+                assert why in ("R2", "R3"), (c, why)
+        assert {c: s23_solver_would_refuse(props(c)) for c in pinned}.get("fsb_ctl_r3") == "R3"
+        assert sum(s23_solver_would_refuse(props(c)) == "R2" for c in pinned) == 12
+        s23_solver_mirror_checks()
+        # production write settings on all four (5 ms full writes, 0.2 ms frames)
+        ends = {"S23v_G4_r3": 0.04, "S23v_G4_r3_S22": 0.03, "S23v_G4_nor3": 0.04, "S23v_G40": 0.025}
+        for cid, end in ends.items():
+            j = json.loads((root / "runs" / cid / "child.json").read_text())
+            cd = (root / "runs" / cid / "system" / "controlDict").read_text()
+            assert f"endTime         {end};" in cd or re.search(rf"endTime\s+{end};", cd), (cid, "endTime")
+            assert re.search(r"writeInterval\s+0\.005;", cd), (cid, "writeInterval")
+        # child.env, SOURCED the way Allrun does (bash, `.`), each refusal seen to fire
+        envs = {"s22": (root / "runs" / "S23v_G4_r3_S22" / "child.env", "PHASE_CLOT_S22_LIBBIN", "PHASE_CLOT_P2PRIME_LIBBIN"),
+                "p2prime": (root / "runs" / "S22v_G40_A0" / "child.env", "PHASE_CLOT_P2PRIME_LIBBIN", "PHASE_CLOT_S22_LIBBIN")}
+        good = Path(tmp) / "libbin_good"
+        good.mkdir()
+        (good / "libphaseClotAxisymmetricFluid.so").write_bytes(b"x")
+        bare = Path(tmp) / "libbin_empty"
+        bare.mkdir()
+
+        def source(envfile, setting, ld="/opt/foam/lib"):
+            cmd = f'unset PHASE_CLOT_S22_LIBBIN PHASE_CLOT_P2PRIME_LIBBIN; {setting} LD_LIBRARY_PATH={ld}; ' \
+                  f'. {envfile}; rc=$?; echo "rc=$rc"; echo "LD=$LD_LIBRARY_PATH"'
+            r = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True)
+            out = dict(l.split("=", 1) for l in r.stdout.splitlines() if "=" in l)
+            return int(out["rc"]), out.get("LD", ""), r.stderr
+        for name, (envfile, var, other) in envs.items():
+            rc, ld, err = source(envfile, "")
+            assert rc == 97 and ld == "/opt/foam/lib" and var in err, (name, "unset", rc, ld, err)
+            rc, ld, err = source(envfile, f"export {var}='';")
+            assert rc == 97 and ld == "/opt/foam/lib", (name, "empty", rc, ld)
+            rc, ld, err = source(envfile, f"export {other}='{good}';")
+            assert rc == 97 and ld == "/opt/foam/lib", (name, "the OTHER library's variable must not satisfy it", rc, ld)
+            if name == "s22":
+                rc, ld, err = source(envfile, f"export {var}='{Path(tmp) / 'nonexistent'}';")
+                assert rc == 98 and ld == "/opt/foam/lib", (name, "nonexistent dir", rc, ld)
+                rc, ld, err = source(envfile, f"export {var}='{bare}';")
+                assert rc == 98 and ld == "/opt/foam/lib", (name, "dir without the library", rc, ld)
+            rc, ld, err = source(envfile, f"export {var}='{good}';")
+            assert rc == 0 and ld == f"{good}:/opt/foam/lib", (name, "valid", rc, ld)
+            print(f"child.env ({name}): unset -> 97, empty -> 97, the other library's variable -> 97"
+                  + (", missing dir -> 98, library-less dir -> 98" if name == "s22" else "") + ", valid -> 0 with LD_LIBRARY_PATH prefixed")
+        shutil.rmtree(root / "runs", ignore_errors=True)
+    assert ran > 0, f"no S23 negative matches {only!r}"
+    print(f"   {ran} S23 generator negatives refused; the key is written only when named; "
+          f"the BATCH 72 children carry the production write settings; "
+          f"the marker is written for S23v_G4_nor3 only; 13 children pinned to s22; nOuterCorrectors 1 on the four arms")
+
+
+
+def reference_library_wiring() -> None:
+    """The reference-library arm (S22 arm A0 and S23 arm (1')), offline: the notebook's pins and
+    batch table agree with the generator's solver_library children, the build script's two release
+    pins are still unique, and the runner's start-of-session check refuses what child.env would
+    refuse after a whole session (each case seen both ways)."""
+    import ast
+    import importlib.util
+    root = Path(__file__).resolve().parents[3]
+    spec = importlib.util.spec_from_file_location("nbsel", root / "scripts" / "check_notebook_batch_selector.py")
+    nbsel = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(nbsel)
+    text = nbsel.source_of(root / "notebooks" / "AM2020_main_case_colab.ipynb")
+    batch, batches = nbsel.parse(text)
+    assert batch == max(batches) == 72, (batch, max(batches))
+    # the build script re-pins by exactly these two patterns; a second match would break the release
+    assert len(re.findall(r"EXPECTED_REPO_DIGEST = '[0-9a-f]{64}'", text)) == 1
+    assert len(re.findall(r"EXPECTED_TAG = 'digest-[0-9a-f]{12}'", text)) == 1
+    pins = dict(re.findall(r"^(P2PRIME_TAG|P2PRIME_REPO_DIGEST|S22REF_TAG|S22REF_REPO_DIGEST) = '([^']+)'", text, re.M))
+    assert set(pins) == {"P2PRIME_TAG", "P2PRIME_REPO_DIGEST", "S22REF_TAG", "S22REF_REPO_DIGEST"}, pins
+    for t, d in (("P2PRIME_TAG", "P2PRIME_REPO_DIGEST"), ("S22REF_TAG", "S22REF_REPO_DIGEST")):
+        assert re.fullmatch(r"[0-9a-f]{64}", pins[d]) and pins[t] == "digest-" + pins[d][:12], (t, pins[t], pins[d])
+    assert pins["S22REF_TAG"] == "digest-442b95afaec8", "BATCH 72's reference is the S22 release (design section 7)"
+    table = re.search(r"(?s)REFERENCE_LIBRARY_BY_BATCH = (\{.*?\n\})", text).group(1)
+    assert "P2PRIME_TAG" in table and "S22REF_TAG" in table
+    flags = dict(re.findall(r"(\d+): \('(\w+)', \w+, \w+, '(--[\w-]+)'", table) and
+                 [(b, f"{n}|{fl}") for b, n, fl in re.findall(r"(\d+): \('(\w+)', \w+, \w+, '(--[\w-]+)'", table)])
+    assert flags == {"71": "p2prime|--p2prime-solver", "72": "s22|--s22-solver"}, flags
+    # the runner's functions, executed from source
+    runner_src = (CASE / "scripts" / "run_main_case_colab.py").read_text()
+    ns = {"json": json, "Path": Path}
+    want = {"REFERENCE_LIBRARIES", "reference_libraries_needed", "check_reference_libraries"}
+    for node in ast.parse(runner_src).body:
+        name = getattr(node, "name", None) or (
+            node.targets[0].id if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name) else None)
+        if name in want:
+            exec(compile(ast.Module([node], []), "runner", "exec"), ns)
+    assert set(ns) >= want | {"json", "Path"}
+    controls = CASE / "constant" / "mainCaseControls.json"
+    need, check = ns["reference_libraries_needed"], ns["check_reference_libraries"]
+    for b, (name, flag) in {71: ("p2prime", "--p2prime-solver"), 72: ("s22", "--s22-solver")}.items():
+        assert need(batches[b], controls) == {name}, (b, need(batches[b], controls))
+        assert ns["REFERENCE_LIBRARIES"][name][4] == flag.lstrip("-").replace("-", "_")
+    # rev. 4.1: BATCH 69 selects em78_id, xu5_id and fsf_G4_kxu_nor3_40, which are pinned to the S22 library, so a
+    # session of it needs --s22-solver (the runner refuses it at the START otherwise); BATCH 72's selection is
+    # unchanged. The notebook's table gives the library to BATCH 71 and 72 only.
+    assert need(batches[69], controls) == {"s22"}, need(batches[69], controls)
+    # the generator's child.env library and the runner's variable are one name
+    var_of = {n: v[0] for n, v in ns["REFERENCE_LIBRARIES"].items()}
+    gsrc = (CASE / "scripts" / "create_cases.py").read_text()
+    for n, v in var_of.items():
+        assert f'"{n}": ("{v}",' in gsrc, (n, v)
+
+    def refused(needed, given, why):
+        try:
+            check(needed, given)
+        except RuntimeError as error:
+            assert why in str(error), (why, str(error))
+            return
+        raise AssertionError(f"accepted: {needed} {given}")
+    check(need(batches[72], controls), {"p2prime": "", "s22": "/x"})
+    check(need(batches[71], controls), {"p2prime": "/x", "s22": ""})
+    refused(need(batches[72], controls), {"p2prime": "", "s22": ""}, "--s22-solver was not passed")
+    refused(need(batches[71], controls), {"p2prime": "", "s22": ""}, "--p2prime-solver was not passed")
+    refused(need(batches[72], controls), {"p2prime": "/x", "s22": "/y"}, "built for nothing")
+    refused(need(batches[71], controls), {"p2prime": "/x", "s22": "/y"}, "built for nothing")
+    refused({"p3"}, {"p3": "/x"}, "cannot build")
+    print("   the reference-library wiring agrees: notebook pins, batch table, generator children, runner flags; "
+          "7 start-of-session cases seen both ways")
 
 
 # ---- XU 2017 FIGURE 5 (batch 61; design 2026-09-29-case-xu2017-fig5 rev. 4) ----
@@ -1577,11 +1992,18 @@ S21_GENERATOR_NEGATIVES = (
 )
 
 
+# The number of children the generator emits: the 18 kept + the 8 S22 validation
+# twins of BATCH 71 + the 4 S23 twins of BATCH 72. ONE pin, read by both
+# s21_generator_negatives and main(): BATCH 72 updated main's copy and left this
+# function's at 26, and release 2026-10-07 died on it ten minutes into the build.
+KEPT_CHILDREN = 30
+
+
 def s21_generator_negatives() -> None:
     with tempfile.TemporaryDirectory(prefix="am2020-s21-gen-") as tmp:
         root = build_case(Path(tmp))
         n = len(json.loads((root / "runs" / "matrix.json").read_text()))
-        assert n == 26, f"the pristine copy generated {n} children, expected 26 (18 kept + the 8 S22 validation twins of BATCH 71)"
+        assert n == KEPT_CHILDREN, f"the pristine copy generated {n} children, expected {KEPT_CHILDREN}"
         shutil.rmtree(root / "runs")
         controls_path = root / "constant" / "mainCaseControls.json"
         props_path = root / "template" / "constant" / "phaseClotProperties"
@@ -1699,7 +2121,7 @@ def main() -> int:
     # required strength, demonstration, transport, tear, source 33, deformation)
     # and the generator negatives of the deleted refusals are cut (the pre-S21
     # file: release-4198bb17).
-    KEPT = 26   # the 18 kept children + the 8 S22 validation twins of BATCH 71
+    KEPT = KEPT_CHILDREN   # the 18 kept children + the 8 S22 validation twins of BATCH 71 + the 4 S23 twins of BATCH 72
 
     def healthy(r, code):
         assert code == 0, f"exit {code}"
@@ -1772,6 +2194,7 @@ def main() -> int:
         exercise(g3l_label, variant(fsf_G4_kxu_v250=dict(fct=g3l_fct)), g3l_kept)
     run_direct("s21_generator_refuses_built_in_and_deleted_keys", s21_generator_negatives)
     run_direct("s22_generator_refuses_bad_solver_keys", s22_generator_negatives)
+    run_direct("s23_generator_refuses_bad_tear_ratio", s23_generator_negatives)
 
 
     # --- THE PARSER ITSELF --------------------------------------------------
@@ -2581,6 +3004,7 @@ def main() -> int:
         assert filt == ["em76_G4_s18"] and built == filt, (built, filt)
         print(f"   batch 60: {len(filt)} child built ({last})")
     run_direct("batch_60_filter_generates", launch_batch_60)
+    run_direct("reference_library_wiring", reference_library_wiring)
 
     # S21: batches 58 and 59 and their S17 control pairs are retired children, so
     # their filter tests are cut; a filter naming a retired child is refused.

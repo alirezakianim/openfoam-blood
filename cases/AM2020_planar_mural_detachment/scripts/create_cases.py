@@ -480,23 +480,46 @@ S22_KEYS = (
     ("block_solver_threads", "blockSolverThreads"),
     ("block_solver_reproducible", "blockSolverReproducible"),
 )
-# S22 section 7 arm A0: a child that runs on another solver LIBRARY than the
-# package's own. The only value is the P2' build the runner compiles into a
-# separate directory (run_main_case_colab.py --p2prime-solver); the generator
-# writes runs/<child>/child.env, which Allrun sources inside the child's
-# subshell before foamRun. It is never a dictionary key.
-SOLVER_LIBRARIES = ("p2prime",)
-SOLVER_LIBRARY_ENV = (
-    "# Written by create_cases.py for solver_library p2prime (S22 section 7, arm A0).\n"
-    "# Sourced by Allrun inside this child's subshell, before foamRun. `return` (not\n"
-    "# `exit`) so Allrun can record the refusal and skip the solve.\n"
-    'if [ -z "${PHASE_CLOT_P2PRIME_LIBBIN:-}" ]; then\n'
-    '    echo "child.env: PHASE_CLOT_P2PRIME_LIBBIN is empty: the P2-prime library was not built;'
-    ' refusing to run this child on the S22 library" >&2\n'
-    "    return 97\n"
-    "fi\n"
-    'export LD_LIBRARY_PATH="${PHASE_CLOT_P2PRIME_LIBBIN}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"\n'
-)
+# A child that runs on another solver LIBRARY than the package's own (S22 section 7
+# arm A0, BATCH 71; S23 section 7 arm (1'), BATCH 72). The runner compiles the named
+# tag into a SEPARATE FOAM_USER_LIBBIN (run_main_case_colab.py --p2prime-solver /
+# --s22-solver); the generator writes runs/<child>/child.env, which Allrun sources
+# inside the child's subshell before foamRun and which prepends that directory to
+# LD_LIBRARY_PATH. It is never a dictionary key. name -> (the environment variable the
+# runner exports, what the library is, the design section that asks for it).
+SOLVER_LIBRARIES = {
+    "p2prime": ("PHASE_CLOT_P2PRIME_LIBBIN", "P2-prime", "S22 section 7, arm A0"),
+    "s22": ("PHASE_CLOT_S22_LIBBIN", "S22 reference", "S23 section 7, arm (1')"),
+}
+SOLVER_LIBRARY_FILE = "libphaseClotAxisymmetricFluid.so"
+
+
+def solver_library_env(name: str) -> str:
+    """The text of runs/<child>/child.env for solver_library `name`. For p2prime it is
+    byte-for-byte what BATCH 71 wrote (checked against the pre-B72 generator). For every
+    library: an UNSET or EMPTY path is refused with `return 97`. For s22 a path that does not
+    hold the library file is refused too, with `return 98` (the p2prime text is frozen)."""
+    var, label, where = SOLVER_LIBRARIES[name]
+    text = (
+        f"# Written by create_cases.py for solver_library {name} ({where}).\n"
+        "# Sourced by Allrun inside this child's subshell, before foamRun. `return` (not\n"
+        "# `exit`) so Allrun can record the refusal and skip the solve.\n"
+        f'if [ -z "${{{var}:-}}" ]; then\n'
+        f'    echo "child.env: {var} is empty: the {label} library was not built;'
+        f' refusing to run this child on the {"S22" if name == "p2prime" else label} library" >&2\n'
+        "    return 97\n"
+        "fi\n"
+    )
+    if name != "p2prime":
+        text += (
+            f'if [ ! -f "${{{var}}}/{SOLVER_LIBRARY_FILE}" ]; then\n'
+            f'    echo "child.env: ${{{var}}} holds no {SOLVER_LIBRARY_FILE}: the {label} library was not built;'
+            f' refusing to run this child on another library" >&2\n'
+            "    return 98\n"
+            "fi\n"
+        )
+    text += f'export LD_LIBRARY_PATH="${{{var}}}${{LD_LIBRARY_PATH:+:${{LD_LIBRARY_PATH}}}}"\n'
+    return text
 
 
 def s22_key_refusal(child: dict) -> None:
@@ -541,13 +564,137 @@ def s22_key_refusal(child: dict) -> None:
             raise ValueError(
                 f"{cid}: solver_library {_l!r} is not one of "
                 f"{', '.join(SOLVER_LIBRARIES)} (S22 section 7).")
-        if child.get("block_linear_solver") != "umfpack" or any(
-                k in child for k in ("block_solver_threads", "block_solver_reproducible")):
+        if _l == "p2prime" and (child.get("block_linear_solver") != "umfpack" or any(
+                k in child for k in ("block_solver_threads", "block_solver_reproducible"))):
             raise ValueError(
                 f"{cid}: solver_library p2prime runs the P2-prime solver, which has "
                 f"only UMFPACK and ignores the S22 keys: the child must name "
                 f"block_linear_solver umfpack and no other S22 key, or the key "
                 f"would be silently inert (S22 section 7, arm A0).")
+
+
+# S23 (design 2026-10-07-S23-torn-network-debris rev. 3, section 2.6 and 4): the one
+# parameter, R_c, the volumetric tear ratio of the terminal event (default 21.95 in the
+# solver). (child key, dictionary key); written ONLY when the child names it, so every
+# earlier dictionary is byte-identical and an absent key is the solver's default.
+S23_KEYS = (("volumetric_tear_ratio", "volumetricTearRatio"),)
+
+
+def s23_key_refusal(child: dict) -> None:
+    """S23 section 4 on the CONTROLS entry, for EVERY child. The solver refuses a
+    volumetricTearRatio that is not finite or is <= 1 (FatalError before step 1); a child
+    carrying one would abort on Colab, so the generator refuses the same. The solver's
+    second refusal (the key outside a fibreRelease build) cannot be reached: S21 built
+    fibreRelease in (solver-engineer report 12, finding 6), so there is nothing to refuse.
+    The key is also refused on a child that runs the S22 reference library, which does not
+    read it (it would be silently inert)."""
+    cid = child["child_id"]
+    if "volumetric_tear_ratio" not in child:
+        return
+    _r = child["volumetric_tear_ratio"]
+    if isinstance(_r, bool) or not isinstance(_r, (int, float)):
+        raise ValueError(
+            f"{cid}: volumetric_tear_ratio {_r!r} must be a number "
+            f"(R_c, the volumetric tear ratio; S23 section 4).")
+    if not math.isfinite(_r):
+        raise ValueError(
+            f"{cid}: volumetric_tear_ratio {_r!r} must be finite and exceed 1 "
+            f"(S23 section 4: the solver refuses a non-finite R_c).")
+    if not _r > 1:
+        raise ValueError(
+            f"{cid}: volumetric_tear_ratio {_r!r} must be finite and exceed 1 "
+            f"(S23 section 4: the solver refuses R_c <= 1).")
+    if child.get("solver_library") == "s22":
+        raise ValueError(
+            f"{cid}: volumetric_tear_ratio is read only by the S23 solver; "
+            f"solver_library s22 runs the S22 reference library, so the key would be "
+            f"silently inert (S23 section 7, arm (1')).")
+
+
+# S23 rev. 4.1 (design 2026-10-07-S23-torn-network-debris section 13.2 items 4 and 5, APPROVED by
+# Alireza 2026-10-07): R3 (network viscosity) is REQUIRED on the S23 build, because it is the term
+# that holds the fringe (H-Keff, report 18) and fibrin's tan delta is 0.67-4.7 (S24 physics 02), so
+# R3-off is the tan delta -> 0 sensitivity limit and not physics. The solver mirrors these with
+# FatalError before step 1 (solver-engineer report 24, R1-R4 and the marker-with-kelvinVoigt
+# refusal); this generator is the only place that bounds WHICH child may carry the marker.
+#   * "the S23 build" is a child with NO solver_library key (the package solver). A child pinned to
+#     solver_library s22 or p2prime runs another library and keeps the physics of its earlier runs;
+#   * network_viscosity none (or absent: the dictionary default is none) is refused, except on the
+#     one labelled sensitivity child, which must carry sensitivity_limit "tanDelta0" (the solver
+#     writes it as `sensitivityLimit tanDelta0;`);
+#   * the marker is refused on any other child, with kelvinVoigt, with any other value, and on a
+#     child that runs another library (the key would be silently inert there);
+#   * kelvinVoigt needs an explicit tau_v_s, and tau_v_s >= 5e-4 s. The comparison is the solver's
+#     own `!(tau >= 5e-4)`: 5e-4 and 0.0005 are the same double and are accepted; 4.99e-4 is not.
+#     The solver's default 2.5e-4 s is below the physics-assured 5e-4 and 1.5e-3 s.
+S23_SENSITIVITY_CHILD = "S23v_G4_nor3"
+S23_SENSITIVITY_VALUES = ("tanDelta0",)
+S23_TAU_V_FLOOR_S = 5e-4
+
+
+def s23_build_refusal(child: dict) -> None:
+    """Design section 13.2 item 4, on the CONTROLS entry, for EVERY child."""
+    cid = child["child_id"]
+    lib = child.get("solver_library")
+    s23_build = lib is None
+    nv = str(child.get("network_viscosity", "none"))
+    has_marker = "sensitivity_limit" in child
+    if has_marker:
+        _m = child["sensitivity_limit"]
+        if not isinstance(_m, str) or _m not in S23_SENSITIVITY_VALUES:
+            raise ValueError(
+                f"{cid}: sensitivity_limit {_m!r} is not one of "
+                f"{', '.join(S23_SENSITIVITY_VALUES)} (S23 section 13.2 item 4: the solver "
+                f"refuses any other value).")
+        if cid != S23_SENSITIVITY_CHILD:
+            raise ValueError(
+                f"{cid}: sensitivity_limit is allowed only on {S23_SENSITIVITY_CHILD}, the one "
+                f"labelled tan delta -> 0 sensitivity arm (S23 section 13.2 item 4); on any other "
+                f"child it would label an R3-off run as a sensitivity arm.")
+        if nv == "kelvinVoigt":
+            raise ValueError(
+                f"{cid}: sensitivity_limit together with network_viscosity kelvinVoigt is refused: "
+                f"the marker labels the R3-off limit only, so it cannot waive the tau_v floor "
+                f"(S23 section 13.2 item 4, CE ratification of solver-engineer report 24).")
+        if not s23_build:
+            raise ValueError(
+                f"{cid}: sensitivity_limit is read only by the S23 solver; solver_library "
+                f"{lib} runs another library, so the key would be silently inert.")
+    if not s23_build:
+        return
+    # The PHASE_CLOT_S23 populations (T, Pi, M) are the END-OF-STEP partition only while nothing
+    # rewrites the partition after the step's block solve, which holds for nOuterCorrectors 1
+    # (solver-engineer report 24, site list; design section 13.6 hand-off to the case engineer).
+    # The default is 1 (fvSolution is rewritten per child); a child that names another is refused.
+    if "n_outer_correctors" in child and child["n_outer_correctors"] != 1:
+        raise ValueError(
+            f"{cid}: n_outer_correctors {child['n_outer_correctors']!r} is refused on the S23 build: "
+            f"the logged T, Pi and M are the end-of-step partition only with nOuterCorrectors 1 "
+            f"(S23 section 13.6).")
+    if nv == "none":
+        if cid != S23_SENSITIVITY_CHILD:
+            raise ValueError(
+                f"{cid}: network_viscosity none (or absent: the default is none) is refused on the "
+                f"S23 build: R3 is required (S23 section 13.2 item 4). Name network_viscosity "
+                f"kelvinVoigt with tau_v_s >= {S23_TAU_V_FLOOR_S:g}, or pin solver_library s22 to "
+                f"keep an earlier run's physics.")
+        if not has_marker:
+            raise ValueError(
+                f"{cid}: network_viscosity none on the S23 build needs the explicit marker "
+                f"sensitivity_limit \"tanDelta0\" (S23 section 13.2 item 4: the labelled tan delta "
+                f"-> 0 sensitivity arm).")
+        return
+    if nv == "kelvinVoigt":
+        if "tau_v_s" not in child:
+            raise ValueError(
+                f"{cid}: network_viscosity kelvinVoigt on the S23 build needs an explicit tau_v_s "
+                f"(the solver default 2.5e-4 s is below the {S23_TAU_V_FLOOR_S:g} s floor; "
+                f"S23 section 13.2 item 4).")
+        _t = child["tau_v_s"]
+        if not (_t >= S23_TAU_V_FLOOR_S):
+            raise ValueError(
+                f"{cid}: tau_v_s {_t!r} is below the {S23_TAU_V_FLOOR_S:g} s floor of the S23 build "
+                f"(physics-assured 5e-4 and 1.5e-3 s; S23 section 13.2 item 4).")
 
 
 def kept_option_refusal(child: dict, core_shell: bool) -> None:
@@ -864,7 +1011,8 @@ FSF_PARENT_PAIRS = (
     # BATCH 69 (design 2026-10-05-case-loose-40ms-r3-pair rev. 4 section 1): the
     # batch-68 loose child at 40 ms, a 22.0 h clock budget and nothing else.
     ("fsf_G4_kxu_r3_40", "fsf_G4_kxu_v250", set(), {"end_time_s", "wall_budget_h"}),
-    ("fsf_G4_kxu_nor3_40", "fsf_G4_kxu_r3_40", {"network_viscosity", "tau_v_s"}, set()),
+    # solver_library: the 12 R3-off children are pinned to the S22 library (S23 section 13.2 item 5).
+    ("fsf_G4_kxu_nor3_40", "fsf_G4_kxu_r3_40", {"network_viscosity", "tau_v_s", "solver_library"}, set()),
     # V21-8: the seeded q < 0 child (S20 V5), 20 steps, no frames.
     ("fsf_G4_kxu_seedq", "fsf_G4_kxu_v250", {"seed_theta_peak"},
      FSF_RUN_KEYS),
@@ -889,6 +1037,16 @@ FSF_PARENT_PAIRS = (
     ("S22v_G4_A", "fsf_G4_kxu_r3_40", {"block_linear_solver"},
      {"end_time_s", "write_interval_s", "wall_budget_h"}),
     ("S22v_G4_C", "S22v_G4_A", {"block_linear_solver"}, set()),
+    # BATCH 72 (S23 section 7, the validation): controls-only twins of the BATCH 69 loose
+    # pair and the stiff control, each differing from its parent only in the clock budget
+    # (the parents carry the 22 h budget of a serial UMFPACK run). (1') is (1) on the S22
+    # library to 30 ms. No child names volumetric_tear_ratio: R_c is the solver's default.
+    ("S23v_G4_r3", "fsf_G4_kxu_r3_40", set(), {"wall_budget_h"}),
+    ("S23v_G4_r3_S22", "S23v_G4_r3", {"solver_library"}, {"end_time_s", "wall_budget_h"}),
+    # Rev. 4.1: the parent is pinned to the S22 library, the twin runs the S23 build and carries the
+    # sensitivity marker (the only child that may).
+    ("S23v_G4_nor3", "fsf_G4_kxu_nor3_40", {"solver_library", "sensitivity_limit"}, {"wall_budget_h"}),
+    ("S23v_G40", "fsf_G40_klo_v250", set(), {"wall_budget_h"}),
 )
 
 
@@ -1437,6 +1595,8 @@ def main() -> int:
         frame_output_refusal(child, spec)
         kept_option_refusal(child, bool(spec.get("core_shell")))
         s22_key_refusal(child)
+        s23_key_refusal(child)
+        s23_build_refusal(child)
 
         # Only the cohesive-tear series may set its own toughness, and it is
         # explicitly a SWEEP that reports how far below physiology it had to
@@ -2791,6 +2951,15 @@ def main() -> int:
             add_or_replace_entry(
                 props, _dict_key,
                 ("true" if _val else "false") if isinstance(_val, bool) else _val)
+        # S23 (2026-10-07): R_c, the volumetric tear ratio. Same contract: written only
+        # when named (s23_key_refusal), so every earlier dictionary is identical.
+        for _key, _dict_key in S23_KEYS:
+            if _key in child:
+                add_or_replace_entry(props, _dict_key, float(child[_key]))
+        # S23 rev. 4.1: the sensitivity marker, a word. Written ONLY on the labelled child
+        # (s23_build_refusal), so every other dictionary is identical.
+        if "sensitivity_limit" in child:
+            add_or_replace_entry(props, "sensitivityLimit", str(child["sensitivity_limit"]))
 
 
         # ON only for the demonstration series. Everywhere else the bond never
@@ -3486,6 +3655,10 @@ def main() -> int:
             spec["s22"] = {_k: child[_k] for _k, _d in S22_KEYS if _k in child}
         if "solver_library" in child:
             spec["solver_library"] = str(child["solver_library"])
+        if any(_k in child for _k, _d in S23_KEYS):
+            spec["s23"] = {_k: float(child[_k]) for _k, _d in S23_KEYS if _k in child}
+        if "sensitivity_limit" in child:
+            spec.setdefault("s23", {})["sensitivity_limit"] = str(child["sensitivity_limit"])
         if "rho_kg_m3" in series:
             spec["plasma"] = {"rho_kg_m3": series["rho_kg_m3"],
                               "nu_m2_s": series["nu_m2_s"]}
@@ -3520,9 +3693,9 @@ def main() -> int:
                 json.dumps(_sd, indent=1) + "\n")
             spec["seed_theta_peak"] = _sd
         dictionary_key_refusal(case / "constant" / "phaseClotProperties")
-        if child.get("solver_library") == "p2prime":
-            # S22 section 7, arm A0: Allrun sources this before foamRun.
-            (case / "child.env").write_text(SOLVER_LIBRARY_ENV)
+        if child.get("solver_library") in SOLVER_LIBRARIES:
+            # S22 section 7 arm A0 / S23 section 7 arm (1'): Allrun sources this before foamRun.
+            (case / "child.env").write_text(solver_library_env(child["solver_library"]))
         (case / "child.json").write_text(json.dumps(spec, indent=2) + "\n")
         matrix.append(spec)
 
@@ -3556,7 +3729,12 @@ def main() -> int:
     'S22v_G40_C': 34,
     'S22v_G40_D': 35,
     'S22v_G4_A': 36,
-    'S22v_G4_C': 37}
+    'S22v_G4_C': 37,
+    # BATCH 72: the matrix order is (1), (1'), (2), (3); the notebook's pairs follow it.
+    'S23v_G4_r3': 40,
+    'S23v_G4_r3_S22': 41,
+    'S23v_G4_nor3': 42,
+    'S23v_G40': 43}
     # S17 (design section 6): the mechanical control check, before anything
     # is ordered for launch. The controls-entry half runs for every pair; the
     # child.json half for the pairs whose control is built in this run

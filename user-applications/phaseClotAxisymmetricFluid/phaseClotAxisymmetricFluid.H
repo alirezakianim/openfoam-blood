@@ -1107,6 +1107,15 @@ class phaseClotAxisymmetricFluid
         //  (waiver D4). The release is the rate limit; the event is d*.
         scalar networkReleaseTime_;
 
+        //- S23 (research/designs/2026-10-07-S23-torn-network-debris.md rev.
+        //  3, section 2.1): the volumetric tear ratio R_c. A skeleton cell
+        //  (the shipped isSkel) whose deposited reference holds ref >=
+        //  R_c*theta tears terminally, d*_law = 1, tested in product form
+        //  (no division by theta). 21.95 = lc^3 (lc 2.8, source 28 p. 4),
+        //  inside the bracket 21.2-48.2, under WAIVER (DECISIONS
+        //  2026-10-07). Refused at or below 1 and when not finite.
+        scalar volumetricTearRatio_;
+
         //- S16: whether the progressive part (Eq. 6 below lc) is on under
         //  terminalRelease. Off: d*_law is 0 below lc and 1 at it
         //  ("terminal-only"), which is the only form in which lc <= lf is
@@ -1184,6 +1193,12 @@ class phaseClotAxisymmetricFluid
         word momentumPressureCoupling_;
         word networkViscosity_;
         scalar networkViscosityTau_;
+        //  S23 rev. 4.1 (design 2026-10-07-S23 section 13.2 item 4): R3 is
+        //  required on this build. sensitivityLimit is the labelled
+        //  sensitivity marker; its only value, tanDelta0 (the tan delta -> 0
+        //  limit), admits networkViscosity none and waives the tau_v floor.
+        //  "none" when the key is absent; echoed on PHASE_CLOT_S23_CONFIG.
+        word sensitivityLimit_;
         //  S22 (research/designs/2026-10-07-S22-pardiso-block-solver.md rev.
         //  2, APPROVED by Alireza 2026-10-07, sections 2.4-2.6; read only
         //  under blockCoupled): blockLinearSolver "pardiso" (the default, MKL
@@ -1536,6 +1551,43 @@ class phaseClotAxisymmetricFluid
     scalar s16MuMean_;
     scalar s16MirrorDevMax_;
     mutable label s16WeightSites_;
+
+    //  S23 per-step diagnostics (design section 2.5), set in the constructor
+    //  body; the event counts are written by ruptureOverstretchedNetwork()
+    //  every step (it runs once per step) and PHASE_CLOT_S23 prints them.
+    //  Events: volumetric-branch firings (isSkel and ref >= R_c theta; each
+    //  resets ref <- theta, A1) and new stretch-branch tears (l1 >= lc).
+    label s23VolEvents_;
+    label s23StretchEvents_;
+    label s23VolEventsTotal_;
+    label s23StretchEventsTotal_;
+    //  volumetric firings whose cell kept a non-zero thetaIntact (no A1)
+    label s23A1Deferred_;
+    //  R = ref/theta over isSkel cells with theta > 0, BEFORE the A1 reset
+    label s23RCells_;
+    scalar s23RMax_;
+    scalar s23RP50_;
+    scalar s23RP90_;
+    scalar s23RP99_;
+    //  the torn-face correction's last call: torn cells and overwritten faces
+    mutable label s23TornCells_;
+    mutable label s23TornFaces_;
+    //  G23-6: int |contentResidual| dt and int contentOuterFlux dt, and V0,
+    //  the first contentVolume, accumulated by the content balance emitter
+    scalar s23ContentResInt_;
+    scalar s23OutfluxInt_;
+    scalar s23ContentV0_;
+    //  S23 rev. 4.1 F1' (section 13.4 G23-5), since the last PHASE_CLOT_S23
+    //  line: per builder site (0 skeletonFaceStress, 1 elasticStress) the
+    //  max over T of |w/max(ind, floor) - aI| for the weight as consumed,
+    //  the largest |T| a call examined (-1: the site was not built), and the
+    //  T cells with a zero occupancy (counted, not divided); and the Pt
+    //  field correctTornFaces() consumed, with the time index it was taken.
+    mutable scalar s23F1WDev_[2];
+    mutable label s23F1WCells_[2];
+    mutable label s23F1WZeroOcc_;
+    mutable scalarField s23PtUsed_;
+    mutable label s23PtUsedIndex_;
 
     //  S17 per-step diagnostics (design section 6), set in the constructor
     //  body and reset at the start of every step. Read by assess_case.py.
@@ -2717,7 +2769,43 @@ class phaseClotAxisymmetricFluid
     tmp<volScalarField> skeletonStressWeight() const;
 
     //- S16 B: record, per site, max(w_used - max(ind, floor)*(1 - d)).
+    //  S23: sites 0 and 1 reference (1 - d*) in the torn set T.
     void recordStressWeight(const scalarField& wUsed, const label site) const;
+
+    //- S23 rev. 4.1 F1': record, per builder site, max over T of
+    //  |w_used/max(ind, floor) - aI| (PHASE_CLOT_S23 f1WSite<k>Dev).
+    void recordTornWeight(const scalarField& wUsed, const label site) const;
+
+    //- S23 rev. 4.1: d_p, the progressive law's ceiling, from the law's own
+    //  expression at l1 = lc (damagePartitionKernel::progressiveCeiling).
+    scalar progressiveDamageCeiling() const;
+
+    //- S23 rev. 4.1 section 13.2 item 1: the torn set T = isSkel AND d* >=
+    //  (1 + d_p)/2 (majority; WITHOUT the presence test), and s_X = (1 -
+    //  d*_X) + d*_X ind_X per cell. Optionally d* and the phase indicator
+    //  per cell. Returns the global count of T.
+    label tornNetworkCells
+    (
+        boolList& torn,
+        scalarField& sTorn,
+        scalarField* dStar = nullptr,
+        scalarField* indOut = nullptr
+    ) const;
+
+    //- S23 rev. 4.1 section 13.2 item 2: T's deviatoric stress weight is
+    //  max(ind, floor)*(1 - d*) (0 at d* = 1, rev. 3's value), and T's own
+    //  boundary faces carry the cell's value. A no-op while T is empty.
+    void applyTornStressWeight(volScalarField& w) const;
+
+    //- S23 section 2.2: overwrite ONLY the faces with a T side (c_f = 0)
+    //  with -s_f [snGrad(Pn)_f - dc_f (Pt_N - Pt_P)] |S_f|/rho. Writes the
+    //  overwritten-minus-S22 value of those faces into *delta when given.
+    //  Visits no face while T is empty. Returns the global face count.
+    label correctTornFaces
+    (
+        surfaceScalarField& fSigE,
+        surfaceScalarField* delta
+    ) const;
 
     //- S16 D: p -> max(p, 0) + (1 - d) min(p, 0) under networkPressureDamage
     //  tensile; the input unchanged otherwise.

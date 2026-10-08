@@ -681,11 +681,16 @@ def every_indicator_site_is_one_of_two_forms(src: str) -> bool:
     a29 carrier blend, S21B a36 rigid-body released carrier, S21C1 d36.2
     material-flux chain element). No site was added; the required set is
     unchanged.
+
+    S23 (2026-10-07) took it to 35 across 23: tornNetworkCells() reads the
+    indicator for the torn set's isSkel (the block's rule) and for the
+    packing scale s = (1 - d*) + d* ind of the torn-face correction, which
+    drives the skeleton force (required).
     """
     sites = {f: v for f, v in call_sites(INDICATOR).items()
              if f not in INDICATOR_ACCESSORS}
-    return (sum(len(v) for v in sites.values()) == 34 and len(sites) == 22
-            and {"updateReleasedIndicator", "updateBondHold",
+    return (sum(len(v) for v in sites.values()) == 35 and len(sites) == 23
+            and {"updateReleasedIndicator", "updateBondHold", "tornNetworkCells",
                  "releaseDetachedMaterial", "skeletonFaceStress",
                  "writeBalanceDiagnostic", "intrinsicDragRate",
                  "skeletonStressWeight", "recordStressWeight",
@@ -1016,8 +1021,8 @@ MUTATIONS = [
      "        if (false)"),
     ("move the deviatoric weight onto the unfloored indicator",
      deviatoric_weight_keeps_its_floor,
-     "        phiS = skeletonStressWeight();\n    }\n    recordStressWeight(phiS.primitiveField(), 1);",
-     "        phiS = chi;\n    }\n    recordStressWeight(phiS.primitiveField(), 1);"),
+     "        phiS = skeletonStressWeight();\n    }\n",
+     "        phiS = chi;\n    }\n"),
     ("threshold isSkel at zero instead of 0.5*residualChi_",
      isSkel_keeps_its_threshold,
      "          phaseIndicator()\n          - dimensionedScalar(\"halfChi\", dimless, 0.5*residualChi_)",

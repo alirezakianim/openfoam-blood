@@ -12,6 +12,7 @@
 #include "fibreReleaseKernel.H"
 #include "clotWallAdhesionFvPatchVectorField.H"
 #include <cmath>   // std::isfinite, for the skeleton divergence guard
+#include <algorithm>  // S23: nth_element, the R quantiles
 #include <chrono>  // per-phase wall clock; see tSkeleton_ et al. in the header
 #include <sstream> // S18p: the %.17g cell dump
 #include <sys/resource.h>  // S22: getrusage, the record's rssGB
@@ -677,6 +678,14 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
             "networkReleaseTime", 3.3e-4
         )
     ),
+    // S23 section 2.6: R_c, a physical constant (21.95 = lc^3, waived).
+    volumetricTearRatio_
+    (
+        phaseClotProperties_.lookupOrDefault<scalar>
+        (
+            "volumetricTearRatio", 21.95
+        )
+    ),
     // S18p: the default is S18 as built (no counters, no dump).
     projSiteLog_
     (
@@ -700,6 +709,10 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
         (
             "networkViscosityTau", 2.5e-4
         )
+    ),
+    sensitivityLimit_
+    (
+        phaseClotProperties_.lookupOrDefault<word>("sensitivityLimit", "none")
     ),
     // S22: the default is PARDISO (section 2.4). blockSolverReproducible is
     // read strictly in the constructor body (section 4: a bool or refused).
@@ -2448,6 +2461,128 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
         << " networkPressureWeight=" << networkPressureWeight_
         << endl;
 
+    // ---- S23: THE VOLUMETRIC TEAR (design 2026-10-07-S23 rev. 3) ----------
+    // Section 4: R_c at or below 1 would tear every cell whose content has
+    // not grown past its deposit (R = 1 is the fresh, stress-free network),
+    // and a non-finite R_c is no criterion. Refused before step 1. (The
+    // second refusal of section 4, the key outside a fibreRelease build,
+    // has no reachable case: S21 built networkRupture fibreRelease in, so
+    // every build is one.)
+    if (!(std::isfinite(volumetricTearRatio_) && volumetricTearRatio_ > 1))
+    {
+        FatalErrorInFunction
+            << "volumetricTearRatio " << volumetricTearRatio_ << " is the "
+            << "volumetric tear ratio R_c of S23 (a skeleton cell tears when "
+            << "thetaNetRef >= R_c*theta) and must be finite and exceed 1 "
+            << "(21.95 = lc^3, lc 2.8, source 28; waiver DECISIONS "
+            << "2026-10-07)." << exit(FatalError);
+    }
+    s23VolEvents_ = 0;
+    s23StretchEvents_ = 0;
+    s23VolEventsTotal_ = 0;
+    s23StretchEventsTotal_ = 0;
+    s23A1Deferred_ = 0;
+    s23RCells_ = 0;
+    s23RMax_ = 0;
+    s23RP50_ = 0;
+    s23RP90_ = 0;
+    s23RP99_ = 0;
+    s23TornCells_ = 0;
+    s23TornFaces_ = 0;
+    s23ContentResInt_ = 0;
+    s23OutfluxInt_ = 0;
+    s23ContentV0_ = -1;
+    s23F1WDev_[0] = 0;
+    s23F1WDev_[1] = 0;
+    s23F1WCells_[0] = -1;
+    s23F1WCells_[1] = -1;
+    s23F1WZeroOcc_ = 0;
+    s23PtUsedIndex_ = -1;
+
+    // ---- S23 rev. 4.1 section 13.2 item 4: R3 IS REQUIRED ON THIS BUILD --
+    // R3 (the Kelvin-Voigt network viscosity) is physically required: fibrin
+    // tan delta is 0.67-4.7 (sources 93 and 94; S24 physics 02), and R3 is
+    // what holds the fringe on the real row (report 18, R3/Kd 28-307). So
+    // networkViscosity none -- the default when the key is absent -- is the
+    // tan delta -> 0 sensitivity limit, not physics, and runs only when
+    // labelled with sensitivityLimit tanDelta0. kelvinVoigt needs an
+    // explicit tau_v >= 5e-4 s (the physics-assured floor; the default
+    // 2.5e-4 s is below it, and the check above is only tau_v > 0). The
+    // marker labels the R3-OFF limit only, so it is refused with
+    // kelvinVoigt (the CE, ratifying report 24: otherwise a marked
+    // kelvinVoigt with a tiny tau_v would waive the floor). 5e-4 exactly is
+    // accepted. Mirrors the generator's refusals (defence in depth against
+    // a hand-edited dictionary).
+    const scalar s23TauVFloor = 5e-4;
+    if
+    (
+        phaseClotProperties_.found("sensitivityLimit")
+     && sensitivityLimit_ != "tanDelta0"
+    )
+    {
+        FatalErrorInFunction
+            << "sensitivityLimit '" << sensitivityLimit_ << "' is not "
+            << "recognised: its only value is tanDelta0, the labelled tan "
+            << "delta -> 0 sensitivity limit (R3 off). Remove the key on "
+            << "every physics run (design 2026-10-07-S23 section 13.2 item "
+            << "4)." << exit(FatalError);
+    }
+    const bool s23Marked = sensitivityLimit_ == "tanDelta0";
+    if (s23Marked && networkViscosity_ != "none")
+    {
+        FatalErrorInFunction
+            << "sensitivityLimit tanDelta0 labels the R3-off (tan delta -> 0) "
+            << "sensitivity limit and is refused with networkViscosity "
+            << networkViscosity_ << ": the labelled arm runs networkViscosity "
+            << "none, and an R3-on child carries no marker (design "
+            << "2026-10-07-S23 section 13.2 item 4)." << exit(FatalError);
+    }
+    if (networkViscosity_ == "none" && !s23Marked)
+    {
+        FatalErrorInFunction
+            << "networkViscosity none (the default when the key is absent) "
+            << "is refused on the S23 build: R3, the Kelvin-Voigt network "
+            << "viscosity, is physically required (fibrin tan delta "
+            << "0.67-4.7, sources 93 and 94). Set networkViscosity "
+            << "kelvinVoigt with networkViscosityTau >= " << s23TauVFloor
+            << " s, or label the tan delta -> 0 sensitivity arm with "
+            << "sensitivityLimit tanDelta0 (design 2026-10-07-S23 section "
+            << "13.2 item 4)." << exit(FatalError);
+    }
+    if (networkViscosity_ == "kelvinVoigt" && !s23Marked)
+    {
+        if (!phaseClotProperties_.found("networkViscosityTau"))
+        {
+            FatalErrorInFunction
+                << "networkViscosity kelvinVoigt without an explicit "
+                << "networkViscosityTau is refused on the S23 build: the "
+                << "default " << networkViscosityTau_ << " s is below the "
+                << "physics-assured floor " << s23TauVFloor << " s (design "
+                << "2026-10-07-S23 section 13.2 item 4)." << exit(FatalError);
+        }
+        if (!(networkViscosityTau_ >= s23TauVFloor))
+        {
+            FatalErrorInFunction
+                << "networkViscosityTau " << networkViscosityTau_ << " s is "
+                << "below the S23 floor " << s23TauVFloor << " s (the "
+                << "physics-assured 5e-4 and 1.5e-3 s; design 2026-10-07-S23 "
+                << "section 13.2 item 4)." << exit(FatalError);
+        }
+    }
+
+    // ONE LINE, compared with child.json by assess_case.py. rev. 4.1: T is
+    // majority membership, with its threshold and d_p as the solver
+    // evaluates them, and the sensitivity marker (none when absent).
+    Info<< "PHASE_CLOT_S23_CONFIG"
+        << " volumetricTearRatio=" << volumetricTearRatio_
+        << " tornSet=" << "majorityIsSkel"
+        << " tornFace=" << "packingTimesMaterial"
+        << " progressiveCeiling=" << progressiveDamageCeiling()
+        << " tornThreshold="
+        << damagePartitionKernel::tornThreshold(progressiveDamageCeiling())
+        << " sensitivityLimit=" << sensitivityLimit_
+        << endl;
+
     {
         const scalar phi0 = skeletonVolumeFraction_;
         const scalar Kshell =
@@ -3435,9 +3570,31 @@ void Foam::solvers::phaseClotAxisymmetricFluid::ruptureOverstretchedNetwork()
         // "missing release" leg reads it (a pending share on one record and
         // a zero release on the next is a release that did not happen).
         scalar pendingAfter = 0;
+        // S23 section 2.1: the volumetric branch's population is the shipped
+        // isSkel (the block's isSkelB rule), and R_c is tested as a product.
+        // A1 writes thetaNetRef only where a volumetric firing resets it, so
+        // the reference field is not touched while nothing fires.
+        const scalar Rc = volumetricTearRatio_;
+        const scalarField& phiSkelI = phiSkel_.primitiveField();
+        scalarField* refW = nullptr;
+        label nVol = 0, nStretch = 0, nA1Deferred = 0;
+        std::vector<scalar> Rskel;
+        Rskel.reserve(bI.size());
         forAll(bI, celli)
         {
             const scalar theta = thetaC_[celli] + thetaH_[celli];
+            const bool isSkelC =
+                residualChi_ > 0
+              ? indI[celli] - 0.5*residualChi_ >= 0
+              : phiSkelI[celli] - 0.5*residualPhiS_ >= 0;
+            // R over isSkel, BEFORE any reset (section 2.5); theta > 0 is
+            // the quotient's own guard (isSkel implies it while residualChi
+            // > 0, but not on the phi_s rule).
+            if (isSkelC && theta > 0)
+            {
+                Rskel.push_back(refI[celli]/theta);
+            }
+            bool volTear = false;
             allContent += theta*vol[celli];
 
             const scalar sOld = oI[celli] + (oP[celli] + oB[celli]);
@@ -3463,12 +3620,52 @@ void Foam::solvers::phaseClotAxisymmetricFluid::ruptureOverstretchedNetwork()
                         dsLaw = 1.0 - exp(-(l1 - lf)/(2.0*dlf));
                     }
                 }
+                // S23 section 2.1, THE VOLUMETRIC BRANCH: d*_law = 1 also
+                // where (isSkel AND ref >= R_c theta), the product form (no
+                // division by theta); Eq. 6 of l1 otherwise, as above.
+                volTear = isSkelC && refI[celli] >= Rc*theta;
+                if (volTear)
+                {
+                    dsLaw = 1.0;
+                }
             }
 
             const scalar sC = pI[celli] + (pP[celli] + pB[celli]);
             const scalar ds = sC > 0 ? (pP[celli] + pB[celli])/sC : 0.0;
             const scalar d = sC > 0 ? pB[celli]/sC : 0.0;
             const scalar dsNew = max(ds, dsLaw);
+            // S23 section 2.5: ONE LINE PER EVENT, logged BEFORE the A1 reset
+            // (the C3 test and OI-55's metric read R here). An event is a
+            // volumetric firing (each one resets ref) or a NEW stretch tear.
+            const bool stretchTear =
+                present && sqrt(b1) >= lc && dsNew > ds;
+            if (sC > 0 && (volTear || stretchTear))
+            {
+                if (volTear) { ++nVol; }
+                if (stretchTear) { ++nStretch; }
+                const scalar phi0 = skeletonVolumeFraction_;
+                Info<< "PHASE_CLOT_S23_EVENT time="
+                    << runTime.userTimeValue()
+                    << " step=" << runTime.timeIndex()
+                    << " cell=" << celli
+                    << " x=" << mesh_.C()[celli].x()
+                    << " y=" << mesh_.C()[celli].y()
+                    << " branch="
+                    << (
+                           volTear && stretchTear ? "both"
+                         : volTear ? "volumetric" : "stretch"
+                       )
+                    << " R=" << (theta > 0 ? refI[celli]/theta : -1.0)
+                    << " theta=" << theta
+                    << " ref=" << refI[celli]
+                    << " ind=" << theta/phi0
+                    << " dStarBefore=" << ds
+                    << " d=" << d
+                    << " lambda1=" << sqrt(b1)
+                    << " lambdaF="
+                    << fibreReleaseKernel::eventStretch(b1, lc)
+                    << endl;
+            }
             // maxIntactStretch as S15 (every cell with network) and S14
             // (cells not ruptured) define it.
             if (present)
@@ -3737,6 +3934,29 @@ void Foam::solvers::phaseClotAxisymmetricFluid::ruptureOverstretchedNetwork()
                         bI[celli] = symmTensor::I;
                         ++nReset;
                     }
+                    // S23 A1 (report 10), THE SAME EVENT: a volumetric firing
+                    // has just set thetaIntact = sC (1 - 1) = 0 and be = I
+                    // (above, the S17 block kept verbatim); the reference now
+                    // takes the content present, ref <- theta, with nothing
+                    // read in between. The debris keeps no label-content
+                    // inconsistency (R = 1), so a later deposit cannot tear on
+                    // arrival. Force-neutral in its step (Pn = 0 before and
+                    // after). R was logged above, before this reset.
+                    if (volTear && pI[celli] == 0)
+                    {
+                        if (!refW)
+                        {
+                            refW = &thetaNetRef_.primitiveFieldRef();
+                        }
+                        (*refW)[celli] = theta;
+                    }
+                    else if (volTear)
+                    {
+                        // d* = 1 with a thetaIntact below half an ulp of the
+                        // partition sum (no pending share to release): no A1
+                        // this step; counted, not hidden.
+                        ++nA1Deferred;
+                    }
                 }
             }
             deltaD = max(deltaD, mag(dAfter - dOld));
@@ -3749,6 +3969,41 @@ void Foam::solvers::phaseClotAxisymmetricFluid::ruptureOverstretchedNetwork()
         thetaIntact_.correctBoundaryConditions();
         thetaPending_.correctBoundaryConditions();
         thetaBroken_.correctBoundaryConditions();
+        // S23 A1: the reset reference's patches follow its cells.
+        if (returnReduce(refW != nullptr, orOp<bool>()))
+        {
+            thetaNetRef_.correctBoundaryConditions();
+        }
+        // S23 section 2.5: the step's events, and R's max and quantiles over
+        // isSkel BEFORE the reset (serial: the design's S23 is serial).
+        reduce(nVol, sumOp<label>());
+        reduce(nStretch, sumOp<label>());
+        reduce(nA1Deferred, sumOp<label>());
+        s23VolEvents_ = nVol;
+        s23StretchEvents_ = nStretch;
+        s23VolEventsTotal_ += nVol;
+        s23StretchEventsTotal_ += nStretch;
+        s23A1Deferred_ += nA1Deferred;
+        s23RCells_ = label(Rskel.size());
+        s23RMax_ = 0;
+        s23RP50_ = 0;
+        s23RP90_ = 0;
+        s23RP99_ = 0;
+        if (!Rskel.empty())
+        {
+            const std::size_t nR = Rskel.size();
+            auto quantile = [&](const scalar q)
+            {
+                const std::size_t k =
+                    std::min(nR - 1, std::size_t(q*scalar(nR - 1) + 0.5));
+                std::nth_element(Rskel.begin(), Rskel.begin() + k, Rskel.end());
+                return Rskel[k];
+            };
+            s23RP50_ = quantile(0.5);
+            s23RP90_ = quantile(0.9);
+            s23RP99_ = quantile(0.99);
+            s23RMax_ = *std::max_element(Rskel.begin(), Rskel.end());
+        }
         syncDamageFromPartition("rupture law");
         {
             thetaPendingB_.correctBoundaryConditions();
@@ -4008,15 +4263,95 @@ void Foam::solvers::phaseClotAxisymmetricFluid::recordStressWeight(
     const scalarField& indI = indW.primitiveField();
     const scalarField& dI = ruptured_.primitiveField();
     const scalar floorW = skeletonSolidFloor_;
+    // S23 section 2.2: the two builders (sites 0 and 1) weight the torn set
+    // T with (1 - d*) (rev. 4.1: majority T, d* <= 1); the tangent bound
+    // (site 2) keeps (1 - d).
+    boolList tornW;
+    scalarField sTornW, dsW;
+    const bool tornRef =
+        site < 2 && tornNetworkCells(tornW, sTornW, &dsW) > 0;
     scalar absDev = 0;
     forAll(wUsed, celli)
     {
         const scalar occ = max(indI[celli], floorW);
-        absDev = max(absDev, mag(wUsed[celli] - occ*(1.0 - dI[celli])));
+        const scalar dRef =
+            tornRef && tornW[celli] ? dsW[celli] : dI[celli];
+        absDev = max(absDev, mag(wUsed[celli] - occ*(1.0 - dRef)));
     }
     reduce(absDev, maxOp<scalar>());
     s16WeightAbsDevMax_ = max(s16WeightAbsDevMax_, absDev);
     s16WeightSites_ |= (1 << site);
+}
+
+
+// S23 rev. 4.1 F1' (design section 13.4 G23-5; red team 21 change 7).
+void Foam::solvers::phaseClotAxisymmetricFluid::recordTornWeight(
+    const scalarField& wUsed,
+    const label site
+) const
+{
+    // On T: w/max(ind, floor) = aI, to round-off, for the weight AS CONSUMED
+    // -- called at each builder after applyTornStressWeight() and
+    // recordStressWeight(), with no write to the weight after it. aI is
+    // intactShare(), the share the face correction weights Pt with. The
+    // maximum since the last PHASE_CLOT_S23 line, per site; the largest |T|
+    // a call examined; a zero occupancy is counted, never divided.
+    boolList tornF;
+    scalarField sTornF, dsF, indF;
+    const label nTF = tornNetworkCells(tornF, sTornF, &dsF, &indF);
+    s23F1WCells_[site] = max(s23F1WCells_[site], nTF);
+    if (nTF == 0)
+    {
+        return;
+    }
+    const volScalarField aIF(intactShare());
+    const scalarField& aIW = aIF.primitiveField();
+    const scalar floorF = skeletonSolidFloor_;
+    scalar devF = 0;
+    label nZeroF = 0;
+    forAll(wUsed, celli)
+    {
+        if (!tornF[celli])
+        {
+            continue;
+        }
+        const scalar occF = max(indF[celli], floorF);
+        if (occF > 0)
+        {
+            devF = max
+            (
+                devF,
+                damagePartitionKernel::f1WeightDeviation
+                (
+                    wUsed[celli], occF, aIW[celli]
+                )
+            );
+        }
+        else
+        {
+            ++nZeroF;
+        }
+    }
+    reduce(devF, maxOp<scalar>());
+    reduce(nZeroF, sumOp<label>());
+    s23F1WDev_[site] = max(s23F1WDev_[site], devF);
+    s23F1WZeroOcc_ = max(s23F1WZeroOcc_, nZeroF);
+}
+
+
+Foam::scalar
+Foam::solvers::phaseClotAxisymmetricFluid::progressiveDamageCeiling() const
+{
+    // S23 rev. 4.1 section 13.2 item 1: d_p is the progressive branch of the
+    // rupture law (ruptureOverstretchedNetwork(): 1 - exp(-(l1 - lf)/(2
+    // dlf)) for lf < l1 < lc) at its upper end l1 = lc, evaluated from the
+    // law's parameters, never as a literal (0.2936 at 2.8/2.105/1.0).
+    return damagePartitionKernel::progressiveCeiling
+    (
+        networkCriticalStretch_,
+        networkDamageOnsetStretch_,
+        networkDamageStretchScale_
+    );
 }
 
 
@@ -5321,7 +5656,11 @@ Foam::solvers::phaseClotAxisymmetricFluid::skeletonFaceStress() const
         // S16 B: max(ind, floor)*(1 - d) -- the floor guards occupancy only.
         w = skeletonStressWeight();
     }
+    // S23: T's weight uses d* (one weight with elasticStress()'s).
+    applyTornStressWeight(w);
     recordStressWeight(w.primitiveField(), 0);
+    // S23 rev. 4.1 F1': the weight as consumed (nothing writes w after).
+    recordTornWeight(w.primitiveField(), 0);
     const volScalarField gD(sqr(1.0 - Dg_) + etaRes_);
     volSymmTensorField S("sigmaDevIntrinsic", gD*GField_*dev(be_));
     {
@@ -5376,6 +5715,11 @@ Foam::solvers::phaseClotAxisymmetricFluid::skeletonElasticForceFlux() const
         tf.ref() -= fvc::snGrad(networkPartialPressure())*mesh.magSf()/rho_;
     }
 
+    // S23 section 2.2: S22's fSigE above is computed first and left as it
+    // is; then ONLY the faces with a torn side (c_f = 0) are overwritten.
+    // While T is empty no face is visited: bitwise S22.
+    correctTornFaces(tf.ref(), nullptr);
+
     return tf;
 }
 
@@ -5405,7 +5749,268 @@ Foam::solvers::phaseClotAxisymmetricFluid::skeletonElasticForceCell() const
             )/rho_;
     }
 
+    // S23 section 2.2, PARITY: the same torn-face correction, added as
+    // reconstruct(delta f), delta f = (overwritten - S22) on the torn faces
+    // and exactly 0 on every other face. Guarded by "any torn face", so
+    // that with T empty nothing is added (no -0 + 0 can flip a bit). The
+    // S22 face values are rebuilt from this function's own divergence (the
+    // field skeletonElasticForceFlux() interpolates), before the pressure
+    // term above was subtracted from tc.
+    {
+        boolList tornC;
+        scalarField sTornC;
+        if (tornNetworkCells(tornC, sTornC) > 0)
+        {
+            const volVectorField divSigmaE
+            (
+                "divSigmaE",
+                fvc::surfaceIntegrateExtrapolate
+                (
+                    mesh.Sf() & skeletonFaceStress()
+                )/rho_
+            );
+            surfaceScalarField fS22
+            (
+                "fSigmaES22",
+                fvc::interpolate(divSigmaE) & mesh.Sf()
+            );
+            fS22 -= fvc::snGrad(networkPartialPressure())*mesh.magSf()/rho_;
+            surfaceScalarField dF
+            (
+                IOobject
+                (
+                    "tornFaceDelta", mesh.time().name(), mesh,
+                    IOobject::NO_READ, IOobject::NO_WRITE, false
+                ),
+                mesh,
+                dimensionedScalar(fS22.dimensions(), 0)
+            );
+            if (correctTornFaces(fS22, &dF) > 0)
+            {
+                tc.ref() += fvc::reconstruct(dF);
+            }
+        }
+    }
+
     return tc;
+}
+
+
+Foam::label Foam::solvers::phaseClotAxisymmetricFluid::tornNetworkCells(
+    boolList& torn,
+    scalarField& sTorn,
+    scalarField* dStar,
+    scalarField* indOut
+) const
+{
+    // S23 rev. 4.1 section 13.2 item 1 (report 15: T as (d* = 1) emptied one
+    // step after each tear, because the upwind partition refills pI from an
+    // intact donor): T_P = isSkel_P AND d*_P >= (1 + d_p)/2, MAJORITY
+    // membership, d_p the progressive law's ceiling from the law's own
+    // expression (progressiveDamageCeiling()). Identical to rev. 3 at d* =
+    // 1; never true on progressive-only damage (d* <= d_p). WITHOUT the
+    // presence test (re-check 11 change 1: after A1 a torn cell with theta
+    // <= 1e-4 reads present = false, and T must not hand it S22's push
+    // back). d* is the rupture law's own expression, (thP + thB)/S with S =
+    // thI + (thP + thB), 0 where S = 0; isSkel is the block's (isSkelB)
+    // rule. s_X = (1 - d*_X) + d*_X ind_X is the packing scale (rule 3).
+    const volScalarField indTorn(phaseIndicator());
+    const scalarField& ind = indTorn.primitiveField();
+    const scalarField& phiSI = phiSkel_.primitiveField();
+    const scalarField& pI = thetaIntact_.primitiveField();
+    const scalarField& pP = thetaPending_.primitiveField();
+    const scalarField& pB = thetaBroken_.primitiveField();
+    const scalar thrT =
+        damagePartitionKernel::tornThreshold(progressiveDamageCeiling());
+    torn.setSize(ind.size());
+    sTorn.setSize(ind.size());
+    if (dStar)
+    {
+        dStar->setSize(ind.size());
+    }
+    if (indOut)
+    {
+        *indOut = ind;
+    }
+    label nT = 0;
+    forAll(ind, celli)
+    {
+        const scalar S = pI[celli] + (pP[celli] + pB[celli]);
+        const scalar ds = S > 0 ? (pP[celli] + pB[celli])/S : 0.0;
+        const bool isSkelC =
+            residualChi_ > 0
+          ? ind[celli] - 0.5*residualChi_ >= 0
+          : phiSI[celli] - 0.5*residualPhiS_ >= 0;
+        torn[celli] = damagePartitionKernel::tornMember(isSkelC, ds, thrT);
+        sTorn[celli] = (1.0 - ds) + ds*ind[celli];
+        if (dStar)
+        {
+            (*dStar)[celli] = ds;
+        }
+        if (torn[celli])
+        {
+            ++nT;
+        }
+    }
+    return returnReduce(nT, sumOp<label>());
+}
+
+
+void Foam::solvers::phaseClotAxisymmetricFluid::applyTornStressWeight
+(
+    volScalarField& w
+) const
+{
+    // S23 rev. 4.1 section 13.2 item 2 (re-check 11 change 3; report 16): at
+    // the two builders of the one deviatoric weight (skeletonFaceStress(),
+    // elasticStress()), T's weight is max(ind, floor)*(1 - d*), not the
+    // relaxing (1 - d): otherwise the neighbour's divergence keeps the torn
+    // face's stress for ~3 tau. Under majority T this is not 0 (w = 0 would
+    // give a member's dense neighbours a free face, report 16); at d* = 1 it
+    // is +0.0, rev. 3's value bit for bit. A T cell's own patch faces carry
+    // the cell's value (d* follows the cell as d does). Every other reader
+    // of intactFraction() keeps (1 - d).
+    boolList torn;
+    scalarField sTorn, dsT, indT;
+    if (tornNetworkCells(torn, sTorn, &dsT, &indT) == 0)
+    {
+        return;
+    }
+    const scalar floorT = skeletonSolidFloor_;
+    scalarField& wI = w.primitiveFieldRef();
+    forAll(torn, celli)
+    {
+        if (torn[celli])
+        {
+            wI[celli] = damagePartitionKernel::tornStressWeight
+            (
+                indT[celli], floorT, dsT[celli]
+            );
+        }
+    }
+    forAll(w.boundaryField(), patchi)
+    {
+        fvPatchScalarField& wp = w.boundaryFieldRef()[patchi];
+        if (wp.coupled())
+        {
+            continue;
+        }
+        const labelUList& fc = wp.patch().faceCells();
+        forAll(wp, facei)
+        {
+            if (torn[fc[facei]])
+            {
+                wp[facei] = wI[fc[facei]];
+            }
+        }
+    }
+}
+
+
+Foam::label Foam::solvers::phaseClotAxisymmetricFluid::correctTornFaces
+(
+    surfaceScalarField& fSigE,
+    surfaceScalarField* delta
+) const
+{
+    // S23 section 2.2 (report 09 section 1; re-check 11 change 6). On every
+    // face with a T side, c_f = 0 (internal faces, and the active boundary
+    // faces T owns), and only there:
+    //   fSigE_f = c_f [interp(D).S]_f
+    //           - s_f [snGrad(Pn)_f - (1 - c_f) dc_f (Pt_N - Pt_P)] |S_f|/rho
+    // with c_f = 0 (T is binary), so the deviatoric part is gone (rule 1),
+    // the two-point tension is removed from the corrected snGrad (rule 2)
+    // and the packing push is scaled by s_f = min(s_P, s_N) (rule 3; s_f =
+    // ind of the torn side on a T|intact face). Pt = aI min(Wp, 0), the
+    // tension branch; dc_f the nonOrthDeltaCoeffs. On a boundary face the
+    // N side is the patch value, as snGrad's own boundary form takes it.
+    // Products only: no new denominator but rho.
+    boolList torn;
+    scalarField sX;
+    const label nT = tornNetworkCells(torn, sX);
+    s23TornCells_ = nT;
+    s23TornFaces_ = 0;
+    if (nT == 0)
+    {
+        return 0;
+    }
+
+    const volScalarField Pn(networkPartialPressure());
+    const surfaceScalarField gPn(fvc::snGrad(Pn));
+    const volScalarField pnU(networkPartialPressureUndamaged());
+    const volScalarField Pt
+    (
+        "tensionBranch",
+        intactShare()*min(pnU, dimensionedScalar(pnU.dimensions(), 0))
+    );
+    const scalarField& PtI = Pt.primitiveField();
+    // S23 rev. 4.1 F1': the Pt this correction consumes, as PHASE_CLOT_S23
+    // reads it (f1PtDev against aI min(Wp, 0), recomputed there).
+    s23PtUsed_ = PtI;
+    s23PtUsedIndex_ = mesh.time().timeIndex();
+    const surfaceScalarField& dcF = mesh.nonOrthDeltaCoeffs();
+    const scalarField& dc = dcF.primitiveField();
+    const scalarField& magS = mesh.magSf().primitiveField();
+    const labelUList& own = mesh.owner();
+    const labelUList& nei = mesh.neighbour();
+    const scalar rho = rho_.value();
+
+    scalarField& f = fSigE.primitiveFieldRef();
+    label nF = 0;
+    forAll(own, facei)
+    {
+        const label o = own[facei];
+        const label n = nei[facei];
+        if (!(torn[o] || torn[n]))
+        {
+            continue;
+        }
+        const scalar sf = min(sX[o], sX[n]);
+        const scalar fNew =
+           -sf*(gPn[facei] - dc[facei]*(PtI[n] - PtI[o]))*magS[facei]/rho;
+        if (delta)
+        {
+            delta->primitiveFieldRef()[facei] = fNew - f[facei];
+        }
+        f[facei] = fNew;
+        ++nF;
+    }
+    forAll(fSigE.boundaryField(), patchi)
+    {
+        fvsPatchScalarField& fp = fSigE.boundaryFieldRef()[patchi];
+        const labelUList& fc = mesh.boundary()[patchi].faceCells();
+        const scalarField& dcp = dcF.boundaryField()[patchi];
+        const scalarField& msp = mesh.magSf().boundaryField()[patchi];
+        const scalarField& gp = gPn.boundaryField()[patchi];
+        const scalarField& Ptp = Pt.boundaryField()[patchi];
+        forAll(fp, facei)
+        {
+            const label o = fc[facei];
+            if (!torn[o])
+            {
+                continue;
+            }
+            if (fp.coupled())
+            {
+                FatalErrorInFunction
+                    << "S23: torn cell " << o << " owns a face of coupled "
+                    << "patch " << mesh.boundary()[patchi].name() << ". The "
+                    << "torn-face correction is serial and uncoupled (design "
+                    << "2026-10-07-S23 section 5)." << exit(FatalError);
+            }
+            const scalar fNew =
+               -sX[o]*(gp[facei] - dcp[facei]*(Ptp[facei] - PtI[o]))
+               *msp[facei]/rho;
+            if (delta)
+            {
+                delta->boundaryFieldRef()[patchi][facei] = fNew - fp[facei];
+            }
+            fp[facei] = fNew;
+            ++nF;
+        }
+    }
+    s23TornFaces_ = returnReduce(nF, sumOp<label>());
+    return s23TornFaces_;
 }
 
 
@@ -5563,12 +6168,16 @@ Foam::solvers::phaseClotAxisymmetricFluid::fctLimiter
         const scalar VbyDt = V[celli]/dt;
         const scalar Qp = (hi[celli] - fL[celli])*VbyDt*keep;
         const scalar Qm = (fL[celli] - lo[celli])*VbyDt*keep;
+        // S23 section 2.3 (OI-53): the quotient is formed only where it is
+        // below 1 (P > Q >= tiny), so no Q/P can overflow (Q = 4, P =
+        // DBL_MIN trapped S22 here); elsewhere 1 or 0 as S22 gave them, bit
+        // for bit (report 09 section 4: 0 differences in 15.48M cases).
         Rp[celli] =
             Qp < tiny ? 0.0
-          : Pp[celli] > 0 ? min(scalar(1), Qp/Pp[celli]) : 1.0;
+          : Pp[celli] > Qp ? Qp/Pp[celli] : 1.0;
         Rm[celli] =
             Qm < tiny ? 0.0
-          : Pm[celli] > 0 ? min(scalar(1), Qm/Pm[celli]) : 1.0;
+          : Pm[celli] > Qm ? Qm/Pm[celli] : 1.0;
     }
 
     tmp<surfaceScalarField> tlambda
@@ -7278,7 +7887,11 @@ Foam::solvers::phaseClotAxisymmetricFluid::elasticStress() const
         // S16 B: max(ind, floor)*(1 - d), as skeletonFaceStress() builds it.
         phiS = skeletonStressWeight();
     }
+    // S23: T's weight uses d*, exactly as skeletonFaceStress() applies it.
+    applyTornStressWeight(phiS);
     recordStressWeight(phiS.primitiveField(), 1);
+    // S23 rev. 4.1 F1': the weight as consumed (nothing writes phiS after).
+    recordTornWeight(phiS.primitiveField(), 1);
 
     // THE VOLUMETRIC PART, ON THE TWO-VELOCITY PATH ONLY.
     //
@@ -13892,6 +14505,353 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveBlockCoupledStep()
                 << " noDiluteNetworkCell" << endl;
         }
     }
+
+    // ---- S23 section 2.5: PHASE_CLOT_S23, ONE LINE PER STEP ----
+    // The event side (counts, R before the A1 reset) comes from this step's
+    // ruptureOverstretchedNetwork(); the rest is measured here on the Vs and
+    // U this block solve leaves. Every quotient is guarded on its own
+    // denominator (a zero is counted, not divided).
+    {
+        boolList tornL;
+        scalarField sTornL, dsL;
+        const label nTornL = tornNetworkCells(tornL, sTornL, &dsL);
+        const scalar dtS = runTime.deltaTValue();
+        const scalarField& KdS = KdB.primitiveField();
+        const scalarField& KresS = KresB.primitiveField();
+        const scalarField& refS = thetaNetRef_.primitiveField();
+        const scalarField& pIS = thetaIntact_.primitiveField();
+        const scalarField& pPS = thetaPending_.primitiveField();
+        const scalarField& pBS = thetaBroken_.primitiveField();
+        const scalarField& dS = ruptured_.primitiveField();
+        const volScalarField aIS(intactShare());
+        const volScalarField pnUS(networkPartialPressureUndamaged());
+        const scalar phi0S = skeletonVolumeFraction_;
+        const scalar diluteHi = 0.1;
+
+        scalar maxUS = 0;
+        scalar tornSlip = 0, tornVsOverU = 0, tornKresOverKd = 0;
+        scalar tornAI = 0, tornPt = 0;
+        label tornZeroU = 0, tornZeroKd = 0;
+        // S23 rev. 4.1 (re-check 23 R3): G23-7's maximum is printed with its
+        // cell, so a failing step names the cell; -1 when no T cell has Kd > 0.
+        label tornKresCell = -1;
+        label wS = -1;
+        scalar wVs = -1;
+        label diluteN = 0;
+        scalar diluteSlip = 0, diluteVs = 0;
+        for (label i = 0; i < nC; ++i)
+        {
+            const scalar magU = mag(U[i]);
+            const scalar magVs = mag(Vs_[i]);
+            const scalar slip = mag(Vs_[i] - U[i]);
+            maxUS = max(maxUS, magU);
+            if (tornL[i])
+            {
+                tornSlip = max(tornSlip, slip);
+                if (magU > 0)
+                {
+                    tornVsOverU = max(tornVsOverU, magVs/magU);
+                }
+                else
+                {
+                    ++tornZeroU;
+                }
+                if (KdS[i] > 0)
+                {
+                    const scalar kresOverKd = KresS[i]/KdS[i];
+                    if (kresOverKd > tornKresOverKd)
+                    {
+                        tornKresOverKd = kresOverKd;
+                        tornKresCell = i;
+                    }
+                }
+                else
+                {
+                    ++tornZeroKd;
+                }
+                // rev. 3's G23-5 F1 (aI = 0 and Pt = 0 in T). Under rev.
+                // 4.1's majority T these are the largest intact share and
+                // tension on T, not 0; F1' (f1W*, f1Pt*) is the identity.
+                tornAI = max(tornAI, mag(aIS[i]));
+                tornPt = max(tornPt, mag(aIS[i]*min(pnUS[i], scalar(0))));
+            }
+            if (isSkelB[i] > 0.5)
+            {
+                if (magVs > wVs)
+                {
+                    wVs = magVs;
+                    wS = i;
+                }
+                // the dilute band, down to the isSkel edge (ind 1.111e-4)
+                if (indBI[i] <= diluteHi)
+                {
+                    ++diluteN;
+                    diluteSlip = max(diluteSlip, slip);
+                    diluteVs = max(diluteVs, magVs);
+                }
+            }
+        }
+
+        // S23 rev. 4.1 section 13.2 item 6 (red team 21 change 3): the gate
+        // populations on this step's END-OF-STEP partition (transport in
+        // solvePhaseField(), the event in solveElasticStrain(), then this
+        // block solve; with nOuterCorrectors 1 nothing writes the partition
+        // after it in the step). Pi: isSkel cells within two point-neighbour
+        // rings of a T cell (Chebyshev 2 on the quad mesh), T included;
+        // outside Pi: every other isSkel cell; M, the minority-torn class:
+        // isSkel AND d_p < d* < (1 + d_p)/2. Each: max |Vs|/maxU with its
+        // cell and its slip |Vs - U|; -1 for all three when the population
+        // is empty, and the ratio -1 when maxU is 0 (not divided).
+        const scalar dpL = progressiveDamageCeiling();
+        const scalar thrL = damagePartitionKernel::tornThreshold(dpL);
+        const int piRings = 2;
+        std::vector<char> seedL(nC, 0);
+        for (label i = 0; i < nC; ++i)
+        {
+            seedL[i] = tornL[i] ? 1 : 0;
+        }
+        std::vector<int> ringL;
+        damagePartitionKernel::pointRings
+        (
+            mesh.cellPoints(), mesh.pointCells(), seedL, piRings, ringL
+        );
+        label nPiL = 0;
+        label piCellL = -1, outPiCellL = -1, mCellL = -1;
+        scalar piVsL = -1, outPiVsL = -1, mVsL = -1;
+        for (label i = 0; i < nC; ++i)
+        {
+            if (!(isSkelB[i] > 0.5))
+            {
+                continue;
+            }
+            const scalar magVs = mag(Vs_[i]);
+            if (ringL[i] <= piRings)
+            {
+                ++nPiL;
+                if (magVs > piVsL)
+                {
+                    piVsL = magVs;
+                    piCellL = i;
+                }
+            }
+            else if (magVs > outPiVsL)
+            {
+                outPiVsL = magVs;
+                outPiCellL = i;
+            }
+            if (dsL[i] > dpL && dsL[i] < thrL && magVs > mVsL)
+            {
+                mVsL = magVs;
+                mCellL = i;
+            }
+        }
+        // F1' Pt: the field the face correction consumed this step, against
+        // aI min(Wp, 0) recomputed here. Cells -1: T is not empty but the
+        // correction did not run on this step's partition.
+        scalar f1PtDevL = 0;
+        label f1PtCellsL = 0;
+        if (nTornL > 0)
+        {
+            if
+            (
+                s23PtUsedIndex_ == runTime.timeIndex()
+             && s23PtUsed_.size() == nC
+            )
+            {
+                for (label i = 0; i < nC; ++i)
+                {
+                    if (tornL[i])
+                    {
+                        ++f1PtCellsL;
+                        f1PtDevL = max
+                        (
+                            f1PtDevL,
+                            mag
+                            (
+                                s23PtUsed_[i]
+                              - aIS[i]*min(pnUS[i], scalar(0))
+                            )
+                        );
+                    }
+                }
+            }
+            else
+            {
+                f1PtCellsL = -1;
+            }
+        }
+
+        // THE WORST CELL (argmax |Vs| over isSkel): its per-term force, per
+        // unit mass like FelB, each as a magnitude. packing/tension are the
+        // S22 split of the pressure force, -reconstruct(snGrad(.)|S|)/rho;
+        // devInterp/devOwn the interpolated and own divergence of the face
+        // stress; fel the APPLIED force (after the torn-face correction);
+        // drag/kres K|Vs - U|; r3 the R3 force/V.
+        scalar wPack = 0, wTens = 0, wDevI = 0, wDevO = 0, wFel = 0;
+        scalar wDrag = 0, wKres = 0, wR3 = 0, wWall = -1;
+        scalar wR = -1, wDs = 0, wInd = 0, wD = 0;
+        if (wS >= 0)
+        {
+            const volScalarField PpackS
+            (
+                "PpackS",
+                max(pnUS, dimensionedScalar(pnUS.dimensions(), 0))
+            );
+            const volScalarField PtS
+            (
+                "PtS",
+                aIS*min(pnUS, dimensionedScalar(pnUS.dimensions(), 0))
+            );
+            const volVectorField divSigmaS
+            (
+                "divSigmaS",
+                fvc::surfaceIntegrateExtrapolate
+                (
+                    mesh.Sf() & skeletonFaceStress()
+                )/rho_
+            );
+            wPack = mag
+            (
+                fvc::reconstruct(fvc::snGrad(PpackS)*mesh.magSf())()[wS]
+            )/rho_.value();
+            wTens = mag
+            (
+                fvc::reconstruct(fvc::snGrad(PtS)*mesh.magSf())()[wS]
+            )/rho_.value();
+            wDevI = mag
+            (
+                fvc::reconstruct(fvc::interpolate(divSigmaS) & mesh.Sf())()[wS]
+            );
+            wDevO = mag(divSigmaS[wS]);
+            wFel = mag(FelB[wS]);
+            const scalar slipW = mag(Vs_[wS] - U[wS]);
+            wDrag = KdS[wS]*slipW;
+            wKres = KresS[wS]*slipW;
+            if (coef.r3)
+            {
+                std::vector<blockCoupled::LsqRow> lsqS;
+                blockCoupled::lsqRows(bm, lsqS);
+                std::vector<double> vxS(nC), vyS(nC), fxS, fyS;
+                for (label i = 0; i < nC; ++i)
+                {
+                    vxS[i] = Vs_[i].x();
+                    vyS[i] = Vs_[i].y();
+                }
+                blockCoupled::r3Force(bm, coef, lsqS, vxS, vyS, fxS, fyS);
+                wR3 = sqrt(sqr(fxS[wS]) + sqr(fyS[wS]))/mesh.V()[wS];
+            }
+            forAll(mesh.boundary(), patchi)
+            {
+                if (!isA<wallFvPatch>(mesh.boundary()[patchi]))
+                {
+                    continue;
+                }
+                const vectorField& Cfw = mesh.boundary()[patchi].Cf();
+                forAll(Cfw, facei)
+                {
+                    const scalar dist = mag(Cfw[facei] - mesh.C()[wS]);
+                    wWall = wWall < 0 ? dist : min(wWall, dist);
+                }
+            }
+            const scalar thetaW = thetaC_[wS] + thetaH_[wS];
+            wR = thetaW > 0 ? refS[wS]/thetaW : -1.0;
+            const scalar SW = pIS[wS] + (pPS[wS] + pBS[wS]);
+            wDs = SW > 0 ? (pPS[wS] + pBS[wS])/SW : 0.0;
+            wInd = thetaW/phi0S;
+            wD = dS[wS];
+        }
+
+        Info<< "PHASE_CLOT_S23 time=" << runTime.userTimeValue()
+            << " step=" << runTime.timeIndex()
+            << " deltaT=" << dtS
+            << " volumetricTearRatio=" << volumetricTearRatio_
+            << " volEvents=" << s23VolEvents_
+            << " stretchEvents=" << s23StretchEvents_
+            << " volEventsTotal=" << s23VolEventsTotal_
+            << " stretchEventsTotal=" << s23StretchEventsTotal_
+            << " a1Deferred=" << s23A1Deferred_
+            << " tornCells=" << nTornL
+            << " tornFaces=" << s23TornFaces_
+            << " RCells=" << s23RCells_
+            << " RMax=" << s23RMax_
+            << " RP50=" << s23RP50_
+            << " RP90=" << s23RP90_
+            << " RP99=" << s23RP99_
+            << " tornMaxSlip=" << tornSlip
+            << " tornMaxVsOverU=" << tornVsOverU
+            << " tornZeroUCells=" << tornZeroU
+            << " tornMaxKresOverKd=" << tornKresOverKd
+            << " tornMaxKresOverKdCell=" << tornKresCell
+            << " tornZeroKdCells=" << tornZeroKd
+            << " tornMaxAI=" << tornAI
+            << " tornMaxAbsPt=" << tornPt
+            << " maxU=" << maxUS
+            << " worstCell=" << wS
+            << " worstX=" << (wS >= 0 ? mesh.C()[wS].x() : 0.0)
+            << " worstY=" << (wS >= 0 ? mesh.C()[wS].y() : 0.0)
+            << " worstVs=" << (wS >= 0 ? wVs : 0.0)
+            << " worstVsOverMaxU="
+            << (wS >= 0 && maxUS > 0 ? wVs/maxUS : -1.0)
+            << " worstTorn=" << (wS >= 0 && tornL[wS] ? 1 : 0)
+            << " worstR=" << wR
+            << " worstInd=" << wInd
+            << " worstDStar=" << wDs
+            << " worstD=" << wD
+            << " worstWallDist=" << wWall
+            << " worstPacking=" << wPack
+            << " worstTension=" << wTens
+            << " worstDevInterp=" << wDevI
+            << " worstDevOwn=" << wDevO
+            << " worstFel=" << wFel
+            << " worstDrag=" << wDrag
+            << " worstKres=" << wKres
+            << " worstR3=" << wR3
+            << " diluteLow=" << 0.5*residualChi_
+            << " diluteHigh=" << diluteHi
+            << " diluteCells=" << diluteN
+            << " diluteMaxSlip=" << diluteSlip
+            << " diluteMaxVsOverMaxU="
+            << (maxUS > 0 ? diluteVs/maxUS : -1.0)
+            // through the previous step's PHASE_CLOT_CONTENT_BALANCE
+            << " contentResidualIntOverV0="
+            << (s23ContentV0_ > 0 ? s23ContentResInt_/s23ContentV0_ : -1.0)
+            << " outfluxIntOverV0="
+            << (s23ContentV0_ > 0 ? s23OutfluxInt_/s23ContentV0_ : -1.0)
+            << " contentV0=" << s23ContentV0_
+            // S23 rev. 4.1 section 13.2 item 6: the gate populations
+            << " piCells=" << nPiL
+            << " piMaxVsOverMaxU="
+            << (piCellL >= 0 && maxUS > 0 ? piVsL/maxUS : -1.0)
+            << " piMaxVsCell=" << piCellL
+            << " piMaxVsSlip="
+            << (piCellL >= 0 ? mag(Vs_[piCellL] - U[piCellL]) : -1.0)
+            << " outPiMaxVsOverMaxU="
+            << (outPiCellL >= 0 && maxUS > 0 ? outPiVsL/maxUS : -1.0)
+            << " outPiMaxVsCell=" << outPiCellL
+            << " outPiMaxVsSlip="
+            << (outPiCellL >= 0 ? mag(Vs_[outPiCellL] - U[outPiCellL]) : -1.0)
+            << " minorityMaxVsOverMaxU="
+            << (mCellL >= 0 && maxUS > 0 ? mVsL/maxUS : -1.0)
+            << " minorityMaxVsCell=" << mCellL
+            << " minorityMaxVsSlip="
+            << (mCellL >= 0 ? mag(Vs_[mCellL] - U[mCellL]) : -1.0)
+            // F1' at both builders, since the previous line, and Pt
+            << " f1WSite0Dev=" << s23F1WDev_[0]
+            << " f1WSite0Cells=" << s23F1WCells_[0]
+            << " f1WSite1Dev=" << s23F1WDev_[1]
+            << " f1WSite1Cells=" << s23F1WCells_[1]
+            << " f1WZeroOccCells=" << s23F1WZeroOcc_
+            << " f1PtDev=" << f1PtDevL
+            << " f1PtCells=" << f1PtCellsL
+            << endl;
+        // F1' accumulates per line: the next line reports the next step's
+        // builder calls (and any made after this line in this step).
+        s23F1WDev_[0] = 0;
+        s23F1WDev_[1] = 0;
+        s23F1WCells_[0] = -1;
+        s23F1WCells_[1] = -1;
+        s23F1WZeroOcc_ = 0;
+    }
 }
 
 
@@ -14968,6 +15928,15 @@ void Foam::solvers::phaseClotAxisymmetricFluid::writeBalanceDiagnostic()
       + contentOuterFlux
       - contentTransferRate
       + detachedContentRate;
+
+    // S23 G23-6: int |residual| dt and int outflux dt, over V0 = the first
+    // contentVolume; PHASE_CLOT_S23 prints them.
+    if (s23ContentV0_ < 0)
+    {
+        s23ContentV0_ = contentVolume;
+    }
+    s23ContentResInt_ += mag(contentResidual)*deltaT;
+    s23OutfluxInt_ += contentOuterFlux*deltaT;
 
     Info<< "PHASE_CLOT_CONTENT_BALANCE"
         << " time=" << runTime.name()
@@ -16881,6 +17850,9 @@ void Foam::solvers::phaseClotAxisymmetricFluid::reportSkeletonVelocity()
     scalar maxVsAny = -1;
     vector maxVsPos = Zero;
     label maxVsIsClot = 0;
+    // S23 (G23-1, recoil-aware): |Vs - U| at the same whole-field max-|Vs|
+    // cell, so a step whose maximum sits in a recoil window is judged exactly.
+    scalar maxVsSlip = 0;
     {
         const vectorField& cc = mesh_.C().primitiveField();
         forAll(vsIn, celli)
@@ -16896,6 +17868,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::reportSkeletonVelocity()
                 maxVsAny = m;
                 maxVsPos = cc[celli];
                 maxVsIsClot = inClot ? 1 : 0;
+                maxVsSlip = mag(vsIn[celli] - UIn[celli]);
             }
         }
         reduce(maxVsClot, maxOp<scalar>());
@@ -16917,6 +17890,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::reportSkeletonVelocity()
         << " maxVsInClot=" << maxVsIsClot
         << " maxVsX=" << maxVsPos.x()
         << " maxVsY=" << maxVsPos.y()
+        << " maxVsSlip=" << maxVsSlip
         << endl;
 
     // THE DILUTE BAND, REPORTED SO IT DOES NOT HAVE TO BE RECOVERED FROM THE

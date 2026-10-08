@@ -114,12 +114,14 @@ inline void limiterR1
         // p4-dtransport L118-119 with V = Vrel and dt = 1.
         const Scalar Qp = (hi[c] - xL[c])*Vrel[c]*keep;
         const Scalar Qm = (xL[c] - lo[c])*Vrel[c]*keep;
+        // S23 section 2.3 (OI-53): Q/P only where P > Q >= tiny, so it is
+        // < 1 and cannot overflow; bitwise S22 wherever S22 did not trap.
         Rp[c] =
             Qp < tiny ? Scalar(0)
-          : Pp[c] > 0 ? std::min(Scalar(1), Qp/Pp[c]) : Scalar(1);
+          : Pp[c] > Qp ? Qp/Pp[c] : Scalar(1);
         Rm[c] =
             Qm < tiny ? Scalar(0)
-          : Pm[c] > 0 ? std::min(Scalar(1), Qm/Pm[c]) : Scalar(1);
+          : Pm[c] > Qm ? Qm/Pm[c] : Scalar(1);
     }
 
     for (Label f = 0; f < nFaces; ++f)
@@ -747,6 +749,118 @@ inline const char* passengersShared
         dbg->nCells = long(nCells);
     }
     return nullptr;
+}
+
+
+// ---- S23 rev. 4.1: THE TORN SET'S ARITHMETIC ------------------------------
+// research/designs/2026-10-07-S23-torn-network-debris.md section 13.2 items
+// 1, 2 and 6. The solver (tornNetworkCells, applyTornStressWeight,
+// recordTornWeight, the PHASE_CLOT_S23 populations) and the 2-step host
+// test scripts/s23_torn_kernel_test.cpp (report 19 Q3) run these functions.
+
+//- d_p, the progressive law's ceiling: the rupture law's own expression
+//  (ruptureOverstretchedNetwork(), Eq. 6 of source 32) at its upper end l1 =
+//  lc, where the terminal branch takes over. Never a literal. The solver
+//  refuses lc <= lf and dlf <= 0, so 0 < d_p < 1 (0.2936 at 2.8/2.105/1.0).
+template<class Scalar>
+inline Scalar progressiveCeiling
+(
+    const Scalar lc, const Scalar lf, const Scalar dlf
+)
+{
+    const Scalar l1 = lc;
+    return 1.0 - std::exp(-(l1 - lf)/(2.0*dlf));
+}
+
+//- The majority threshold (1 + d_p)/2 (physics 17 Q1): the terminal share
+//  holds the majority of the range above the progressive ceiling.
+template<class Scalar>
+inline Scalar tornThreshold(const Scalar dp)
+{
+    return 0.5*(1.0 + dp);
+}
+
+//- T membership: isSkel AND d* >= (1 + d_p)/2. No presence test (re-check
+//  11); never true on progressive-only damage (d* <= d_p < threshold).
+template<class Scalar>
+inline bool tornMember(const bool isSkel, const Scalar dStar, const Scalar thr)
+{
+    return isSkel && dStar >= thr;
+}
+
+//- T's deviatoric weight at the two builders, max(ind, floor)*(1 - d*):
+//  +0.0 at d* = 1 for any occupancy, which is rev. 3's 0.0 bit for bit.
+template<class Scalar>
+inline Scalar tornStressWeight
+(
+    const Scalar ind, const Scalar floorW, const Scalar dStar
+)
+{
+    return std::max(ind, floorW)*(Scalar(1) - dStar);
+}
+
+//- F1' (section 13.4 G23-5) on one T cell: |w/max(ind, floor) - aI| for the
+//  weight as consumed. The caller guards occ > 0 and counts a zero.
+template<class Scalar>
+inline Scalar f1WeightDeviation(const Scalar w, const Scalar occ, const Scalar aI)
+{
+    return std::abs(w/occ - aI);
+}
+
+//- Pi's rings: ring[c] = the number of point-neighbour steps from the
+//  nearest seed cell (0 on a seed), nRings + 1 beyond nRings. Two cells are
+//  point neighbours when they share a mesh point (Chebyshev distance 1 on a
+//  quad mesh). Works on OpenFOAM's labelListList and on nested std::vector.
+//  Returns the number of cells with ring <= nRings.
+template<class CellPoints, class PointCells>
+inline long pointRings
+(
+    const CellPoints& cellPts,
+    const PointCells& ptCells,
+    const std::vector<char>& seed,
+    const int nRings,
+    std::vector<int>& ring
+)
+{
+    const long nRing = long(seed.size());
+    ring.assign(nRing, nRings + 1);
+    std::vector<long> front, nextFront;
+    for (long c = 0; c < nRing; ++c)
+    {
+        if (seed[c])
+        {
+            ring[c] = 0;
+            front.push_back(c);
+        }
+    }
+    for (int k = 1; k <= nRings; ++k)
+    {
+        nextFront.clear();
+        for (const long c : front)
+        {
+            const auto& cp = cellPts[c];
+            for (long q = 0; q < long(cp.size()); ++q)
+            {
+                const auto& pc = ptCells[cp[q]];
+                for (long j = 0; j < long(pc.size()); ++j)
+                {
+                    const long m = pc[j];
+                    if (ring[m] > k)
+                    {
+                        ring[m] = k;
+                        nextFront.push_back(m);
+                    }
+                }
+            }
+        }
+        front.swap(nextFront);
+    }
+    long nIn = 0;
+    for (long c = 0; c < nRing; ++c)
+    {
+        nIn += ring[c] <= nRings;
+    }
+    return nIn;
 }
 
 } // End namespace damagePartitionKernel
