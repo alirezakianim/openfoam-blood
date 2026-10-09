@@ -57,6 +57,7 @@ scripts/check_b_transport_algebra.py
 scripts/check_case_boundaries.py
 scripts/check_content_consumer_map.py
 scripts/check_content_record_parser.py
+scripts/check_d74_refI.py
 scripts/check_dictionary_read_forms.py
 scripts/check_field_dimensions.py
 scripts/check_fvschemes_coverage.py

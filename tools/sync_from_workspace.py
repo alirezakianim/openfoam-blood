@@ -67,6 +67,7 @@ UNIT_CHECKS = [
     ("check_neohookean_algebra", ["--self-test"]),
     ("check_neohookean_algebra", []),
     ("check_content_record_parser", []),
+    ("check_d74_refI", []),   # D74: the passive intact reference (ref_I), no reader, with planted defects
     ("check_dictionary_read_forms", []),
     ("check_field_dimensions", []),
     ("check_indicator_recentred_in_mag", []),

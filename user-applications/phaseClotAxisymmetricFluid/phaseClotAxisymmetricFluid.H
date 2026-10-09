@@ -1515,6 +1515,10 @@ class phaseClotAxisymmetricFluid
     //  repeated outer iteration cannot add one growth increment to theta
     //  once and to thetaNetRef_ twice.
     tmp<volScalarField> thetaNetRefStepAccepted_;
+    //  D74 (design 2026-10-09-D74 rev. 2 section 2): the passive intact
+    //  reference rolls back with the reference it shadows, or it would be
+    //  transported once per phase corrector.
+    tmp<volScalarField> thetaNetRefIntactStepAccepted_;
     tmp<volScalarField> nPStepAccepted_;
     //  S16 C: the damage partition rolls back with the content it
     //  partitions, at exactly the sites thetaC_/thetaH_ do (red-team
@@ -1877,6 +1881,27 @@ class phaseClotAxisymmetricFluid
     //  Initialised to theta at the start of the run when not read from disk.
     bool thetaNetRefHeaderPresent_;
     volScalarField thetaNetRef_;
+
+    //  D74 (research/designs/2026-10-09-D74-passive-intact-reference.md
+    //  rev. 2 section 2): ref_I, THE REFERENCE CONTENT OF THE INTACT
+    //  POPULATION, A MEASUREMENT. thetaNetRef_'s own label operator (ddt +
+    //  convection - Sp(div carrier)) with the same carrier, weights and
+    //  iteration count; its FCT part is ref's limited flux times the donor's
+    //  ratio ref_I/ref (lambda READ, never written); physics 32's transfers
+    //  (rupture ref_I theta_I,new/theta_I,old, volumetric tear 0, growth
+    //  ref's increment, deletion 0). PASSIVE: no law reads it, so theta,
+    //  ref, the partition and every momentum face value are unchanged
+    //  (scripts/check_d74_refI.py). Written at full writes; read all-or-none
+    //  with the partition; seeded to thetaNetRef_ when not read.
+    volScalarField thetaNetRefIntact_;
+    //  The step's label balance (PHASE_CLOT_REFI, design section 4,
+    //  REPORTED): the inventory at the step checkpoint, the transfers since
+    //  the checkpoint or the last corrector roll-back, and the last
+    //  corrector's boundary outflux (a rate) and Sp source (dt sum s ref_I V).
+    scalar refISumStepStart_;
+    scalar refITransferStep_;
+    scalar refIBoundaryFluxStep_;
+    scalar refISpSourceStep_;
 
     //  S16 C: THE DAMAGE PARTITION of the network content, carried only
     //  under damageTransport contentPartition:
@@ -3045,6 +3070,8 @@ class phaseClotAxisymmetricFluid
     void beginPlateletOuterTransaction();
     void solvePlatelets();
     void writeBalanceDiagnostic();
+    //- D74: the per-step PHASE_CLOT_REFI line (design section 2).
+    void reportIntactReference();
 
         //- Assemble and write the skeleton momentum residual. Diagnostic only.
 

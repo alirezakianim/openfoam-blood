@@ -304,7 +304,7 @@
    "write_interval_s": 0.00025
   },
   "throat_free_shell": {
-   "children": 23,
+   "children": 24,
    "question": "CAN A DETACHED CLOT BLOCK THE NARROWER VESSEL? Dr Li, 2026-09-01, asked for exactly this and until 2026-09-04 the model could not produce it at any parameter: the Brinkman drag was gated as fvm::Sp(dragCoeff*(1 - released), U), so released material felt ZERO drag and a detached embolus was hydraulically invisible. 'Moves' and 'blocks' were mutually exclusive by construction. The drag is now the relative-velocity pair -(mu/k)(u_f - u_s), which is what the skeleton path already used, so a moving body still resists flow through its pores.",
    "_the_request": "Dr He Li asked whether a detached shell is stiff enough to block the downstream vessel. Alireza (DECISIONS 2026-10-02, verbatim): \"venous, place the clot relatively close to the openning. shear of 250 1/s. also no neet to see it completely passes through. i just want to see the initial to mid time to see of it cloggs (inrease pressure or slows the flow rate) or passes. one clot dense and stiff, other loose and normal permeability\"",
    "_design": "research/designs/2026-10-02-case-free-shell-throat.md, rev. 3 (APPROVED by Alireza 2026-10-02, docket research/investigations/20261002-1219-case-free-shell-throat/, DECISIONS.md; red team 03 STOP (all nine changes applied in rev. 2), red team 04 PROCEED WITH CHANGES (all five changes applied in rev. 3).",
@@ -365,7 +365,7 @@
    },
    "measures": "Outlet volumetric flux Q(t) against Q0 (clot-free, same drive); the pressure drop across the clot Delta p_clot(t) as a share of the imposed Delta p; the clot centroid x(t), y(t) and velocity, leading/trailing edge x; the narrowest clot-free gap at the throat entrance; whether the clot passes the throat; its aspect ratio and the S15-S18 damage logs.",
    "_why_end_time_0p04": "BATCH 69 (design 2026-10-05-case-loose-40ms-r3-pair rev. 4): the series budget rises from 0.03 to 0.04 s so that fsf_G4_kxu_r3_40 and fsf_G4_kxu_nor3_40 may run to 40 ms; every other child sets its own shorter end_time_s, and the generator refuses a child that exceeds the series budget.",
-   "_why_children_23": "9 = fsf_G4_kxu_v250, fsf_G40_klo_v250, fsb_G40_klo_rest, fs_G40_klo_rest_seg, fsb_ctl_r3, fsf_G4_kxu_r3_40, fsf_G4_kxu_nor3_40, fsf_G4_kxu_seedq and fsf_id (the V21-6 identity twin of fsf_G4_kxu_v250, added in S21 pipeline pass 2a: docket 20261005-1621 report 08); plus the eight S22 validation twins of BATCH 71 (S22 section 7): S22v_G40_A0, S22v_G40_A, S22v_G40_E, S22v_G40_B, S22v_G40_C, S22v_G40_D (controls-only twins of fsf_G40_klo_v250 at 0.6 ms, A0 at 0.2 ms) and S22v_G4_A, S22v_G4_C (twins of fsf_G4_kxu_r3_40 at 1.0 ms); plus the four S23 validation twins of BATCH 72 (S23 section 7): S23v_G4_r3 (arm 1, twin of fsf_G4_kxu_r3_40), S23v_G4_r3_S22 (arm 1', S23v_G4_r3 to 30 ms on the S22 library), S23v_G4_nor3 (arm 2, twin of fsf_G4_kxu_nor3_40) and S23v_G40 (arm 3, twin of fsf_G40_klo_v250); plus the two production children of BATCH 73 (P73_G4_r3_40, the loose S23v_G4_r3 under a production id, and P73_G40_40, S23v_G40 extended from 25 to 40 ms; Alireza 2026-10-08: \"both 40 ms. both in one session with 2 concurrency\"); 9 + 8 + 4 + 2 = 23 (the text above says 9 because it counts the kept children)"
+   "_why_children_24": "9 = fsf_G4_kxu_v250, fsf_G40_klo_v250, fsb_G40_klo_rest, fs_G40_klo_rest_seg, fsb_ctl_r3, fsf_G4_kxu_r3_40, fsf_G4_kxu_nor3_40, fsf_G4_kxu_seedq and fsf_id (the V21-6 identity twin of fsf_G4_kxu_v250, added in S21 pipeline pass 2a: docket 20261005-1621 report 08); plus the eight S22 validation twins of BATCH 71 (S22 section 7): S22v_G40_A0, S22v_G40_A, S22v_G40_E, S22v_G40_B, S22v_G40_C, S22v_G40_D (controls-only twins of fsf_G40_klo_v250 at 0.6 ms, A0 at 0.2 ms) and S22v_G4_A, S22v_G4_C (twins of fsf_G4_kxu_r3_40 at 1.0 ms); plus the four S23 validation twins of BATCH 72 (S23 section 7): S23v_G4_r3 (arm 1, twin of fsf_G4_kxu_r3_40), S23v_G4_r3_S22 (arm 1', S23v_G4_r3 to 30 ms on the S22 library), S23v_G4_nor3 (arm 2, twin of fsf_G4_kxu_nor3_40) and S23v_G40 (arm 3, twin of fsf_G40_klo_v250); plus the two production children of BATCH 73 (P73_G4_r3_40, the loose S23v_G4_r3 under a production id, and P73_G40_40, S23v_G40 extended from 25 to 40 ms; Alireza 2026-10-08: \"both 40 ms. both in one session with 2 concurrency\"); plus the one diagnostic child of BATCH 74 (D74_refI, S23v_G4_r3 byte for byte under a diagnostic id for the build that carries the passive field thetaNetRefIntact; Alireza 2026-10-09: \"Approve; run it alone (Recommended)\"); 9 + 8 + 4 + 2 + 1 = 24 (the text above says 9 because it counts the kept children)"
   }
  },
  "children": [
@@ -2315,6 +2315,76 @@
     "Us"
    ],
    "_what_a_failing_run_looks_like": "To 25 ms, any departure from BATCH 72's identical dictionary: dt not constant at 1.5038e-6 s, a step count other than 16,625 +-1%, a whole-field ratio above 1.1, a content residual above 1e-6, WpRawQDevMax above 1e-10 at any record, dryFacesConducting above 0 on any PHASE_CLOT_PLATELET_FO line (or no such field), plateletFo that departs from BATCH 72's logged value or is 0 while the diffusivity is above 0, an assessor INADMISSIBLE. Past 25 ms (unmeasured, so there is no prediction of the clot, only of the cost): a stop before 40 ms (a crash or the 18 h clock stop at 64800 s); a wall time above 14.2 h (the dt-halves figure); a dt that leaves 1.5038e-6 s (record when, and which limiter binds); WpRawQDevMax above 1e-10 at any record, or dryFacesConducting above 0, at any time to 40 ms."
+  },
+  {
+   "adhesive_strength_pa": 0.4,
+   "be_div_scheme": "Gauss upwind",
+   "bond_hold_dilation": 4,
+   "bond_hold_penalty": 10000000.0,
+   "clot_erosion_rate": 0.0,
+   "platelet_bind_rate": 42.0,
+   "platelet_diffusivity": 0.0,
+   "platelet_inlet_density_m3": 0.0,
+   "platelet_number_density_m3": 250000000000000.0,
+   "platelet_yield_m3": 1e-17,
+   "release_support_limit": 0.5,
+   "residual_chi": 0.0002222,
+   "skeleton_dilute_drag_rate": 0.0,
+   "skeleton_volume_fraction": 0.45,
+   "platelet_adhesion_speed": 0.006045,
+   "network_pressure_weight": "networkPresence",
+   "network_damage_onset_stretch": 2.105,
+   "network_damage_stretch_scale": 1.0,
+   "network_critical_stretch": 2.8,
+   "network_release_time_s": 0.00033,
+   "final_relaxation_unity": true,
+   "n_correctors": 6,
+   "proj_site_log": "yes",
+   "series": "throat_free_shell",
+   "wall_shear_rate_1_s": 250.0,
+   "mean_velocity_m_s": 0.0020833333333333333,
+   "end_time_s": 0.04,
+   "write_interval_s": 0.005,
+   "wall_budget_h": 11.0,
+   "platelet_transport_only": true,
+   "material_label_basis": "transportedLabel",
+   "_every_number_and_its_source": {
+    "wall_budget_h": "11.0 h (stopAtClockTime 39600 s), inherited from S23v_G4_r3 and P73_G4_r3_40, so no run control differs from the parent (the generator's parent check names no key). MEASURED on the parent dictionary: BATCH 72 S23v_G4_r3 took 10,589 steps and WALL_SECONDS 16,374 s = 4.55 h at concurrency 2, 6 MKL threads (docket research/investigations/20261008-1507-run081155-b72-s23-validation/probes/ce04-b72-cost.out, log.wallTime); dt 4.7619e-6 s held to 15 ms, then mean 2.37e-6 s over 35-40 ms (s/step 1.304 rising to 1.657). What sets dt: maxCo 0.5 with max_delta_t_s 5e-5 and the cube-root-of-minimum-cell-volume bound, i.e. the flow; the passive field changes none of it. The design's price is about 4.6 h (design section 3). NOT MEASURED: the cost of the extra scalar equation per corrector (ref's own label operator with a solve of tolerance 0 at ref's iteration count) and of the PHASE_CLOT_REFI scan; it is SUSPECTED to be a few percent of 1.3-1.7 s/step, and the cap is 2.4 times the 4.55 h figure, so a 50 percent per-step overhead would still finish (1.5 x 4.55 = 6.8 h). A clock stop before 40 ms is a G74-2 FAIL and voids the later writes.",
+    "end_time_s": "0.04 s, inherited from S23v_G4_r3 (design section 3: 40 ms); 8 whole writeIntervals of 5 ms, which frame_output_refusal requires. The R3 writes the pricing reads are 20, 25, 30, 35 and 40 ms",
+    "write_interval_s": "5e-3 s, inherited: the 5 ms full writes, at which the build also writes thetaNetRefIntact (design section 2: written at full writes)",
+    "frame_interval_s": "2e-4 s and the 8 frame fields, inherited (the production write settings). thetaNetRefIntact is NOT a frame field: the frames are q, p, U, Vs, clotDrag, poroPerm, Gfield, Us, so the field is read only at the full writes",
+    "everything_else": "inherited from S23v_G4_r3 (= fsf_G4_kxu_r3_40 but for its cap): G 4 Pa, k0p 4.07e-13, D 30 um, centred free disc, S19b block-coupled, tau_v 1.5 ms, blockLinearSolver the solver's default pardiso; the generator's parent check names NO key (FSF_PARENT_PAIRS: D74_refI, S23v_G4_r3, set(), set()). NO new key is read or written: the passive field is a property of the build, its solver dictionary is built in code (design section 2), so no fvSolution key is added and the case dictionaries stay byte for byte",
+    "volumetric_tear_ratio": "not named: the solver default 21.95 (S23 section 2.1), as in S23v_G4_r3",
+    "session": "ONE Colab session, ONE child (design section 3, recommended and approved: D74_refI ALONE), at CONCURRENCY 2 (the notebook default), so the child runs MKL_NUM_THREADS = physical cores // 2 = 6 with CNR, the thread count of BATCH 73 and of BATCH 72 (run_main_case_colab.py reads AM2020_CONCURRENCY, not the number of children); the other half of the host is idle. No LAUNCHES split, no reference library (the child names no solver_library), so nothing is cloned and no --s22-solver is passed. Expected: 0.7 h set-up (BATCH 73's figure) + 4.6 h = 5.3 h; at the cap 0.7 + 11.0 = 11.7 h, inside the 24 h by 12.3 h. The release is on its OWN branch (docket DECISIONS 2026-10-09), so BATCH 73's main is unchanged",
+    "output": "Output: the generator's own projection (end/write x 19.5 MB, PER_TIME_DIR_GB, full writes only) is 8 x 19.5 MB = 0.15 GB, far under OUTPUT_BUDGET_GB 8.0. The measured return is larger because of the 0.2 ms frames and the log: BATCH 72 S23v_G4_r3 returned 1445 MB at 40 ms (201 time directories, log 216 MB; du of the case's runs/S23v_G4_r3 on /Volumes/b72score). Expected for this child: about 1.45 GB, the BATCH 72 figure, plus the new field and the new log line. The field is one volScalarField of 31,360 cells (geometry_override expected_cell_count) at 8 full writes; at most about 22 bytes per ASCII value that is under 0.7 MB per write and under 6 MB in all (derived, SUSPECTED; not measured), and PHASE_CLOT_REFI adds one line per step (about 10,600 steps; its size is not measured, the log was 20 kB per step in BATCH 72). Both are well under 1 percent of the 8.0 GB budget."
+   },
+   "child_id": "D74_refI",
+   "G_pa": 4.0,
+   "k0p_m2": 4.07e-13,
+   "expectation": "PRE-REGISTRATION, VERBATIM from research/designs/2026-10-09-D74-passive-intact-reference.md rev. 2 section 4 (BATCH 74, the D74 passive intact-network reference; APPROVED by Alireza 2026-10-09: 'Approve; run it alone (Recommended)'; docket research/investigations/20261007-1807-s24-consistent-network-stress/, red team 36 PROCEED WITH CHANGES, all eight changes applied). THIS IS A MEASUREMENT, NOT A VALIDATION AND NOT A PRODUCTION RUN, and it changes no physics: D74_refI is S23v_G4_r3 byte for byte in every dictionary key (loose 4 Pa, k0p 4.07e-13, centred free shell-only disc D 30 um, S19b blockCoupled, R3 kelvinVoigt tau_v 1.5 ms, 40 ms, 11 h cap) under a diagnostic id; volumetricTearRatio is not named, so the solver's default 21.95 applies. The ONLY difference is the BUILD: it carries a passive volScalarField thetaNetRefIntact (ref_I) that no law reads (design section 2), written at the 5 ms full writes, with the per-step line PHASE_CLOT_REFI. The measurement is ref_I under physics 32's transfer laws (SUSPECTED as laws; the label kernel is new, SUSPECTED as an implementation), on rev. 4.1's own trajectory: the deviation a_I^proxy - a_I that decides whether the S24 candidate's TP-1 passes at the band edge. It is scored OFFLINE (numerics, on D74_refI's 5 R3 writes at 20/25/30/35/40 ms, every field from this child; a harness that meets a ref_I and a theta from different case directories REFUSES the state); scripts/s23_validation_compare.py is not run on it.\n\n## 4. Pre-registration (D74 is a measurement: these gates judge the INSTRUMENT; a G74-1 FAIL VOIDS the measurement)\n\n- **G74-1, invariants** (change 4):\n  - **Gated, at 1e-12\u00b7max ref, absolute:**\n    - 0 \u2264 ref_I \u2264 ref everywhere;\n    - ref_I = 0 where P1 = 0 \u2227 S > 0.\n    - Shares are evaluated with fibreReleaseKernel::shares on S > 0 only; S = 0 \u2227 ref > 0 cells are counted separately.\n  - **REPORTED, not gated:**\n    - ref_I = ref on d* = 0 cells (count and max relative deviation): equality is at the solver's own tolerance, and coupled upwind chains can carry a damaged neighbour's difference;\n    - the label balance \u0394\u03a3ref_I\u00b7V = transfers + boundary flux + dt\u00b7\u03a3 ref_I\u00b7surfaceIntegrate(carrier)\u00b7V.\n- **G74-2:** D74_refI reaches 40 ms. A stop VOIDS the writes after it, and the earlier writes stay valid.\n- **G74-0 (only if the control runs; change 5):**\n  - bitwise identity of every written field and every PHASE_CLOT step value, EXCLUDING PHASE_CLOT_COST's timer keys, PHASE_CLOT_S19's tSolve/tNumeric/tSymbolic/mklPeakGB/rssGB, and ExecutionTime/ClockTime. The comparator and its exclusion list are named in the verification.\n  - **The first-departure rule, pre-registered:** if the first differing step is in PARDISO outputs while the content fields are still identical, it is CNR or layout; if the content, ref or partition differs first, it is a LEAK.\n  - A G74-0 FAIL does NOT void D74_refI's measurement. The control's stop voids nothing.\n- **Magnitudes, pre-registered** (change 7): the MAGNITUDE max(|min|, |max|) of the deviation a_I^proxy \u2212 a_I per R3 write, on D74's states. Its sign is reported separately; a negative (toward-the-pole) bias is the dangerous one.\n  - A random walk (\u221aN) predicts 3e-4 to 1.9e-3; a steady one-signed drift (N) predicts 0.010 to 0.087.\n  - **Expected: the \u221aN regime**, because the per-step deviations in numerics 33 changed sign across cells (SUSPECTED).\n  - The run tells which, through the per-step p99, max, p01 and min.\n- **The decision rule for TP-1 on D74's 5 R3 writes, with three outcomes:**\n  - **CLEARED:** 0 cells within 50 linear steps of, and 0 past, a_I \u2208 (0, \u03c6M) at all 5 writes;\n  - **FAIL:** \u2265 1 cell within 50 steps of \u03c6M from below, under TP-1's own one-step rate;\n  - **UNDECIDED:** cells only past \u03c6M at the write. Rev. 4.1 has no a_I pole to stop them, so this reveals nothing about TP-1.\n\n**G74-0 DOES NOT APPLY to this batch.** There is no control: D74_ctrl is NOT built (design section 3, section 7: 'D74_refI ALONE', Alireza 2026-10-09). So isolation (no law reads ref_I, and theta, ref, the partition, Wp and every momentum face value are bitwise those of an unmodified build) is a property of the CODE (the new reader guard with its planted defects and V74-3's AST), NOT an on-binary measurement in this batch. If BATCH 73's P73_G4_r3_40 returned on the same CPU model, a first-departure comparison against it is REPORTED, not gated, by the first-departure rule above (a first difference in PARDISO outputs with the content fields still identical is CNR or layout; content, ref or partition first is a LEAK to be handed to the solver engineer). It voids nothing and is not a gate.\n\n**What is predicted besides the gates.** The run follows B72's S23v_G4_r3 and B73's P73_G4_r3_40 in dt and step count (about 10,589 steps, about 4.6 h at CONCURRENCY 2, 6 MKL threads; SUSPECTED until seen: the passive field's own cost is NOT MEASURED, and the cap leaves 2.4 times that). The deviation magnitudes above are the only quantitative prediction about ref_I; a deviation outside BOTH ranges (below 3e-4, between 1.9e-3 and 0.010, or above 0.087) is reported as a surprise to the random-walk and drift models, not scored as a gate.",
+   "momentum_pressure_coupling": "blockCoupled",
+   "network_viscosity": "kelvinVoigt",
+   "tau_v_s": 0.0015,
+   "_tau_v_s_status": "SET 2026-10-05 from physics 02 (docket 20261005-0010 report 02; DECISIONS 'R3 tau_v per case set by physics assurance'), replacing the case engineer's placeholder.",
+   "clot_override": {
+    "_why": "design 2026-10-05-case-free-shell-centred-s19b rev. 3 section 2.1: centred, off both walls (Alireza 2026-10-05).",
+    "centre_x_m": 0.0001294,
+    "centre_y_m": 2.45e-05,
+    "rests_on_wall": false,
+    "kind": "a free circular shell-only disc (D 30 um), centred off both walls at (129.4, 24.5) um, leading edge 144.4 um, no core"
+   },
+   "frame_interval_s": 0.0002,
+   "frame_fields": [
+    "q",
+    "p",
+    "U",
+    "Vs",
+    "clotDrag",
+    "poroPerm",
+    "Gfield",
+    "Us"
+   ],
+   "_what_a_failing_run_looks_like": "THE INSTRUMENT FAILS, not the physics. Any of: (1) G74-1 (GATED, absolute, 1e-12 times max ref): ref_I < 0 or ref_I > ref anywhere, or ref_I > 0 where P1 = 0 and S > 0, at any step the PHASE_CLOT_REFI invariant residuals are read or at any full write (5, 10, ..., 40 ms). A G74-1 FAIL VOIDS the measurement: no TP-1 outcome is quoted from any write at or after the first violation, and the failure is handed to the solver engineer (the kernel, not the S24 candidate, is wrong); (2) G74-2: a stop before 40 ms (a crash, a FOAM fatal error, or the 11 h clock stop at 39600 s). A stop VOIDS the writes after it; the earlier full writes stay valid and are priced as they are, so a stop at 27 ms leaves the 20 and 25 ms R3 writes, and 3 of the 5 R3 writes are missing; (3) a ref_I file that is absent at a full write, or a harness input whose ref_I and theta come from different case directories (the pricing refuses it: no pricing on mixed states); (4) a PHASE_CLOT_REFI line absent at a step, so the p99, max, p01 and min of a_I^proxy - a_I cannot be read for the magnitudes (the sqrt(N) regime 3e-4 to 1.9e-3 against the N regime 0.010 to 0.087). NOT a failure of the run, and never counted as one: the REPORTED quantities (ref_I = ref on the d* = 0 cells, with the count and the max relative deviation; the label balance), a TP-1 outcome of FAIL or UNDECIDED (those are findings about the S24 candidate on rev. 4.1's states, not about the instrument), and a deviation outside both pre-registered ranges. G74-0 is not a gate here (no control runs); a first-departure difference against P73_G4_r3_40 is reported, not failed."
   }
  ]
 }

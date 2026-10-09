@@ -1053,6 +1053,11 @@ FSF_PARENT_PAIRS = (
     # names none); the stiff clot is S23v_G40 extended from 25 to 40 ms with an 18 h cap.
     ("P73_G4_r3_40", "S23v_G4_r3", set(), set()),
     ("P73_G40_40", "S23v_G40", set(), {"end_time_s", "wall_budget_h"}),
+    # BATCH 74 (D74, the passive intact-network reference; design 2026-10-09-D74-passive-intact-reference.md
+    # rev. 2 section 3, Alireza 2026-10-09: "Approve; run it alone"): the loose clot again, S23v_G4_r3 byte for
+    # byte under a diagnostic id (already 40 ms, 11 h cap: no key differs, so the pair names none). The
+    # passive field belongs to the BUILD; no dictionary key is added, read or refused for it.
+    ("D74_refI", "S23v_G4_r3", set(), set()),
 )
 
 
@@ -3743,7 +3748,9 @@ def main() -> int:
     'S23v_G40': 43,
     # BATCH 73: the production pair, loose first (it is the shorter run), after the BATCH 72 arms.
     'P73_G4_r3_40': 50,
-    'P73_G40_40': 51}
+    'P73_G40_40': 51,
+    # BATCH 74: the one diagnostic child, after the BATCH 73 pair.
+    'D74_refI': 60}
     # S17 (design section 6): the mechanical control check, before anything
     # is ordered for launch. The controls-entry half runs for every pair; the
     # child.json half for the pairs whose control is built in this run

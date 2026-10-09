@@ -915,6 +915,23 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
         dimensionedScalar("zero", dimless, 0),
         zeroGradientFvPatchField<scalar>::typeName
     ),
+    // D74: ref_I, thetaNetRef_'s construction (patch types checked equal in
+    // the constructor body, where it is also seeded or refused).
+    thetaNetRefIntact_
+    (
+        IOobject
+        (
+            "thetaNetRefIntact", runTime.name(), mesh,
+            IOobject::READ_IF_PRESENT, IOobject::AUTO_WRITE
+        ),
+        mesh,
+        dimensionedScalar("zero", dimless, 0),
+        zeroGradientFvPatchField<scalar>::typeName
+    ),
+    refISumStepStart_(0),
+    refITransferStep_(0),
+    refIBoundaryFluxStep_(0),
+    refISpSourceStep_(0),
     // S16 C: the damage partition. Zero here; seeded from the contents (and
     // ruptured_) in the constructor body when not read, and switched to
     // NO_WRITE there unless damageTransport is contentPartition.
@@ -1584,6 +1601,56 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
             thetaNetRef_ = thetaC_ + thetaH_;
             thetaNetRef_.correctBoundaryConditions();
         }
+    }
+
+    // D74 (design 2026-10-09-D74 rev. 2 section 2): THE INTACT REFERENCE
+    // ref_I STARTS AS THE REFERENCE, ref_I = ref, here, after ref is read or
+    // seeded. It is read all-or-none with the damage partition: a restart
+    // that carries the partition but not ref_I (any BATCH 72/73 write) holds
+    // the proxy (P1/S) ref only, exact only where d* is 0 or 1 (numerics 33
+    // L48), so it is refused rather than seeded with a guess; and ref_I
+    // without the partition has nothing to be the intact share of.
+    {
+        const bool hasRefI = thetaNetRefIntact_.headerOk();
+        const bool hasPartition =
+            thetaIntact_.headerOk()
+         || thetaPending_.headerOk()
+         || thetaBroken_.headerOk();
+        if (hasRefI != hasPartition)
+        {
+            FatalErrorInFunction
+                << "thetaNetRefIntact (D74) is read all-or-none with the "
+                << "damage partition: found thetaNetRefIntact " << hasRefI
+                << ", partition (thetaIntact/thetaPending/thetaBroken) "
+                << hasPartition << " at time " << runTime.name() << ". A "
+                << "partition without thetaNetRefIntact has only the proxy "
+                << "(P1/S)*thetaNetRef, which is not the intact reference "
+                << "where 0 < d* < 1; start from t = 0 or from a D74 write."
+                << exit(FatalError);
+        }
+        if
+        (
+            thetaNetRefIntact_.boundaryField().types()
+         != thetaNetRef_.boundaryField().types()
+        )
+        {
+            FatalErrorInFunction
+                << "thetaNetRefIntact (D74) must carry thetaNetRef's patch "
+                << "types: " << thetaNetRefIntact_.boundaryField().types()
+                << " against " << thetaNetRef_.boundaryField().types()
+                << exit(FatalError);
+        }
+        if (!hasRefI)
+        {
+            thetaNetRefIntact_ = thetaNetRef_;
+            thetaNetRefIntact_.correctBoundaryConditions();
+        }
+        Info<< "PHASE_CLOT_D74_CONFIG thetaNetRefIntact="
+            << (hasRefI ? "read" : "seeded-from-thetaNetRef")
+            << " transport=thetaNetRefLabelOperator"
+            << " solve=iterationMatched fct=donorRatio"
+            << " transfers=rupture,volumetricTear,growth,deletion"
+            << " readers=none" << endl;
     }
 
     // S10 FIX 2: THE SKELETON'S WALL CONDITION BECOMES SLIP.
@@ -3581,6 +3648,11 @@ void Foam::solvers::phaseClotAxisymmetricFluid::ruptureOverstretchedNetwork()
         label nVol = 0, nStretch = 0, nA1Deferred = 0;
         std::vector<scalar> Rskel;
         Rskel.reserve(bI.size());
+        // D74 (design 2026-10-09-D74 rev. 2 section 2 table): ref_I's two
+        // event transfers, applied after each cell's event below, and the
+        // content they move (booked for PHASE_CLOT_REFI's label balance).
+        scalarField& refIW = thetaNetRefIntact_.primitiveFieldRef();
+        scalar refITransfer = 0;
         forAll(bI, celli)
         {
             const scalar theta = thetaC_[celli] + thetaH_[celli];
@@ -3673,6 +3745,8 @@ void Foam::solvers::phaseClotAxisymmetricFluid::ruptureOverstretchedNetwork()
             {
                 b1IntactMax = max(b1IntactMax, b1);
             }
+            // D74: this cell's intact content before its event.
+            const scalar pIOldD74 = pI[celli];
             scalar dAfter = d;
             if (sC > 0)
             {
@@ -3960,6 +4034,23 @@ void Foam::solvers::phaseClotAxisymmetricFluid::ruptureOverstretchedNetwork()
                     }
                 }
             }
+            // D74 (physics 32 section 3): RUPTURE keeps J_I = ref_I/theta_I,
+            // so ref_I scales with the intact content it references (83 Eq
+            // 2.4), only where there was one (pI_old > 0 guards the
+            // quotient); an unchanged pI multiplies by exactly 1. A
+            // VOLUMETRIC TEAR is A1's event above (sC > 0, volTear, the
+            // intact content now 0): no intact network is left, ref_I <- 0.
+            if (pIOldD74 > 0)
+            {
+                const scalar refIOld = refIW[celli];
+                refIW[celli] = refIOld*(pI[celli]/pIOldD74);
+                refITransfer += (refIW[celli] - refIOld)*vol[celli];
+            }
+            if (sC > 0 && volTear && pI[celli] == 0)
+            {
+                refITransfer -= refIW[celli]*vol[celli];
+                refIW[celli] = 0.0;
+            }
             deltaD = max(deltaD, mag(dAfter - dOld));
             if (sC > 0)
             {
@@ -3975,6 +4066,9 @@ void Foam::solvers::phaseClotAxisymmetricFluid::ruptureOverstretchedNetwork()
         {
             thetaNetRef_.correctBoundaryConditions();
         }
+        // D74: ref_I's patches follow its cells; its transfers are booked.
+        thetaNetRefIntact_.correctBoundaryConditions();
+        refITransferStep_ += refITransfer;
         // S23 section 2.5: the step's events, and R's max and quantiles over
         // isSkel BEFORE the reset (serial: the design's S23 is serial).
         reduce(nVol, sumOp<label>());
@@ -8321,6 +8415,11 @@ void Foam::solvers::phaseClotAxisymmetricFluid::releaseDetachedMaterial()
             // S10: the deleted network takes its reference with it, or the
             // emptied cell would read as network dilated to nothing.
             thetaNetRef_[celli] = 0.0;
+            // D74: and the intact reference, booked for PHASE_CLOT_REFI.
+            {
+                refITransferStep_ -= thetaNetRefIntact_[celli]*mesh.V()[celli];
+                thetaNetRefIntact_[celli] = 0.0;
+            }
             // S14: and its rupture label -- the cell holds no network.
             ruptured_[celli] = 0.0;
             // S16 C: and its damage partition, in the same statement as
@@ -8351,6 +8450,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::releaseDetachedMaterial()
         thetaC_.correctBoundaryConditions();
         thetaH_.correctBoundaryConditions();
         thetaNetRef_.correctBoundaryConditions();
+        thetaNetRefIntact_.correctBoundaryConditions();
         ruptured_.correctBoundaryConditions();
         {
             thetaIntact_.correctBoundaryConditions();
@@ -9205,6 +9305,23 @@ void Foam::solvers::phaseClotAxisymmetricFluid::beginPlateletOuterTransaction()
     (
         new volScalarField("thetaNetRefStepAccepted", thetaNetRef_)
     );
+    // D74 (design section 2, red team 36 change 3): ref_I is checkpointed
+    // beside ref, and its label balance starts here.
+    {
+        thetaNetRefIntactStepAccepted_ = tmp<volScalarField>
+        (
+            new volScalarField
+            (
+                "thetaNetRefIntactStepAccepted", thetaNetRefIntact_
+            )
+        );
+        const scalarField& VI = mesh_.V();
+        refISumStepStart_ =
+            gSum(thetaNetRefIntact_.primitiveField()*VI);
+        refITransferStep_ = 0;
+        refIBoundaryFluxStep_ = 0;
+        refISpSourceStep_ = 0;
+    }
     nPStepAccepted_ = tmp<volScalarField>
     (
         new volScalarField("nPStepAccepted", nP_)
@@ -9335,6 +9452,23 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePhaseField()
             {
                 thetaNetRef_ = thetaNetRefStepAccepted_();
                 thetaNetRef_.correctBoundaryConditions();
+            }
+            // D74: and the intact reference with it, or it is transported
+            // once per corrector. The roll-back discards every transfer
+            // since the checkpoint, so the balance's terms restart too.
+            {
+                if (!thetaNetRefIntactStepAccepted_.valid())
+                {
+                    FatalErrorInFunction
+                        << "thetaNetRefIntact (D74) has no accepted timestep "
+                        << "checkpoint at the corrector roll-back."
+                        << exit(FatalError);
+                }
+                thetaNetRefIntact_ = thetaNetRefIntactStepAccepted_();
+                thetaNetRefIntact_.correctBoundaryConditions();
+                refITransferStep_ = 0;
+                refIBoundaryFluxStep_ = 0;
+                refISpSourceStep_ = 0;
             }
             // S16 C: and so does the damage partition (Change 4).
             restoreDamagePartition("corrector roll-back");
@@ -9720,8 +9854,96 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveContentComponents
             )
           - fvm::Sp(fvc::surfaceIntegrate(carrier), thetaNetRef_)
         );
-        thetaNetRefEqn.solve();
+        const label refIters = thetaNetRefEqn.solve().nIterations();
         thetaNetRef_.correctBoundaryConditions();
+
+        // D74 (design 2026-10-09-D74 rev. 2 section 2, red team 36 change
+        // 2): THE INTACT REFERENCE ref_I, BY ref's OWN LABEL OPERATOR -- the
+        // same ddt, convection (carrier, weights) and Sp term, so where ref_I
+        // = ref (d* = 0) the two systems are the same system. Solved with
+        // ref's solver dictionary, built here in code (no fvSolution key, the
+        // case dictionary byte for byte), at tolerance 0 with minIter =
+        // maxIter = the iterations ref's solve EXECUTED this corrector, so
+        // both receive the same sweeps (maxIter 0: no solve, as ref's 0).
+        {
+            dictionary refIControls
+            (
+                mesh_.solution().solverDict
+                (
+                    thetaNetRef_.select
+                    (
+                        !mesh_.schemes().steady()
+                     && solutionControl::finalIteration(mesh_)
+                    )
+                )
+            );
+            refIControls.set("tolerance", scalar(0));
+            refIControls.set("relTol", scalar(0));
+            refIControls.set("minIter", refIters);
+            refIControls.set("maxIter", refIters);
+            fvScalarMatrix thetaNetRefIntactEqn
+            (
+                fvm::ddt(thetaNetRefIntact_)
+              + phaseConservativeConvectionWith
+                (
+                    carrier, thetaNetRefIntact_, tContentWeights()
+                )
+              - fvm::Sp(fvc::surfaceIntegrate(carrier), thetaNetRefIntact_)
+            );
+            thetaNetRefIntactEqn.solve(refIControls);
+            thetaNetRefIntact_.correctBoundaryConditions();
+
+            // PHASE_CLOT_REFI's label balance (REPORTED, design section 4):
+            // the boundary outflux this solve took through the inlet and
+            // outlet, in the solve's own boundary form (as OI-59 books
+            // theta's), and the Sp source dt sum s ref_I V at the solved
+            // ref_I, before the FCT (conservative across internal faces).
+            // ASSIGNED: the last corrector's solve is the one that stands.
+            {
+                scalar refIOut = 0;
+                for
+                (
+                    const label patchi
+                  : {
+                        mesh_.boundaryMesh().findIndex("inlet"),
+                        mesh_.boundaryMesh().findIndex("outlet")
+                    }
+                )
+                {
+                    if (patchi < 0) { continue; }
+                    const fvPatchScalarField& pfI =
+                        thetaNetRefIntact_.boundaryField()[patchi];
+                    scalarField faceFluxI
+                    (
+                        thetaNetRefIntactEqn.internalCoeffs()[patchi]
+                       *pfI.patchInternalField()
+                    );
+                    if (pfI.coupled())
+                    {
+                        faceFluxI -=
+                            thetaNetRefIntactEqn.boundaryCoeffs()[patchi]
+                           *pfI.patchNeighbourField();
+                    }
+                    else
+                    {
+                        faceFluxI -=
+                            thetaNetRefIntactEqn.boundaryCoeffs()[patchi];
+                    }
+                    refIOut += gSum(faceFluxI);
+                }
+                refIBoundaryFluxStep_ = refIOut;
+                const tmp<volScalarField::Internal> tDivCI
+                (
+                    fvc::surfaceIntegrate(carrier)
+                );
+                const scalarField& divCI = tDivCI();
+                const scalarField& refISolved =
+                    thetaNetRefIntact_.primitiveField();
+                const scalarField& VI = mesh_.V();
+                refISpSourceStep_ =
+                    runTime.deltaTValue()*gSum(divCI*refISolved*VI);
+            }
+        }
     }
 
     // S16 C+: THE DAMAGE PARTITION, LIVE FROM STEP 1 (design 2C, 17).
@@ -9899,6 +10121,45 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveContentComponents
             );
         }
 
+        // D74 (design section 2): ref_I's FCT PART, ref_I -= (dt/V) sum
+        // +-(r_d lambda AR), with r_d = ref_I^low/ref^low of the cell the
+        // face's lambda AR LEAVES (owner where lambda AR > 0, as fctApply
+        // takes it from the owner), read here, after both predictors and
+        // before fctApply moves ref. r_d = 0 where ref^low = 0: the
+        // DENOMINATOR is guarded (its outflow is then zero anyway, red team
+        // 36 F9). lambda and AR are READ, never written: theta's, ref's and
+        // the partition's limited fluxes are the shipped ones.
+        if (tAR.valid())
+        {
+            const labelUList& ownI = mesh_.owner();
+            const labelUList& neiI = mesh_.neighbour();
+            const scalarField& lamI = lambda.primitiveField();
+            const scalarField& aRI = tAR().primitiveField();
+            const scalarField& refLowI = thetaNetRef_.primitiveField();
+            const scalarField& refILowI = thetaNetRefIntact_.primitiveField();
+            const scalarField& VI = mesh_.V();
+            const scalar dtI = runTime.deltaTValue();
+            scalarField divI(mesh_.nCells(), 0.0);
+            forAll(ownI, facei)
+            {
+                const scalar laI = lamI[facei]*aRI[facei];
+                const label donorI = laI > 0 ? ownI[facei] : neiI[facei];
+                const scalar rD =
+                    refLowI[donorI] != 0
+                  ? refILowI[donorI]/refLowI[donorI]
+                  : 0.0;
+                const scalar fluxI = rD*laI;
+                divI[ownI[facei]] += fluxI;
+                divI[neiI[facei]] -= fluxI;
+            }
+            scalarField& refIC = thetaNetRefIntact_.primitiveFieldRef();
+            forAll(refIC, celli)
+            {
+                refIC[celli] -= dtI/VI[celli]*divI[celli];
+            }
+            thetaNetRefIntact_.correctBoundaryConditions();
+        }
+
         fctApply(thetaC_, lambda, AC);
         fctApply(thetaH_, lambda, AH);
         if (tAR.valid())
@@ -9943,6 +10204,11 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveContentComponents
             (
                 thetaNetRef_[celli] < 0
             )
+            {
+                ++negAfter;
+            }
+            // D74: and the intact reference (design section 2).
+            if (thetaNetRefIntact_[celli] < 0)
             {
                 ++negAfter;
             }
@@ -10696,6 +10962,20 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlateletContent
 
         thetaNetRef_ += thetaNew - thetaStar;
         thetaNetRef_.correctBoundaryConditions();
+        // D74: ref_I takes ref's OWN increment, the same expression (not
+        // P1's hNew - hStar, which differs by round-off), so it stays equal
+        // to ref where d* = 0; booked for PHASE_CLOT_REFI.
+        {
+            thetaNetRefIntact_ += thetaNew - thetaStar;
+            thetaNetRefIntact_.correctBoundaryConditions();
+            const scalarField& tNI = thetaNew.primitiveField();
+            const scalarField& tSI = thetaStar.primitiveField();
+            const scalarField& VI = mesh_.V();
+            forAll(tNI, celli)
+            {
+                refITransferStep_ += (tNI[celli] - tSI[celli])*VI[celli];
+            }
+        }
     }
     // S16 C: d from the partition, now that the deposit is in it and the
     // stress-free mixing has read the pre-deposit intact share.
@@ -18210,10 +18490,191 @@ void Foam::solvers::phaseClotAxisymmetricFluid::reportSkeletonVelocity()
 }
 
 
+void Foam::solvers::phaseClotAxisymmetricFluid::reportIntactReference()
+{
+    // D74 (research/designs/2026-10-09-D74-passive-intact-reference.md rev.
+    // 2 sections 2 and 4): ONE LINE PER STEP, at the end of the step (after
+    // the transport, growth, rupture and deletion), on ref_I. theta_I is
+    // (P1/S) theta, not P1 (numerics 35: P1 differs from theta on d* = 0
+    // cells at theta ~ 1e-290), with the shares of fibreReleaseKernel::shares
+    // on S > 0. a_I = phi0 + theta_I - ref_I; its proxy reads (P1/S) ref.
+    //   aIMax*       max a_I over S > 0, theta_I > 0, with its cell and that
+    //                cell's theta_I, ref_I and d*; nearPole counts a_I >
+    //                phiSMax - 0.05 there;
+    //   proxyDev*    (a_I^proxy - a_I) over 0 < d* < 1, S > 0: p99 and max,
+    //                and p01 and min (the SIGNED deviation: drift TOWARD the
+    //                pole, true a_I above the proxy, is the min side; CE
+    //                ruling 2026-10-09, solver-engineer 39);
+    //   the INVARIANTS (section 4): refIMin and excessMax (= max ref_I - ref)
+    //   against refMax (GATED at 1e-12 refMax, absolute); p1ZeroRefIMax over
+    //   P1 = 0, S > 0 (GATED); s0RefCells (S = 0, ref > 0, counted apart);
+    //   d* = 0 cells, those with ref_I != ref and their max relative
+    //   deviation over ref > 0 (REPORTED); and the label balance
+    //   dSum - (transfer - dt outflux + spSource) (REPORTED).
+    // Serial, as S23's quantiles: the p99 and the cell are this process's.
+    const scalarField& tCR = thetaC_.primitiveField();
+    const scalarField& tHR = thetaH_.primitiveField();
+    const scalarField& P1R = thetaIntact_.primitiveField();
+    const scalarField& P2R = thetaPending_.primitiveField();
+    const scalarField& P3R = thetaBroken_.primitiveField();
+    const scalarField& refR = thetaNetRef_.primitiveField();
+    const scalarField& refIR = thetaNetRefIntact_.primitiveField();
+    const scalarField& VR = mesh_.V();
+    const scalar phi0R = skeletonVolumeFraction_;
+    const scalar poleBand = phiSMax_ - 0.05;
+
+    label aICells = 0;
+    label aIMaxCell = -1;
+    scalar aIMax = 0;
+    scalar aIMaxThetaI = 0;
+    scalar aIMaxRefI = 0;
+    scalar aIMaxDStar = 0;
+    label nearPole = 0;
+    std::vector<scalar> proxyDev;
+    proxyDev.reserve(refIR.size());
+    label p1ZeroCells = 0;
+    scalar p1ZeroRefIMax = 0;
+    label s0RefCells = 0;
+    label dStar0Cells = 0;
+    label dStar0Unequal = 0;
+    scalar dStar0RelDevMax = 0;
+    forAll(refIR, celli)
+    {
+        const scalar S = P1R[celli] + (P2R[celli] + P3R[celli]);
+        if (!(S > 0))
+        {
+            if (refR[celli] > 0) { ++s0RefCells; }
+            continue;
+        }
+        double aIs = 1, aPs = 0, omdS = 1;
+        fibreReleaseKernel::shares
+        (
+            P1R[celli], P2R[celli], P3R[celli], aIs, aPs, omdS
+        );
+        const scalar dStar = (P2R[celli] + P3R[celli])/S;
+        const scalar thetaI = aIs*(tCR[celli] + tHR[celli]);
+        const scalar aI = phi0R + thetaI - refIR[celli];
+        if (thetaI > 0)
+        {
+            if (aIMaxCell < 0 || aI > aIMax)
+            {
+                aIMax = aI;
+                aIMaxCell = celli;
+                aIMaxThetaI = thetaI;
+                aIMaxRefI = refIR[celli];
+                aIMaxDStar = dStar;
+            }
+            ++aICells;
+            if (aI > poleBand) { ++nearPole; }
+        }
+        if (dStar > 0 && dStar < 1)
+        {
+            const scalar aIProxy = phi0R + thetaI - aIs*refR[celli];
+            proxyDev.push_back(aIProxy - aI);
+        }
+        if (P1R[celli] == 0)
+        {
+            ++p1ZeroCells;
+            p1ZeroRefIMax = max(p1ZeroRefIMax, mag(refIR[celli]));
+        }
+        if (P2R[celli] + P3R[celli] == 0)
+        {
+            ++dStar0Cells;
+            if (refIR[celli] != refR[celli])
+            {
+                ++dStar0Unequal;
+                if (refR[celli] > 0)
+                {
+                    dStar0RelDevMax = max
+                    (
+                        dStar0RelDevMax,
+                        mag(refIR[celli] - refR[celli])/refR[celli]
+                    );
+                }
+            }
+        }
+    }
+    scalar proxyDevP99 = 0;
+    scalar proxyDevMax = 0;
+    scalar proxyDevP01 = 0;
+    scalar proxyDevMin = 0;
+    const label proxyDevCells = label(proxyDev.size());
+    if (!proxyDev.empty())
+    {
+        const std::size_t nD = proxyDev.size();
+        const std::size_t k99 =
+            std::min(nD - 1, std::size_t(0.99*scalar(nD - 1) + 0.5));
+        std::nth_element(proxyDev.begin(), proxyDev.begin() + k99, proxyDev.end());
+        proxyDevP99 = proxyDev[k99];
+        proxyDevMax = *std::max_element(proxyDev.begin(), proxyDev.end());
+        const std::size_t k01 =
+            std::min(nD - 1, std::size_t(0.01*scalar(nD - 1) + 0.5));
+        std::nth_element(proxyDev.begin(), proxyDev.begin() + k01, proxyDev.end());
+        proxyDevP01 = proxyDev[k01];
+        proxyDevMin = *std::min_element(proxyDev.begin(), proxyDev.end());
+    }
+    reduce(aICells, sumOp<label>());
+    reduce(nearPole, sumOp<label>());
+    reduce(p1ZeroCells, sumOp<label>());
+    reduce(p1ZeroRefIMax, maxOp<scalar>());
+    reduce(s0RefCells, sumOp<label>());
+    reduce(dStar0Cells, sumOp<label>());
+    reduce(dStar0Unequal, sumOp<label>());
+    reduce(dStar0RelDevMax, maxOp<scalar>());
+
+    const scalar refMax = gMax(refR);
+    const scalar refIMin = gMin(refIR);
+    const scalar excessMax = gMax(refIR - refR);
+
+    const scalar dtR = runTime.deltaTValue();
+    const scalar sumNow = gSum(refIR*VR);
+    const scalar dSum = sumNow - refISumStepStart_;
+    const scalar transfer = returnReduce(refITransferStep_, sumOp<scalar>());
+    const scalar outflux = dtR*refIBoundaryFluxStep_;
+    const scalar balanceResidual =
+        dSum - (transfer - outflux + refISpSourceStep_);
+
+    Info<< "PHASE_CLOT_REFI time=" << runTime.userTimeValue()
+        << " step=" << runTime.timeIndex()
+        << " aICells=" << aICells
+        << " aIMax=" << aIMax
+        << " aIMaxCell=" << aIMaxCell
+        << " aIMaxThetaI=" << aIMaxThetaI
+        << " aIMaxRefI=" << aIMaxRefI
+        << " aIMaxDStar=" << aIMaxDStar
+        << " nearPole=" << nearPole
+        << " poleBand=" << poleBand
+        << " proxyDevCells=" << proxyDevCells
+        << " proxyDevP99=" << proxyDevP99
+        << " proxyDevMax=" << proxyDevMax
+        << " proxyDevP01=" << proxyDevP01
+        << " proxyDevMin=" << proxyDevMin
+        << " refMax=" << refMax
+        << " refIMin=" << refIMin
+        << " excessMax=" << excessMax
+        << " p1ZeroCells=" << p1ZeroCells
+        << " p1ZeroRefIMax=" << p1ZeroRefIMax
+        << " s0RefCells=" << s0RefCells
+        << " dStar0Cells=" << dStar0Cells
+        << " dStar0Unequal=" << dStar0Unequal
+        << " dStar0RelDevMax=" << dStar0RelDevMax
+        << " refISum=" << sumNow
+        << " dSum=" << dSum
+        << " transfer=" << transfer
+        << " outflux=" << outflux
+        << " spSource=" << refISpSourceStep_
+        << " balanceResidual=" << balanceResidual
+        << endl;
+}
+
+
 void Foam::solvers::phaseClotAxisymmetricFluid::postSolve()
 {
 
     writeBalanceDiagnostic();
+
+    // D74: the intact reference's per-step line, after every writer of it.
+    reportIntactReference();
 
     // Diagnostic only, and only when asked for. Evaluated at write times so
     // the cost is bounded by the number of write steps rather than by the

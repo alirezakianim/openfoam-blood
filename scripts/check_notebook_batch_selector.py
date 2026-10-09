@@ -60,8 +60,9 @@ RUNNER = Path(__file__).resolve().parents[1] / (
 # they must share ONE launch, i.e. one session and one host.
 IDENTITY_PAIRS = {72: ("S23v_G4_r3", "S23v_G4_r3_S22")}
 # A batch that is ONE session by decision (BATCH 73, the S23 production pair, Alireza 2026-10-08: "both 40 ms. both in one
-# session with 2 concurrency"): its filter is exactly these children, it has no LAUNCHES entry and no reference library.
-ONE_SESSION = {73: ("P73_G4_r3_40", "P73_G40_40")}
+# session with 2 concurrency"; BATCH 74, the D74 passive-field diagnostic, Alireza 2026-10-09: "Approve; run it alone"): its
+# filter is exactly these children, it has no LAUNCHES entry and no reference library.
+ONE_SESSION = {73: ("P73_G4_r3_40", "P73_G40_40"), 74: ("D74_refI",)}
 FAKE_SOLVER = "/content/openfoam-blood-ref/user-applications/phaseClotAxisymmetricFluid"
 FAKE_BASE = ["--package", "/content/package.zip", "--repo-digest", "0" * 64]
 
@@ -211,7 +212,8 @@ def check_launches(cell: str, controls: Path = CONTROLS, selected: int | None = 
     if names["LAUNCH"] != 1:
         raise LaunchError(f"the default is LAUNCH = {names['LAUNCH']}; it must be LAUNCH = 1")
     # the newest entry is always checked, even while BATCH still selects an older one (BATCH 73 is built before it is the default)
-    strict = sorted({b for b in by_batch} | ({selected} if selected is not None else set()) | {max(batches)})
+    strict = sorted({b for b in by_batch} | ({selected} if selected is not None else set()) | {max(batches)}
+                    | {b for b in ONE_SESSION if b in batches})
     for b, pair in ONE_SESSION.items():
         if b in launches:
             raise LaunchError(f"BATCH {b} is ONE session and must have no LAUNCHES entry; it has {sorted(launches[b])}")
@@ -290,6 +292,9 @@ def negatives(cell: str, controls: Path = CONTROLS, selected: int = 72) -> list:
     argv73 = next(r["argv"] for r in base if r["batch"] == 73 and r["launch"] == 1)
     if "--s22-solver" in argv73 or "--p2prime-solver" in argv73:
         raise AssertionError("BATCH 73 must pass no reference-library flag")
+    argv74 = next(r["argv"] for r in base if r["batch"] == 74 and r["launch"] == 1)
+    if "--s22-solver" in argv74 or "--p2prime-solver" in argv74:
+        raise AssertionError("BATCH 74 must pass no reference-library flag")
     cases = [
         ("BATCH 73 argv WITH --s22-solver", lambda: runner_accepts(argv73 + ["--s22-solver", FAKE_SOLVER], controls),
          "built for nothing"),
@@ -306,6 +311,28 @@ def negatives(cell: str, controls: Path = CONTROLS, selected: int = 72) -> list:
          "which REFERENCE_LIBRARY_BY_BATCH does not"),
         ("BATCH 73 at LAUNCH 2", lambda: fn_launch73(cell, 2, controls), "no launch split"),
         ("BATCH 73 at CONCURRENCY 1", lambda: fn_launch73(cell, 1, controls, concurrency=1), "CONCURRENCY 2"),
+        # BATCH 74 (D74, the passive-field diagnostic): ONE session, ONE child, CONCURRENCY 2, no library
+        ("BATCH 74 argv WITH --s22-solver", lambda: runner_accepts(argv74 + ["--s22-solver", FAKE_SOLVER], controls),
+         "built for nothing"),
+        ("BATCH 74 argv WITH --p2prime-solver", lambda: runner_accepts(argv74 + ["--p2prime-solver", FAKE_SOLVER], controls),
+         "built for nothing"),
+        ("BATCH 74 split into two launches", lambda: check_launches(
+            mutate(cell, r"^LAUNCHES = \{", 'LAUNCHES = {\n    74: {1: ("D74_refI", 4.6), 2: ("D74_refI", 1.0)},'), controls, selected),
+         "ONE session and must have no LAUNCHES entry"),
+        ("BATCH 74 gains a second child", lambda: check_launches(
+            _replace_all(cell, '74: ("D74_refI", 4.6,', '74: ("D74_refI P73_G4_r3_40", 4.6,', 1), controls, selected),
+         "is ONE session of"),
+        ("BATCH 74 loses its child", lambda: check_launches(
+            _replace_all(cell, '74: ("D74_refI", 4.6,', '74: ("", 4.6,', 1), controls, selected),
+         "is ONE session of"),
+        ("BATCH 74 names a child the controls do not define", lambda: check_launches(
+            cell, _controls_without(controls, "D74_refI"), selected), "not child_ids in mainCaseControls.json"),
+        ("BATCH 74 given a reference library by launch", lambda: check_launches(
+            mutate(cell, r"^    \(72, 2\): False,", "    (72, 2): False,\n    (74, 1): True,"), controls, selected),
+         "which REFERENCE_LIBRARY_BY_BATCH does not"),
+        ("BATCH 74 at LAUNCH 2", lambda: fn_launch73(cell, 2, controls, batch=74), "no launch split"),
+        ("BATCH 74 at CONCURRENCY 1", lambda: fn_launch73(cell, 1, controls, concurrency=1, batch=74), "CONCURRENCY 2"),
+        ("BATCH 74 at CONCURRENCY 3", lambda: fn_launch73(cell, 1, controls, concurrency=3, batch=74), "CONCURRENCY 2"),
         ("launch 2 argv WITH --s22-solver", lambda: runner_accepts(argv2 + ["--s22-solver", FAKE_SOLVER], controls),
          "built for nothing"),
         ("launch 1 argv WITHOUT --s22-solver", lambda: runner_accepts(argv1[:i] + argv1[i + 2:], controls),
@@ -369,21 +396,22 @@ def _controls_without(controls: Path, child_id: str) -> Path:
     return Path(name)
 
 
-def fn_launch73(cell: str, launch: int, controls: Path, concurrency: int = 2) -> None:
-    """The notebook's own launch_plan for BATCH 73 at a launch / concurrency the decision forbids."""
+def fn_launch73(cell: str, launch: int, controls: Path, concurrency: int = 2, batch: int = 73) -> None:
+    """The notebook's own launch_plan for a ONE_SESSION batch (73, or 74 with batch=74) at a launch / concurrency
+    the decision forbids."""
     names = notebook_names(cell)
     fn = launch_functions(cell)
     try:
-        fn["launch_plan"](73, launch, names["BATCHES"], names["LAUNCHES"], names["REFERENCE_LIBRARY_BY_BATCH"],
+        fn["launch_plan"](batch, launch, names["BATCHES"], names["LAUNCHES"], names["REFERENCE_LIBRARY_BY_BATCH"],
                           names["REFERENCE_LIBRARY_BY_LAUNCH"], concurrency, say=lambda _line: None)
     except ValueError as error:
-        raise LaunchError(f"BATCH 73: the notebook refuses it: {error}")
+        raise LaunchError(f"BATCH {batch}: the notebook refuses it: {error}")
 
 
 def main() -> int:
     if "--self-test" in sys.argv[1:]:
         try:
-            for label, line in negatives(launch_cell(), CONTROLS, 73):
+            for label, line in negatives(launch_cell(), CONTROLS, 74):
                 print(f"   refused: {label} -> {line}")
         except (LaunchError, AssertionError) as error:
             fail(f"self-test: {error}")
