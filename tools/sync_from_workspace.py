@@ -71,6 +71,7 @@ UNIT_CHECKS = [
     ("check_field_dimensions", []),
     ("check_indicator_recentred_in_mag", []),
     ("check_network_pressure_law", []),
+    ("check_oi62_platelet_ratio", []),   # OI-62: the platelet ratio (C6) and the dry-face mask, with planted defects
     ("check_per_step_state_is_primed", []),
     ("check_phase_indicator_basis", []),
     ("check_phase_normal_basis", []),

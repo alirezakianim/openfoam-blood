@@ -1056,6 +1056,25 @@ S23_REFUSALS = (
     ("S23v_G4_r3 drifting from its parent (a physics switch)",
      lambda c: _s16(c, "S23v_G4_r3", tau_v_s=0.001),
      "FSF parent check: S23v_G4_r3 differs from fsf_G4_kxu_r3_40 in tau_v_s"),
+    # BATCH 73 (production): P73_G4_r3_40 is S23v_G4_r3 with NO named key; P73_G40_40 is S23v_G40 with end_time_s and wall_budget_h
+    ("P73_G4_r3_40 drifting from S23v_G4_r3 in a run control",
+     lambda c: _s16(c, "P73_G4_r3_40", wall_budget_h=12.0),
+     "FSF parent check: P73_G4_r3_40 differs from S23v_G4_r3 in wall_budget_h"),
+    ("P73_G4_r3_40 drifting from S23v_G4_r3 in a physics key",
+     lambda c: _s16(c, "P73_G4_r3_40", k0p_m2=5e-13),
+     "FSF parent check: P73_G4_r3_40 differs from S23v_G4_r3 in k0p_m2"),
+    ("P73_G40_40 drifting from S23v_G40 in a physics key",
+     lambda c: _s16(c, "P73_G40_40", tau_v_s=0.001),
+     "FSF parent check: P73_G40_40 differs from S23v_G40 in tau_v_s"),
+    ("P73_G40_40 not extended (no end_time_s difference)",
+     lambda c: _s16(c, "P73_G40_40", end_time_s=0.025),
+     "FSF parent check: P73_G40_40 does not differ from S23v_G40 in its named key end_time_s"),
+    ("P73_G40_40 keeping S23v_G40's cap (no wall_budget_h difference)",
+     lambda c: _s16(c, "P73_G40_40", wall_budget_h=11.0),
+     "FSF parent check: P73_G40_40 does not differ from S23v_G40 in its named key wall_budget_h"),
+    ("P73_G40_40 with a frame key dropped (beyond its named keys)",
+     lambda c: _s16(c, "P73_G40_40", frame_interval_s=None),
+     "frame_interval_s"),
     ("S23v_G4_r3_S22 without its named key solver_library",
      lambda c: _s16(c, "S23v_G4_r3_S22", solver_library=None),
      "FSF parent check: S23v_G4_r3_S22 does not differ from S23v_G4_r3 in its named key solver_library"),
@@ -1272,7 +1291,7 @@ def s23_generator_negatives(only: str | None = None) -> None:
         props = lambda cid: (root / "runs" / cid / "constant" / "phaseClotProperties").read_text()
         # the key is written for NO child that does not name it (all four BATCH 72 children and every earlier one)
         every = sorted(p.name for p in (root / "runs").iterdir() if (p / "child.json").is_file())
-        assert len(every) == 30, len(every)
+        assert len(every) == KEPT_CHILDREN, (len(every), KEPT_CHILDREN)
         assert not [c for c in every if "volumetricTearRatio" in props(c)], "volumetricTearRatio written for a child that does not name it"
         # rev. 4.1: the only child.json with an "s23" block is the labelled twin, and it carries the marker only
         assert [c for c in every if "s23" in json.loads((root / "runs" / c / "child.json").read_text())] == ["S23v_G4_nor3"]
@@ -1282,6 +1301,11 @@ def s23_generator_negatives(only: str | None = None) -> None:
         # the twin is its (pinned) parent's dictionary plus the marker, written exactly as the solver reads it
         assert props("S23v_G4_nor3") == props("fsf_G4_kxu_nor3_40").rstrip("\n") + "\n\nsensitivityLimit tanDelta0;\n"
         assert props("S23v_G40") == props("fsf_G40_klo_v250")
+        # BATCH 73: the production pair has its parents' dictionaries, and no S23 block, no marker, no library pin
+        assert props("P73_G4_r3_40") == props("S23v_G4_r3") and props("P73_G40_40") == props("S23v_G40")
+        for c in ("P73_G4_r3_40", "P73_G40_40"):
+            assert not (root / "runs" / c / "child.env").exists(), c
+            assert "solver_library" not in json.loads((root / "runs" / c / "child.json").read_text()), c
         # the marker is written for ONE child of the 30 (the whitelist), as a word, with nothing else near it
         assert [c for c in every if "sensitivityLimit" in props(c)] == ["S23v_G4_nor3"]
         assert len(re.findall(r"(?m)^\s*sensitivityLimit\s+tanDelta0;\s*$", props("S23v_G4_nor3"))) == 1
@@ -1292,7 +1316,7 @@ def s23_generator_negatives(only: str | None = None) -> None:
             assert json.loads((root / "runs" / c / "child.json").read_text())["solver_library"] == "s22", c
         assert [c for c in every if json.loads((root / "runs" / c / "child.json").read_text()).get("solver_library") == "s22"] == sorted(["S23v_G4_r3_S22"] + pinned)
         # nOuterCorrectors is 1 on the four arms (the end-of-step partition rule of the log; section 13.6 hand-off)
-        for c in ("S23v_G4_r3", "S23v_G4_r3_S22", "S23v_G4_nor3", "S23v_G40"):
+        for c in ("S23v_G4_r3", "S23v_G4_r3_S22", "S23v_G4_nor3", "S23v_G40", "P73_G4_r3_40", "P73_G40_40"):
             fvs = (root / "runs" / c / "system" / "fvSolution").read_text()
             assert re.findall(r"(?m)^\s*nOuterCorrectors\s+(\S+);", fvs) == ["1"], (c, re.findall(r"nOuterCorrectors\s+\S+;", fvs))
         # the solver's own R1-R4 + marker/kelvinVoigt predicate (mirrored from its source text, below), applied to
@@ -1380,11 +1404,15 @@ def filtered_generation(filt, mutate_controls=None, patch_generator=None):
 
 def launch_filters_generate(nbsel, batch: int, generate) -> None:
     """BATCH 72 is two Colab sessions: each launch runs create_cases.py with ITS OWN filter, so each
-    filter must generate by itself (exactly its children) on a fresh copy. `generate` is
-    filtered_generation (or a stand-in); nbsel is check_notebook_batch_selector."""
+    filter must generate by itself (exactly its children) on a fresh copy. BATCH 73 is ONE session (no
+    LAUNCHES entry): its single filter is the batch's children. `generate` is filtered_generation (or a
+    stand-in); nbsel is check_notebook_batch_selector."""
     nb = Path(__file__).resolve().parents[3] / "notebooks" / "AM2020_main_case_colab.ipynb"
-    parts = nbsel.notebook_names(nbsel.launch_cell(nb))["LAUNCHES"].get(batch)
-    assert parts, f"batch {batch} has no launches"
+    names = nbsel.notebook_names(nbsel.launch_cell(nb))
+    parts = names["LAUNCHES"].get(batch)
+    if not parts:
+        assert batch in names["BATCHES"], f"batch {batch} is not in BATCHES"
+        parts = {1: (names["BATCHES"][batch][0], names["BATCHES"][batch][1])}
     for lnum, (only, _hours) in sorted(parts.items()):
         filt = only.split()
         rc, built, last = generate(filt)
@@ -1406,7 +1434,7 @@ def reference_library_wiring() -> None:
     spec.loader.exec_module(nbsel)
     text = nbsel.source_of(root / "notebooks" / "AM2020_main_case_colab.ipynb")
     batch, batches = nbsel.parse(text)
-    assert batch == max(batches) == 72, (batch, max(batches))
+    assert batch == max(batches) == 73, (batch, max(batches))
     # the build script re-pins by exactly these two patterns; a second match would break the release
     assert len(re.findall(r"EXPECTED_REPO_DIGEST = '[0-9a-f]{64}'", text)) == 1
     assert len(re.findall(r"EXPECTED_TAG = 'digest-[0-9a-f]{12}'", text)) == 1
@@ -1475,6 +1503,13 @@ def reference_library_wiring() -> None:
     assert need(" ".join(by[(72, 2)]["children"]), controls) == set(), need(" ".join(by[(72, 2)]["children"]), controls)
     assert by[(72, 1)]["library_passed"] == ["s22"] and by[(72, 2)]["library_passed"] == [], (by[(72, 1)], by[(72, 2)])
     assert by[(71, 1)]["library_passed"] == ["p2prime"], by[(71, 1)]
+    # BATCH 73 is ONE session (no launch 2): it names no solver_library, so it clones nothing and passes no flag
+    assert [k for k in by if k[0] == 73] == [(73, 1)], sorted(by)
+    assert by[(73, 1)]["children"] == ["P73_G4_r3_40", "P73_G40_40"], by[(73, 1)]["children"]
+    assert need(" ".join(by[(73, 1)]["children"]), controls) == set(), need(" ".join(by[(73, 1)]["children"]), controls)
+    assert by[(73, 1)]["library_passed"] == [] and "--s22-solver" not in by[(73, 1)]["argv"] and "--p2prime-solver" not in by[(73, 1)]["argv"]
+    refused(need(" ".join(by[(73, 1)]["children"]), controls), {"p2prime": "", "s22": "/x"}, "built for nothing")
+    check(need(" ".join(by[(73, 1)]["children"]), controls), {"p2prime": "", "s22": ""})
     assert "--s22-solver" in by[(72, 1)]["argv"] and "--s22-solver" not in by[(72, 2)]["argv"]
     # the same two negatives on this function's own exec'd runner functions
     check(need(" ".join(by[(72, 1)]["children"]), controls), {"p2prime": "", "s22": "/x"})
@@ -1484,7 +1519,7 @@ def reference_library_wiring() -> None:
     seen = nbsel.negatives(cell, controls, 72)
     print("   the reference-library wiring agrees: notebook pins, batch table, generator children, runner flags; "
           f"7 start-of-session cases seen both ways; {len(records)} launch argvs accepted by the runner's own parser "
-          f"(BATCH 72 launch 1 passes --s22-solver, launch 2 does not); {len(seen)} launch negatives each refused "
+          f"(BATCH 72 launch 1 passes --s22-solver, launch 2 does not; BATCH 73, one session, passes none); {len(seen)} launch negatives each refused "
           "for its stated reason")
 
 
@@ -2057,10 +2092,10 @@ S21_GENERATOR_NEGATIVES = (
 
 
 # The number of children the generator emits: the 18 kept + the 8 S22 validation
-# twins of BATCH 71 + the 4 S23 twins of BATCH 72. ONE pin, read by both
-# s21_generator_negatives and main(): BATCH 72 updated main's copy and left this
+# twins of BATCH 71 + the 4 S23 twins of BATCH 72 + the 2 production children of BATCH 73. ONE pin, read by
+# s21_generator_negatives, s23_generator_negatives and main(): BATCH 72 updated main's copy and left this
 # function's at 26, and release 2026-10-07 died on it ten minutes into the build.
-KEPT_CHILDREN = 30
+KEPT_CHILDREN = 32
 
 
 def s21_generator_negatives() -> None:
@@ -2185,7 +2220,7 @@ def main() -> int:
     # required strength, demonstration, transport, tear, source 33, deformation)
     # and the generator negatives of the deleted refusals are cut (the pre-S21
     # file: release-4198bb17).
-    KEPT = KEPT_CHILDREN   # the 18 kept children + the 8 S22 validation twins of BATCH 71 + the 4 S23 twins of BATCH 72
+    KEPT = KEPT_CHILDREN   # the 18 kept children + the 8 S22 validation twins of BATCH 71 + the 4 S23 twins of BATCH 72 + the 2 production children of BATCH 73
 
     def healthy(r, code):
         assert code == 0, f"exit {code}"
@@ -3041,6 +3076,9 @@ def main() -> int:
     run_direct("the_notebook_batch_filter_generates", launch_current_batch)
 
     run_direct("the_notebook_launch_filters_generate", lambda: launch_filters_generate(nbsel, _batch, _filtered_generation))
+    if _batch != 72:
+        # BATCH 72's two launches stay exercised while a later batch is the default
+        run_direct("batch_72_launch_filters_generate", lambda: launch_filters_generate(nbsel, 72, _filtered_generation))
 
     def launch_batch_60():
         filt = _batches[60].split()

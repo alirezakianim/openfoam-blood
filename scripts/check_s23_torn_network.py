@@ -13,6 +13,10 @@ damagePartitionKernel.H with `c++ -std=c++14 -O2 -ffp-contract=off` and run; a p
 kernel must make it fail. The tau_v floor is also evaluated, from the solver's own operator and
 literal, at the boundary 0.0005 / 5e-4 (accepted) and 4.99e-4 (refused).
 
+OI-59 (solver-engineer 03, docket 20261008-1507-run081155-b72-s23-validation) adds one predicate:
+G23-6's outflux is the transport's own inlet+outlet flux, read from the thetaC/thetaH matrices after
+their solves and BEFORE the FCT, and the balance books it rather than re-reading the post-FCT patch value.
+
 usage: python3 -B scripts/check_s23_torn_network.py      (exit 0 = pass, 1 = fail)
 Written by verification-engineer 14 (docket 20261007-0840-oi55-frame-analysis); rev. 4.1 predicates
 by solver-engineer 24.
@@ -74,6 +78,9 @@ FLUX = "::skeletonElasticForceFlux() const"
 CELL = "::skeletonElasticForceCell() const"
 FCT = "::fctLimiter\n"
 REC = "::recordStressWeight"
+SCC = "::solveContentComponents\n"
+BAL = "::writeBalanceDiagnostic()"
+PHF = "::solvePhaseField()"
 
 
 def p_refusal(t):
@@ -409,6 +416,40 @@ def p_log_denominators(t):
             and "(mCellL>=0&&maxUS>0?mVsL/maxUS:-1.0)" in c)
 
 
+def p_content_outflux_booked(t):
+    """OI-59: contentOuterFlux (G23-6's outflux and its residual) is the transport's own boundary flux."""
+    s, b, f = body(t, SCC), body(t, BAL), body(t, PHF)
+    i0, i1 = b.find("constscalarcontentVolume="), b.find("constscalarcontentResidual=")
+    seg = b[i0:i1] if 0 <= i0 < i1 else ""
+    k = s.find("contentBoundaryFlux_=")
+    return (s.count("contentBoundaryFlux_=") == 1
+            # stored after both solves and before the FCT moves the outlet cells
+            and 0 <= s.find("thetaHEqn.solve();") < k < s.find("fctApply(thetaC_,lambda,AC);")
+            # each component's own matrix, in fvMatrix::flux()'s boundary form
+            and "eqn.internalCoeffs()[patchi]*pf.patchInternalField()" in s
+            and "faceFlux-=eqn.boundaryCoeffs()[patchi];" in s
+            and all(f"solvedPatchFlux(thetaCEqn,thetaC_,{p})+solvedPatchFlux(thetaHEqn,thetaH_,{p});" in s
+                    for p in ("contentInlet", "contentOutlet"))
+            # OI-62 build (verification 08's holes D4, D5, D8, D9): the coupled branch reads the
+            # neighbour value, the lambda returns the unscaled sum, both patches are booked when
+            # they exist, and the store is the booked sum itself
+            and ("if(pf.coupled()){faceFlux-=eqn.boundaryCoeffs()[patchi]*pf.patchNeighbourField();}"
+                 "else{faceFlux-=eqn.boundaryCoeffs()[patchi];}returngSum(faceFlux);};") in s
+            and s.count("returngSum(faceFlux);") == 1
+            and "if(contentInlet>=0){bookedFlux+=solvedPatchFlux(thetaCEqn,thetaC_,contentInlet)" in s
+            and "if(contentOutlet>=0){bookedFlux+=solvedPatchFlux(thetaCEqn,thetaC_,contentOutlet)" in s
+            and "contentBoundaryFlux_=bookedFlux;" in s
+            # the balance books it, and re-reads no patch value of theta
+            and "constscalarcontentOuterFlux=contentBoundaryFlux_;" in seg
+            and "boundaryField" not in seg and "interpolate" not in seg
+            and seg.count("thetaC_") == 1 and seg.count("thetaH_") == 1   # contentVolume only
+            # zeroed with the carrier, so a step without transport books 0
+            and "phaseCarrier_.clear();" in f and "contentBoundaryFlux_=0;" in f
+            # the S23 keys keep their meaning
+            and "s23ContentResInt_+=mag(contentResidual)*deltaT;" in b
+            and "s23OutfluxInt_+=contentOuterFlux*deltaT;" in b)
+
+
 PREDICATES = (
     ("refusal R_c finite and > 1, default 21.95 (s4, s2.6)", p_refusal),
     ("volumetric branch: isSkel AND ref >= R_c theta, inside present, d*_law = 1 (s2.1)", p_event_product_isskel),
@@ -445,6 +486,9 @@ PREDICATES = (
      "(s13.2 item 6)", p_f1_logging),
     ("kernel test (behaviour): 2-step N -> P -> D c 0.1 rev. 3 T 0 / rev. 4 T 1, c 0.6 T 0; w at "
      "d* = 1 is +0.0; F1' one-site forms fail; Pi = Chebyshev 2 (s13.2 item 7)", p_kernel_test),
+    # OI-59 (index 27)
+    ("G23-6 outflux: the transport's own inlet+outlet flux, stored after the solves and before the FCT, "
+     "booked by the balance (OI-59)", p_content_outflux_booked),
 )
 
 # ONE planted defect per predicate: (file, unique anchor, replacement, predicate index)
@@ -529,6 +573,39 @@ MUTATIONS = (
      "    recordStressWeight(phiS.primitiveField(), 1);\n", 25),
     ("C", "    s23PtUsed_ = PtI;\n", "", 25),
     ("K", "    return std::abs(w/occ - aI);", "    return Scalar(0)*std::abs(w/occ - aI);", 26),
+    # ---- OI-59 planted defects (solver-engineer 03) ----
+    # the balance re-reads the post-FCT patch value (the shipped defect, two spellings)
+    ("C", "    const scalar contentOuterFlux = contentBoundaryFlux_;\n",
+     "    scalar contentOuterFlux = 0;\n    {\n        const surfaceScalarField contentFlux\n        (\n"
+     "            phaseCarrier_()*upwind<scalar>(mesh_, phaseCarrier_()).interpolate(thetaC_ + thetaH_)\n"
+     "        );\n        contentOuterFlux += gSum(contentFlux.boundaryField()[inletPatch])\n"
+     "          + gSum(contentFlux.boundaryField()[outletPatch]);\n    }\n", 27),
+    ("C", "    const scalar contentOuterFlux = contentBoundaryFlux_;\n",
+     "    const scalar contentOuterFlux = contentBoundaryFlux_\n"
+     "      + gSum(phaseCarrier_().boundaryField()[outletPatch]*thetaC_.boundaryField()[outletPatch]);\n", 27),
+    # booked after the FCT has moved the outlet cells
+    ("C", "        fctApply(thetaH_, lambda, AH);\n",
+     "        fctApply(thetaH_, lambda, AH);\n        contentBoundaryFlux_ =\n"
+     "            gSum(carrier.boundaryField()[outletI]*(thetaC_ + thetaH_)().boundaryField()[outletI]);\n", 27),
+    # one component dropped at the outlet
+    ("C", "              + solvedPatchFlux(thetaHEqn, thetaH_, contentOutlet);\n", ";\n", 27),
+    # the patch value in place of the matrix's internal coefficient form; the uncoupled boundaryCoeffs dropped
+    ("C", "                eqn.internalCoeffs()[patchi]*pf.patchInternalField()\n",
+     "                eqn.internalCoeffs()[patchi]*pf\n", 27),
+    ("C", "                faceFlux -= eqn.boundaryCoeffs()[patchi];\n", "", 27),
+    # not zeroed with the carrier: a step without transport would book the last step's outflux
+    ("C", "    contentBoundaryFlux_ = 0;\n", "", 27),
+    # ---- OI-62 build (solver-engineer 12): verification 08's D4, D5, D8, D9, plus the inlet guard ----
+    # D4: the coupled branch reads the patch-internal value instead of the neighbour's
+    ("C", "eqn.boundaryCoeffs()[patchi]*pf.patchNeighbourField();",
+     "eqn.boundaryCoeffs()[patchi]*pf.patchInternalField();", 27),
+    # D5: the stored value is not the booked sum
+    ("C", "        contentBoundaryFlux_ = bookedFlux;\n", "        contentBoundaryFlux_ = 2*bookedFlux;\n", 27),
+    # D8: the lambda returns a scaled sum
+    ("C", "            return gSum(faceFlux);\n", "            return 0.5*gSum(faceFlux);\n", 27),
+    # D9: the outlet guard inverted (the outlet is never booked), and the same at the inlet
+    ("C", "        if (contentOutlet >= 0)\n", "        if (contentOutlet < 0)\n", 27),
+    ("C", "        if (contentInlet >= 0)\n", "        if (contentInlet < 0)\n", 27),
 )
 
 

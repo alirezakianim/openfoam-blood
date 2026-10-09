@@ -828,6 +828,20 @@ PLATELET_V2_REQUIRED = (
 # It would NOT have caught run 20260905-054441 (WpDevMax peaked at 0.047).
 # That is fine and expected: the conservation gate catches that one. Two
 # instruments, two failures.
+#
+# OI-61 (2026-10-08): THE GATE METRIC FOLLOWS THE SCHEMA. Where WpDevMax = max|Wp - max(|q|, qFloor)| meets a cell with q < 0, the
+# |q| reference inflates it: BATCH 72's S23v_G4_r3 was ruled INADMISSIBLE at WpDevMax 0.419 (cell 26393, q = -0.23) where the
+# raw discrepancy |Wp - q| there is 0.040; the S22 twin reads the same inflation (WpDevMax 0.371 against 0.359 at 30 ms).
+# RETRACTED (2026-10-08, OI-62): this comment used to conclude from that pair "so it is not an S23 effect". That is wrong
+# for the raw discrepancy itself. At matched time (30 ms) WpRawQDevMax is 0.206 in S23v_G4_r3 against 0.091 in the S22 twin,
+# and the design (research/designs/2026-10-08-OI62-platelet-ratio-at-negative-q.md rev. 2, section 4) attributes both to one
+# mechanism, the platelet ratio w and its conductance at q < qFloor, which OI-62 changes in the S23 solver. What the pair
+# shows is only that the |q| reference inflates WpDevMax at q < 0 in both.
+# For a log whose PHASE_CLOT_PLATELET records are ALL metricSchema 2, the gate therefore reads WpRawQDevMax = max|Wp - q|
+# (raw q = (c+1)/2, which the solver already prints) against the SAME 0.25 gross screen; the screen's number is not re-derived
+# (its envelope is a one-velocity observation, q >= 0 there, where the two metrics coincide). Legacy and MIXED histories keep
+# WpDevMax: a raw-q peak over a partial history would be misleading (platelet_metric_summary). WpDevMax stays in the result
+# (wp_dev_peak) as a reported number; wp_gate_metric names what was gated.
 WP_DEV_LIMIT = 0.25
 
 
@@ -906,9 +920,10 @@ def parse_platelet(text: str) -> list[dict[str, float]]:
 def platelet_metric_summary(records: list[dict[str, float]]) -> dict:
     """Name references and coverage; never promote a partial raw-q history.
 
-    Legacy WpDevMax remains the existing gate input. New raw metrics are
-    reported only, with no new threshold. Mixed histories retain the legacy
-    envelope while withholding a misleading whole-history raw-q peak.
+    OI-61: a COMPLETE schema-2 history gates on WpRawQDevMax against the
+    unchanged 0.25 screen (assess_child); legacy and mixed histories keep
+    WpDevMax as the gate input. No new threshold. Mixed histories retain the
+    legacy envelope while withholding a misleading whole-history raw-q peak.
     """
     v2_count = sum(r.get("metricSchema") == 2 for r in records)
     complete = bool(records) and v2_count == len(records)
@@ -962,6 +977,102 @@ def platelet_metric_summary(records: list[dict[str, float]]) -> dict:
             "wDevRawBlood": "max(abs(w-1)) over raw q>=0.5; empty subset gives 0",
             "rawBloodCells": "number of cells with raw q>=0.5",
         } if complete else None,
+    }
+
+
+def platelet_envelope_gate(plate: list[dict[str, float]],
+                           raw_available: bool) -> tuple[str, float | None, bool, str | None]:
+    """The platelet envelope gross screen (OI-61): (metric, peak, ok, reason).
+
+    raw_available is platelet_metric_summary's platelet_raw_metrics_available,
+    i.e. EVERY record is metricSchema 2. Then the gate reads WpRawQDevMax
+    (max|Wp - q|, raw q), otherwise the legacy WpDevMax. Both against the same
+    WP_DEV_LIMIT, which is not re-derived. No records fails closed."""
+    metric = "WpRawQDevMax" if raw_available else "WpDevMax"
+    peak = max((r[metric] for r in plate), default=None)
+    if peak is None:
+        return metric, None, False, (
+            "no PHASE_CLOT_PLATELET records in the log, so WpDevMax was "
+            "never measured. An unassessable run fails."
+        )
+    if peak > WP_DEV_LIMIT and metric == "WpRawQDevMax":
+        return metric, peak, False, (
+            f"WpRawQDevMax (max|Wp - q|, raw q; metricSchema 2) reached "
+            f"{peak:.3f} (gross-screen limit {WP_DEV_LIMIT}, the "
+            f"widest one-velocity run measured 0.111). This fails the "
+            f"envelope screen; it does not by itself establish depletion, "
+            f"conservation failure, or causation."
+        )
+    if peak > WP_DEV_LIMIT:
+        return metric, peak, False, (
+            f"WpDevMax (the emitter's effective-q reference, not certified "
+            f"as raw q) reached {peak:.3f} (envelope limit "
+            f"{WP_DEV_LIMIT}; the widest one-velocity run measured 0.111). "
+            f"This fails the historical envelope screen; it does not by "
+            f"itself establish depletion, conservation failure, or causation."
+        )
+    return metric, peak, True, None
+
+
+# OI-62 (2026-10-08; design research/designs/2026-10-08-OI62-platelet-ratio-at-negative-q.md rev. 2, sections 3 and 7).
+# The solver masks the platelet diffusion's conductance to exactly 0 on every face with a q <= 0 side and logs, on
+#   PHASE_CLOT_PLATELET_FO time=<t> plateletFo=<x> plateletFoLimit=2 dryFacesConducting=<n>
+# the number of such faces whose conductance is NOT 0. By construction n = 0; any n > 0 means the mask failed and the
+# platelet diffusion carried Wp across a sign change of q again. A log without the field (BATCH 72 and earlier) has
+# nothing to gate and is not failed for it: the run review, not this reader, requires the field of an OI-62 build.
+# A PRESENT field that is not a non-negative integer, or is repeated on a line, fails closed (a reason, not an exception,
+# so one corrupt line cannot stop the assessor writing result.json).
+PLATELET_FO_LINE = re.compile(r"PHASE_CLOT_PLATELET_FO (?P<kv>.*)")  # the space excludes PHASE_CLOT_PLATELET_FO_WARNING
+
+
+def platelet_dry_face_gate(text: str) -> dict:
+    """OI-62: the dryFacesConducting gate over every PHASE_CLOT_PLATELET_FO line.
+
+    Returns the keys merged into the child result: platelet_fo_records, platelet_dry_faces_records (lines carrying
+    the field), platelet_dry_faces_conducting_max, platelet_dry_faces_first_time_s (first line with n > 0 or a
+    malformed field), platelet_dry_faces_gate_ok and platelet_dry_faces_gate_reason. Absence of the field is ok."""
+    records = with_field = 0
+    peak: int | None = None
+    first_bad: str | None = None
+    bad_reason: str | None = None
+    for m in PLATELET_FO_LINE.finditer(text):
+        records += 1
+        pairs = re.findall(r"(\w+)=([^\s]+)", m.group("kv"))
+        values = [v for k, v in pairs if k == "dryFacesConducting"]
+        if re.search(r"\bdryFacesConducting\b", m.group("kv")) and not values:
+            values = [""]  # the key without a value: a truncated token
+        if not values:
+            continue
+        with_field += 1
+        time_token = dict(pairs).get("time", "?")
+        if len(values) > 1 or not re.fullmatch(r"\d+", values[0]):
+            if first_bad is None:
+                first_bad = time_token
+                bad_reason = (
+                    f"PHASE_CLOT_PLATELET_FO at time={time_token} carries a malformed dryFacesConducting "
+                    f"({values!r}); it must appear once, as a non-negative integer. An unreadable count fails."
+                )
+            continue
+        n = int(values[0])
+        peak = n if peak is None else max(peak, n)
+        if n > 0 and first_bad is None:
+            first_bad = time_token
+            bad_reason = (
+                f"dryFacesConducting={n} at time={time_token}: OI-62 masks the platelet diffusion's conductance "
+                f"to 0 on every face with a q <= 0 side, so this count must be 0. The mask failed, and the "
+                f"diffusion can carry Wp across a sign change of q again."
+            )
+    try:
+        first_time = float(first_bad) if first_bad is not None else None
+    except ValueError:
+        first_time = None
+    return {
+        "platelet_fo_records": records,
+        "platelet_dry_faces_records": with_field,
+        "platelet_dry_faces_conducting_max": peak,
+        "platelet_dry_faces_first_time_s": first_time,
+        "platelet_dry_faces_gate_ok": first_bad is None,
+        "platelet_dry_faces_gate_reason": bad_reason,
     }
 
 
@@ -5506,26 +5617,18 @@ def assess_child(case: Path, spec: dict, controls: dict) -> dict:
     plate = parse_platelet(text)
     result.update(platelet_metric_summary(plate))
     wp_dev_peak = max((r["WpDevMax"] for r in plate), default=None)
-    wp_ok = True
-    wp_reason = None
+    # OI-61: schema 2 on EVERY record -> gate the raw-q discrepancy; otherwise the legacy effective-q metric.
     # Same fail-closed rule as the phase-bound gate above: no platelet
     # records means the Wp/q envelope was never measured, which is a missing
     # instrument rather than a pass.
-    if wp_dev_peak is None:
-        wp_ok = False
-        wp_reason = (
-            "no PHASE_CLOT_PLATELET records in the log, so WpDevMax was "
-            "never measured. An unassessable run fails."
-        )
-    elif wp_dev_peak > WP_DEV_LIMIT:
-        wp_ok = False
-        wp_reason = (
-            f"WpDevMax (the emitter's effective-q reference, not certified "
-            f"as raw q) reached {wp_dev_peak:.3f} (envelope limit "
-            f"{WP_DEV_LIMIT}; the widest one-velocity run measured 0.111). "
-            f"This fails the historical envelope screen; it does not by "
-            f"itself establish depletion, conservation failure, or causation."
-        )
+    wp_gate_metric, wp_gate_peak, wp_ok, wp_reason = platelet_envelope_gate(
+        plate, result["platelet_raw_metrics_available"]
+    )
+    # OI-62: the dry-face conductance count, independent of the envelope screen above (its own verdict, its own reason).
+    dry = platelet_dry_face_gate(text)
+    result.update(dry)
+    dry_ok = dry["platelet_dry_faces_gate_ok"]
+    dry_reason = dry["platelet_dry_faces_gate_reason"]
 
     # G3'lambda ADMISSIBILITY (research/designs/2026-10-05-S20-content-fct-neutral-zero-flux.md
     # rev. 5 section 2.3). s10_report computes it; this is the verdict that reads it. A log
@@ -5580,6 +5683,8 @@ def assess_child(case: Path, spec: dict, controls: dict) -> dict:
         "mass_gate_ok": mass_ok,
         "mass_gate_reason": mass_reason,
         "wp_dev_peak": wp_dev_peak,
+        "wp_gate_metric": wp_gate_metric,
+        "wp_gate_peak": wp_gate_peak,
         "wp_gate_ok": wp_ok,
         "wp_gate_reason": wp_reason,
         "c_under_peak": c_under_peak,
@@ -5687,7 +5792,7 @@ def assess_child(case: Path, spec: dict, controls: dict) -> dict:
         # THE gate for every table below. Named so an excluded child is
         # visible in the report rather than simply absent from a row.
         "admissible": bool(
-            completed and bounded and vs_ok and mass_ok and wp_ok
+            completed and bounded and vs_ok and mass_ok and wp_ok and dry_ok
             and c_bound_ok and shell_mx_ok and carrier_ok and pn_ok and g3l_ok
         ),
     })
@@ -5701,6 +5806,8 @@ def assess_child(case: Path, spec: dict, controls: dict) -> dict:
         result["bounds_reason"] = c_bound_reason
     if not wp_ok and not result["bounds_reason"]:
         result["bounds_reason"] = wp_reason
+    if not dry_ok and not result["bounds_reason"]:
+        result["bounds_reason"] = dry_reason
     if not shell_mx_ok and not result["bounds_reason"]:
         result["bounds_reason"] = shell_mx_reason
     if not carrier_ok and not result["bounds_reason"]:

@@ -1047,6 +1047,12 @@ FSF_PARENT_PAIRS = (
     # sensitivity marker (the only child that may).
     ("S23v_G4_nor3", "fsf_G4_kxu_nor3_40", {"solver_library", "sensitivity_limit"}, {"wall_budget_h"}),
     ("S23v_G40", "fsf_G40_klo_v250", set(), {"wall_budget_h"}),
+    # BATCH 73 (production, Alireza 2026-10-08: "both 40 ms. both in one session with 2
+    # concurrency"; docket 20261008-1507-run081155-b72-s23-validation, case-engineer 05):
+    # the loose clot repeats S23v_G4_r3 (already 40 ms, 11 h cap: no key differs, so the pair
+    # names none); the stiff clot is S23v_G40 extended from 25 to 40 ms with an 18 h cap.
+    ("P73_G4_r3_40", "S23v_G4_r3", set(), set()),
+    ("P73_G40_40", "S23v_G40", set(), {"end_time_s", "wall_budget_h"}),
 )
 
 
@@ -3734,7 +3740,10 @@ def main() -> int:
     'S23v_G4_r3': 40,
     'S23v_G4_r3_S22': 41,
     'S23v_G4_nor3': 42,
-    'S23v_G40': 43}
+    'S23v_G40': 43,
+    # BATCH 73: the production pair, loose first (it is the shorter run), after the BATCH 72 arms.
+    'P73_G4_r3_40': 50,
+    'P73_G40_40': 51}
     # S17 (design section 6): the mechanical control check, before anything
     # is ordered for launch. The controls-entry half runs for every pair; the
     # child.json half for the pairs whose control is built in this run

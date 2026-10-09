@@ -39,6 +39,9 @@ VERSIONED = {
     **LEGACY, "metricSchema": 2, "WpRawQDevMax": 0,
     "rawQMin": 0.7, "wDevRawBlood": 0, "rawBloodCells": 1,
 }
+FIXTURE = ROOT / "scripts/fixtures/assess_child_platelet_gate.json"
+CONTROLS = ROOT / "cases/AM2020_planar_mural_detachment/constant/mainCaseControls.json"
+DRY0 = " dryFacesConducting=0"
 
 
 def emitter_errors(source):
@@ -87,6 +90,58 @@ def line(fields):
     return "PHASE_CLOT_PLATELET " + " ".join(
         f"{key}={value}" for key, value in fields.items()
     ) + "\n"
+
+
+def assess_fixture(assessor, platelet_fields, dry_suffix):
+    """assess_child on the in-tree synthetic fixture with the given platelet records and FO suffix.
+
+    The fixture child is ADMISSIBLE by construction, so a verdict that changes comes from the two platelet gates
+    alone. Every placeholder must land (a template that silently kept its braces would test nothing)."""
+    fx = json.loads(FIXTURE.read_text())
+    log = fx["log_template"]
+    for t in ("5e-4", "1e-3"):
+        token = "{PLATELET_%s}" % t
+        assert log.count(token) == 1, token
+        log = log.replace(token, line({**platelet_fields, "time": t}).rstrip("\n"))
+    assert log.count("{DRY}") == 2
+    log = log.replace("{DRY}", dry_suffix)
+    controls = json.loads(CONTROLS.read_text())
+    with tempfile.TemporaryDirectory(prefix="platelet-fixture-") as tmp:
+        case = Path(tmp)
+        (case / "log.phaseClotAxisymmetricFluid").write_text(log)
+        for rel, text in fx["files"].items():
+            target = case / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text)
+        return assessor.assess_child(case, fx["spec"], controls)
+
+
+# name, platelet record, FO suffix, expected (wp_gate_ok, dry gate ok, admissible)
+FIXTURE_CASES = (
+    ("baseline: schema 2, raw 0, dry faces 0", VERSIONED, DRY0, (True, True, True)),
+    ("a BATCH 72 log carries no dry-face field: not failed for it", VERSIONED, "", (True, True, True)),
+    ("legacy unversioned record, WpDevMax 0", LEGACY, "", (True, True, True)),
+    ("raw platelet deviation 0.30 over the 0.25 screen", {**VERSIONED, "WpRawQDevMax": 0.30}, DRY0, (False, True, False)),
+    ("legacy WpDevMax 1.4 over the screen", {**LEGACY, "WpDevMax": 1.4}, "", (False, True, False)),
+    ("dryFacesConducting=1 (the smallest nonzero)", VERSIONED, " dryFacesConducting=1", (True, False, False)),
+    ("dryFacesConducting=622", VERSIONED, " dryFacesConducting=622", (True, False, False)),
+    ("a malformed dryFacesConducting fails closed", VERSIONED, " dryFacesConducting=oops", (True, False, False)),
+    ("both gates fail", {**VERSIONED, "WpRawQDevMax": 0.30}, " dryFacesConducting=3", (False, False, False)),
+)
+
+
+def fixture_failures(assessor):
+    """Every FIXTURE_CASES row whose verdicts differ from the expectation; [] when the assessor agrees with all."""
+    bad = []
+    for name, fields, dry, want in FIXTURE_CASES:
+        try:
+            result = assess_fixture(assessor, fields, dry)
+            got = (result["wp_gate_ok"], result.get("platelet_dry_faces_gate_ok"), result["admissible"])
+        except Exception as error:  # an assessor that crashes on the fixture disagrees with it too
+            got = repr(error)
+        if got != want:
+            bad.append((name, got, want))
+    return bad
 
 
 class PlateletSemanticsTests(unittest.TestCase):
@@ -237,28 +292,137 @@ class PlateletSemanticsTests(unittest.TestCase):
         self.assertFalse(out["platelet_raw_metrics_available"])
 
     def test_assess_child_consumes_summary_without_replacing_existing_gate(self):
-        matrix = ROOT / (
-            "preflight/20260906-101812-am2020-main-case/"
-            "case-after-run-AM2020_planar_mural_detachment/runs/matrix.json"
+        # Verification 08, hole A3: this test used to SKIP (its returned-run fixture preflight/20260906-101812 is absent),
+        # so a mutant that discarded the platelet gate's verdict passed the build. It now runs on the in-tree fixture.
+        self.assertTrue(FIXTURE.is_file(), f"the in-tree fixture {FIXTURE} is missing: the end-to-end test must not skip")
+        for versioned in (False, True):
+            fields = {**(VERSIONED if versioned else LEGACY), "WpDevMax": 1.4}
+            result = assess_fixture(self.assessor, fields, DRY0 if versioned else "")
+            self.assertEqual(result["wp_dev_peak"], 1.4)
+            # OI-61: WpDevMax 1.4 with WpRawQDevMax 0 (the q < 0 inflation) passes on a schema-2 log;
+            # the same WpDevMax on a legacy log still fails the historical screen.
+            self.assertEqual(result["wp_gate_ok"], versioned)
+            self.assertEqual(result["wp_gate_metric"], "WpRawQDevMax" if versioned else "WpDevMax")
+            self.assertEqual(result["wp_gate_peak"], 0 if versioned else 1.4)
+            self.assertEqual(result["platelet_raw_metrics_available"], versioned)
+            self.assertEqual(result["wp_raw_q_dev_peak"], 0 if versioned else None)
+            # the fixture child is admissible but for the platelet screen, so the verdict follows it end to end
+            self.assertEqual(result["admissible"], versioned)
+            if not versioned:
+                self.assertEqual(result["bounds_reason"], result["wp_gate_reason"])
+        self.assertEqual(self.assessor.WP_DEV_LIMIT, 0.25)
+        self.assertEqual(self.assessor.C_BOUND_LIMIT, 0.05)
+
+    def test_oi62_assess_child_verdicts_on_the_fixture(self):
+        self.assertEqual(fixture_failures(self.assessor), [])
+
+    def mutant(self, before, after):
+        src = ASSESSOR.read_text()
+        self.assertEqual(src.count(before), 1, f"mutation must land exactly once: {before!r}")
+        module = types.ModuleType("platelet_semantics_mutant")
+        module.__file__ = str(ASSESSOR)
+        exec(compile(src.replace(before, after, 1), str(ASSESSOR), "exec"), module.__dict__)
+        return module
+
+    def test_oi62_discarding_a_platelet_verdict_fails_the_fixture_test(self):
+        """A3 and its dry-face twins: each mutant must make fixture_failures non-empty; the no-op control must not."""
+        call_tail = "    # OI-62: the dry-face conductance count"
+        mutants = (
+            ("A3: wp_ok = True after the gate call (verdict discarded)", call_tail, "    wp_ok = True\n" + call_tail),
+            ("wp_ok dropped from admissible", "and wp_ok and dry_ok", "and dry_ok"),
+            ("dry verdict discarded", 'dry_ok = dry["platelet_dry_faces_gate_ok"]', "dry_ok = True"),
+            ("dry_ok dropped from admissible", "and wp_ok and dry_ok", "and wp_ok"),
+            ("dry threshold n > 1 (a single dry face passes)", "if n > 0 and first_bad is None", "if n > 1 and first_bad is None"),
+            ("the dryFacesConducting field is never read", 'values = [v for k, v in pairs if k == "dryFacesConducting"]', "values = []"),
+            ("a malformed count is ignored", 're.fullmatch(r"\\d+", values[0])', "True"),
         )
-        if not matrix.is_file():
-            self.skipTest("returned merged child spec unavailable; parser tests still run")
-        spec = json.loads(matrix.read_text())[0]
-        controls = json.loads((ROOT / "cases/AM2020_planar_mural_detachment/"
-                               "constant/mainCaseControls.json").read_text())
-        with tempfile.TemporaryDirectory(prefix="platelet-semantics-") as tmp:
-            case = Path(tmp)
-            log = case / "log.phaseClotAxisymmetricFluid"
-            for versioned in (False, True):
-                fields = {**(VERSIONED if versioned else LEGACY), "WpDevMax": 1.4}
-                log.write_text(line(fields))
-                result = self.assessor.assess_child(case, spec, controls)
-                self.assertEqual(result["wp_dev_peak"], 1.4)
-                self.assertFalse(result["wp_gate_ok"])
-                self.assertEqual(result["platelet_raw_metrics_available"], versioned)
-                self.assertEqual(result["wp_raw_q_dev_peak"], 0 if versioned else None)
-            self.assertEqual(self.assessor.WP_DEV_LIMIT, 0.25)
-            self.assertEqual(self.assessor.C_BOUND_LIMIT, 0.05)
+        for name, before, after in mutants:
+            with self.subTest(mutant=name):
+                self.assertTrue(fixture_failures(self.mutant(before, after)), "the mutant was not caught")
+        self.assertEqual(fixture_failures(self.mutant("and wp_ok and dry_ok", "and wp_ok and dry_ok")), [], "the no-op control")
+
+    def fo(self, *suffixes):
+        return "".join(
+            f"PHASE_CLOT_PLATELET_FO time={1e-6 * (i + 1):g} plateletFo=0.02 plateletFoLimit=2{s}\n"
+            for i, s in enumerate(suffixes)
+        )
+
+    def test_oi62_dry_face_gate_reads_the_field_and_nothing_else(self):
+        gate = self.assessor.platelet_dry_face_gate
+        absent = gate(self.fo("", ""))
+        self.assertEqual((absent["platelet_fo_records"], absent["platelet_dry_faces_records"],
+                          absent["platelet_dry_faces_gate_ok"], absent["platelet_dry_faces_conducting_max"]),
+                         (2, 0, True, None))
+        zeros = gate(self.fo(DRY0, DRY0, DRY0))
+        self.assertEqual((zeros["platelet_dry_faces_records"], zeros["platelet_dry_faces_gate_ok"],
+                          zeros["platelet_dry_faces_conducting_max"]), (3, True, 0))
+        self.assertIsNone(zeros["platelet_dry_faces_gate_reason"])
+        # the first nonzero line sets the time and the reason; the maximum is over every line
+        some = gate(self.fo(DRY0, " dryFacesConducting=3", " dryFacesConducting=1"))
+        self.assertFalse(some["platelet_dry_faces_gate_ok"])
+        self.assertEqual(some["platelet_dry_faces_conducting_max"], 3)
+        self.assertEqual(some["platelet_dry_faces_first_time_s"], 2e-6)
+        self.assertIn("dryFacesConducting=3", some["platelet_dry_faces_gate_reason"])
+        self.assertFalse(gate(self.fo(" dryFacesConducting=1"))["platelet_dry_faces_gate_ok"])
+        # the nonzero line is not the last: the gate reads every record, not the final one
+        self.assertFalse(gate(self.fo(" dryFacesConducting=1", DRY0, DRY0))["platelet_dry_faces_gate_ok"])
+        for bad in (" dryFacesConducting=oops", " dryFacesConducting=-1", " dryFacesConducting=1.5",
+                    " dryFacesConducting=nan", " dryFacesConducting=1e3", " dryFacesConducting=",
+                    " dryFacesConducting", " dryFacesConducting=0 dryFacesConducting=0"):
+            with self.subTest(malformed=bad):
+                out = gate(self.fo(DRY0, bad))
+                self.assertFalse(out["platelet_dry_faces_gate_ok"])
+                self.assertIn("malformed", out["platelet_dry_faces_gate_reason"])
+        # sibling records that share the prefix are not PHASE_CLOT_PLATELET_FO lines
+        other = ("PHASE_CLOT_PLATELET_FO_WARNING time=1e-6 plateletFo=5 dryFacesConducting=9\n"
+                 + line({**VERSIONED}).rstrip("\n") + " dryFacesConducting=9\n")
+        ignored = gate(other + self.fo(DRY0))
+        self.assertEqual((ignored["platelet_fo_records"], ignored["platelet_dry_faces_gate_ok"]), (1, True))
+        self.assertEqual(gate("")["platelet_fo_records"], 0)
+
+    def gate(self, *records):
+        """platelet_envelope_gate over parsed records, as assess_child feeds it."""
+        plate = self.assessor.parse_platelet("".join(line(r) for r in records))
+        summary = self.assessor.platelet_metric_summary(plate)
+        return self.assessor.platelet_envelope_gate(plate, summary["platelet_raw_metrics_available"])
+
+    def test_oi61_schema_two_gates_on_raw_q_both_ways(self):
+        limit = self.assessor.WP_DEV_LIMIT
+        self.assertEqual(limit, 0.25)
+        # BATCH 72's S23v_G4_r3: WpDevMax 0.419 (q < 0 inflation), raw 0.040 -> admissible on the raw metric
+        metric, peak, ok, why = self.gate({**VERSIONED, "WpDevMax": 0.419, "WpRawQDevMax": 0.040})
+        self.assertEqual((metric, peak, ok, why), ("WpRawQDevMax", 0.040, True, None))
+        # the other way: a real raw-q discrepancy with a small WpDevMax must FAIL (it could not before)
+        metric, peak, ok, why = self.gate({**VERSIONED, "WpDevMax": 0.01, "WpRawQDevMax": 0.30})
+        self.assertEqual((metric, peak, ok), ("WpRawQDevMax", 0.30, False))
+        self.assertIn("WpRawQDevMax", why)
+        self.assertIn("0.300", why)
+        # the limit is the same 0.25, inclusive of the limit itself
+        self.assertTrue(self.gate({**VERSIONED, "WpRawQDevMax": 0.25})[2])
+        self.assertFalse(self.gate({**VERSIONED, "WpRawQDevMax": 0.2500001})[2])
+        # the peak is over every record, not the last
+        self.assertFalse(self.gate({**VERSIONED, "WpRawQDevMax": 0.4}, {**VERSIONED, "WpRawQDevMax": 0.0})[2])
+
+    def test_oi61_legacy_and_mixed_histories_keep_wpdevmax(self):
+        metric, peak, ok, why = self.gate({**LEGACY, "WpDevMax": 1.4})
+        self.assertEqual((metric, peak, ok), ("WpDevMax", 1.4, False))
+        self.assertIn("effective-q reference", why)
+        self.assertTrue(self.gate({**LEGACY, "WpDevMax": 0.25})[2])
+        self.assertFalse(self.gate({**LEGACY, "WpDevMax": 0.2500001})[2])
+        # a legacy record alongside a schema-2 one: the history is MIXED, the legacy metric gates every record
+        metric, peak, ok, _ = self.gate({**LEGACY, "WpDevMax": 0.1}, {**VERSIONED, "WpDevMax": 1.4, "WpRawQDevMax": 0})
+        self.assertEqual((metric, peak, ok), ("WpDevMax", 1.4, False))
+        # no records: fail closed
+        metric, peak, ok, why = self.assessor.platelet_envelope_gate([], False)
+        self.assertEqual((peak, ok), (None, False))
+        self.assertIn("never measured", why)
+
+    def test_oi61_assess_child_calls_the_gate_function(self):
+        src = ASSESSOR.read_text()
+        self.assertEqual(src.count("platelet_envelope_gate("), 2)          # the definition and the one call in assess_child
+        self.assertIn('"wp_gate_metric": wp_gate_metric', src)
+        self.assertNotIn('max((r["WpDevMax"] for r in plate)', src.split("def assess_child")[1].split("G3'lambda ADMISSIBILITY")[0].replace(
+            'wp_dev_peak = max((r["WpDevMax"] for r in plate), default=None)', ""))
 
     def test_real_legacy_archive_is_preserved(self):
         if not ARCHIVED_LOG.is_file():

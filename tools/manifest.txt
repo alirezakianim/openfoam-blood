@@ -64,6 +64,7 @@ scripts/check_indicator_recentred_in_mag.py
 scripts/check_neohookean_algebra.py
 scripts/check_network_pressure_law.py
 scripts/check_notebook_batch_selector.py
+scripts/check_oi62_platelet_ratio.py
 scripts/check_per_step_state_is_primed.py
 scripts/check_phase_indicator_basis.py
 scripts/check_phase_normal_basis.py
@@ -86,6 +87,7 @@ scripts/check_stage2_case_generation.py
 scripts/check_stage2_content_seeding.py
 scripts/check_throat_mesh.py
 scripts/check_zero_diffusivity_safety.py
+scripts/fixtures/assess_child_platelet_gate.json
 scripts/na03_width.py
 scripts/run_digest.py
 scripts/s16_offline_checks.py

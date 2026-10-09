@@ -813,6 +813,7 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
     previousInventory_(0),
     detachedContentStep_(0),
     previousContentVolume_(0),
+    contentBoundaryFlux_(0),
     transferClotGrowth_(0),
     dBSumCommitted_(0),
     deltaThetaIntAtTransfer_(0),
@@ -6700,8 +6701,13 @@ void Foam::solvers::phaseClotAxisymmetricFluid::updateDerivedFields()
     // interfaceDepletionModel seriesResistance restores the other branch
     // through kEff above, for both the sink and the growth at once.
     {
-        // The same operand the sink uses, built the same way, so the two
-        // cannot disagree about what w is. NOT a gradient of it.
+        // The same operand the adhesion sink uses, W/max(|q|, qFloor), built
+        // the same way. NOT a gradient of it. It is NOT the diffusion operand
+        // or the written w_ (OI-62): those are C6, w = W/q signed, so at
+        // Wp = q < 0 they read w = +1 where this and the sink read -1, and
+        // in the band 0 < |q| < qFloor they read 1 where this reads q/qFloor.
+        // The law for the sink, wGrowth and wStoich at q <= 0 is OI-63, owed;
+        // no record may take the written w as the w growth used at q < 0.
         volScalarField wGrowth
         (
             IOobject
@@ -9222,6 +9228,10 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePhaseField()
     // abort rather than advect skeleton momentum with last step's weights.
     contentFaceWeights_.clear();
     contentFctLambda_.clear();
+    // OI-59: and the content flux those weights carried through the inlet
+    // and outlet. A step that does not run solveContentComponents() books
+    // no outflux, as the balance did when it found phaseCarrier_ absent.
+    contentBoundaryFlux_ = 0;
 
     // q AS IT STANDS NOW IS q^n: this runs before c is advanced, and the
     // updateDerivedFields() immediately preceding solvePhaseField() built q_
@@ -9634,6 +9644,63 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveContentComponents
 
     thetaC_.correctBoundaryConditions();
     thetaH_.correctBoundaryConditions();
+
+    // OI-59: THE CONTENT THIS TRANSPORT TOOK THROUGH THE INLET AND OUTLET,
+    // AS THE TWO SOLVES TOOK IT. Booked here, after the solves and BEFORE
+    // fctApply() below, because this is the only time level at which it
+    // exists. The solves removed (internalCoeffs*theta_P - boundaryCoeffs)
+    // per boundary face -- phi_b*theta_low,P^(n+1) on the zeroGradient
+    // inlet and outlet -- and the FCT then corrects the outlet cells through
+    // interior faces only. writeBalanceDiagnostic() used to re-interpolate
+    // theta onto the patches at the end of the step and so booked
+    // phi_b*theta_FCT,P instead: in BATCH 72 S23v_G4_r3 that difference,
+    // dt*sum phi_b*(theta_FCT - theta_low), was 100% of the 6.6e-5 content
+    // residual (docket 20261008-1507-run081155-b72-s23-validation, 02).
+    //
+    // Read from each component's OWN matrix in fvMatrix::flux()'s boundary
+    // form, so it is the solve's flux whatever the patch type. flux() is not
+    // called: it aborts unless the field is listed in fluxRequired. The
+    // coefficient accessors are non-const in OpenFOAM 13 and allocate
+    // nothing. ASSIGNED, NOT ACCUMULATED: each phase corrector re-solves
+    // from the old time, and the last solve is the one the balance closes.
+    {
+        const auto solvedPatchFlux =
+        [](fvScalarMatrix& eqn, const volScalarField& f, const label patchi)
+        {
+            const fvPatchScalarField& pf = f.boundaryField()[patchi];
+            scalarField faceFlux
+            (
+                eqn.internalCoeffs()[patchi]*pf.patchInternalField()
+            );
+            if (pf.coupled())
+            {
+                faceFlux -=
+                    eqn.boundaryCoeffs()[patchi]*pf.patchNeighbourField();
+            }
+            else
+            {
+                faceFlux -= eqn.boundaryCoeffs()[patchi];
+            }
+            return gSum(faceFlux);
+        };
+
+        const label contentInlet = mesh_.boundaryMesh().findIndex("inlet");
+        const label contentOutlet = mesh_.boundaryMesh().findIndex("outlet");
+        scalar bookedFlux = 0;
+        if (contentInlet >= 0)
+        {
+            bookedFlux +=
+                solvedPatchFlux(thetaCEqn, thetaC_, contentInlet)
+              + solvedPatchFlux(thetaHEqn, thetaH_, contentInlet);
+        }
+        if (contentOutlet >= 0)
+        {
+            bookedFlux +=
+                solvedPatchFlux(thetaCEqn, thetaC_, contentOutlet)
+              + solvedPatchFlux(thetaHEqn, thetaH_, contentOutlet);
+        }
+        contentBoundaryFlux_ = bookedFlux;
+    }
 
     // S10 FIX 1: THE DEPOSITED REFERENCE, ON THE SAME CARRIER AND WEIGHTS.
     //
@@ -11165,7 +11232,84 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlatelets()
             qEffOld = max(mag(qOldPlatelet_()), qFloor_);
         }
 
-        w_ = Wp_/qEffOld;
+        // OI-62: THE RATIO w = W/q, SIGNED, FOR EVERY q.
+        // research/designs/2026-10-08-OI62-platelet-ratio-at-negative-q.md s3
+        //
+        // W/max(|q|, qFloor) broke the invariant this whole term relies on.
+        // At Wp = q it read w = -1 wherever q < 0 and +1 one row away, and
+        // w = q/qFloor < 1 inside the band 0 < |q| < qFloor, so the explicit
+        // diffusion carried Wp across the sign change of q. Run 20261008-081155
+        // (BATCH 72) S23v_G4_r3: one step from Wp = q seeds 2.48e-4 / 2.59e-3
+        // / 1.65e-3 at 25 / 30 / 35 ms, against <= 7.8e-16 with D = 0
+        // (docket 20261008-1507-run081155-b72-s23-validation, 07 and 10).
+        //
+        // C6 (numerics 10):
+        //   |q| >= qFloor:  w = W/q -- bitwise today's W/max(|q|, qFloor) for
+        //                   q >= qFloor, and the signed ratio for q <= -qFloor;
+        //   |q| <  qFloor:  w = 1 + (W - q)/q_s, q_s = sign(q)*max(|q|, qFloor)
+        //                   with sign(0) = +1 -- the deviation form, so that
+        //                   Wp = q gives exactly 1 in the band too.
+        // Both denominators are >= qFloor in magnitude. The same rule builds
+        // the written w after the solve, at n+1, so Wp = q*w on restart
+        // (.C constructor, W = q*w) is exact for every q.
+        //
+        // Built on a calculated-patch temporary and ASSIGNED to w_, as
+        // w_ = Wp_/qEffOld was: fixedValue patches ignore operator= (OF-13
+        // fixedValueFvPatchField.H:179-193), so the inlet keeps its fixed
+        // value exactly as before. NOT changed (OI-63): the adhesion sink,
+        // wGrowth and wStoich keep W/max(|q|, qFloor).
+        const volScalarField qOldS
+        (
+            "qOldS",
+            qOldPlatelet_.valid() ? qOldPlatelet_() : q_
+        );
+
+        const auto plateletRatioC6 = [this]
+        (
+            const volScalarField& qS,
+            const word& ratioName
+        )
+        {
+            tmp<volScalarField> tRatio
+            (
+                volScalarField::New
+                (
+                    ratioName,
+                    mesh_,
+                    dimensionedScalar(Wp_.dimensions()/qS.dimensions(), 0)
+                )
+            );
+            const scalar qFloorC6 = qFloor_.value();
+            const auto c6 = [qFloorC6](const scalar W, const scalar q)
+            {
+                return mag(q) >= qFloorC6
+                    ? W/q
+                    : 1.0 + (W - q)/(sign(q)*max(mag(q), qFloorC6));
+            };
+
+            volScalarField& ratio = tRatio.ref();
+            scalarField& ratioIn = ratio.primitiveFieldRef();
+            const scalarField& WpIn = Wp_.primitiveField();
+            const scalarField& qSIn = qS.primitiveField();
+            forAll(ratioIn, celli)
+            {
+                ratioIn[celli] = c6(WpIn[celli], qSIn[celli]);
+            }
+            volScalarField::Boundary& ratioB = ratio.boundaryFieldRef();
+            forAll(ratioB, patchi)
+            {
+                scalarField& ratioP = ratioB[patchi];
+                const scalarField& WpP = Wp_.boundaryField()[patchi];
+                const scalarField& qSP = qS.boundaryField()[patchi];
+                forAll(ratioP, facei)
+                {
+                    ratioP[facei] = c6(WpP[facei], qSP[facei]);
+                }
+            }
+            return tRatio;
+        };
+
+        w_ = plateletRatioC6(qOldS, "wOperandC6");
         w_.correctBoundaryConditions();
 
         // THE FACE DIFFUSIVITY IS A HARMONIC MEAN, NOT AN ARITHMETIC ONE.
@@ -11239,6 +11383,49 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlatelets()
         if (D_.value() != 0.0)
         {
             tGammaPlateletf = harmonic(mesh_).interpolate(qEffOld*D_);
+
+            // OI-62: NO FREE BLOOD, NO PLATELET DIFFUSION. q = 1 - theta/
+            // theta_ref is the free-blood fraction, so a face with a
+            // q_old <= 0 side has no blood to carry platelets across it and
+            // its conductance is exactly 0 (physics 09; Capek eq. 4.20). The
+            // harmonic mean above still sees |q|*D there, as if the cell held
+            // |q| of blood (25% of bulk at q = -0.246).
+            //
+            // MASKED IN PLACE on OpenFOAM's own result, so every face with no
+            // dry side keeps today's value BITWISE, band faces included, and
+            // the patch types stay the interpolation's (see the tmp note
+            // above). Not a hand-written mean: physics 09's gP*gN/(...) form
+            // disagrees with OF-13's harmonic on 55% of random face pairs
+            // (red team 11). Its argument is >= qFloor*D > 0, so nothing
+            // divides by zero; the zero is written afterwards. A boundary
+            // face is dry when its patch value or its owner is.
+            surfaceScalarField& gammaMasked = tGammaPlateletf.ref();
+            const scalarField& qOldIn = qOldS.primitiveField();
+            const labelUList& own = mesh_.owner();
+            const labelUList& nei = mesh_.neighbour();
+            scalarField& gammaIn = gammaMasked.primitiveFieldRef();
+            forAll(gammaIn, facei)
+            {
+                if (qOldIn[own[facei]] <= 0 || qOldIn[nei[facei]] <= 0)
+                {
+                    gammaIn[facei] = 0;
+                }
+            }
+            surfaceScalarField::Boundary& gammaB =
+                gammaMasked.boundaryFieldRef();
+            forAll(gammaB, patchi)
+            {
+                const scalarField& qOldP = qOldS.boundaryField()[patchi];
+                const labelUList& fc = mesh_.boundary()[patchi].faceCells();
+                scalarField& gammaP = gammaB[patchi];
+                forAll(gammaP, facei)
+                {
+                    if (qOldP[facei] <= 0 || qOldIn[fc[facei]] <= 0)
+                    {
+                        gammaP[facei] = 0;
+                    }
+                }
+            }
         }
         else
         {
@@ -11288,9 +11475,49 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlatelets()
             reduce(plateletFo, maxOp<scalar>());
         }
 
+        // OI-62: faces with a q_old <= 0 side that still conduct, counted on
+        // the gammaPlateletf the laplacian reads. 0 by construction of the
+        // mask above; the BATCH 73 gate fails any nonzero value. Serial
+        // production (Allrun nProcs 1): on a decomposed mesh a coupled face
+        // would count once per side.
+        label dryFacesConducting = 0;
+        {
+            const scalarField& qDryIn = qOldS.primitiveField();
+            const labelUList& ownDry = mesh_.owner();
+            const labelUList& neiDry = mesh_.neighbour();
+            const scalarField& gammaDryIn = gammaPlateletf.primitiveField();
+            forAll(gammaDryIn, facei)
+            {
+                const bool drySide =
+                    qDryIn[ownDry[facei]] <= 0 || qDryIn[neiDry[facei]] <= 0;
+                if (drySide && gammaDryIn[facei] != 0)
+                {
+                    ++dryFacesConducting;
+                }
+            }
+            forAll(gammaPlateletf.boundaryField(), patchi)
+            {
+                const scalarField& qDryP = qOldS.boundaryField()[patchi];
+                const labelUList& fcDry = mesh_.boundary()[patchi].faceCells();
+                const scalarField& gammaDryP =
+                    gammaPlateletf.boundaryField()[patchi];
+                forAll(gammaDryP, facei)
+                {
+                    const bool drySide =
+                        qDryP[facei] <= 0 || qDryIn[fcDry[facei]] <= 0;
+                    if (drySide && gammaDryP[facei] != 0)
+                    {
+                        ++dryFacesConducting;
+                    }
+                }
+            }
+            reduce(dryFacesConducting, sumOp<label>());
+        }
+
         Info<< "PHASE_CLOT_PLATELET_FO time=" << mesh_.time().userTimeValue()
             << " plateletFo=" << plateletFo
             << " plateletFoLimit=2"
+            << " dryFacesConducting=" << dryFacesConducting
             << endl;
 
         if (plateletFo > 1.0)
@@ -11411,7 +11638,9 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlatelets()
             // so the solve above is the M-matrix predictor; this adds the
             // limited (linear - upwind) correction with the content's shared
             // limiter, tightened only where Wp's OWN bounds require it. Wp is
-            // a conserved, non-negative platelet content, and handing it the
+            // a conserved platelet content; it is NOT non-negative: where
+            // q < 0 (theta > theta_ref) Wp is a ledger value, Wp = q*w < 0
+            // with w >= 0 (OI-62, physics 09). Handing it the
             // content's second-order weights implicitly would re-create the
             // non-M-matrix defect of run 20260923-012704 in Wp. Where Wp's
             // limiter does not bind, Wp and theta move on identical face
@@ -11630,8 +11859,10 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlatelets()
 
         // w is a DERIVED diagnostic from here on: written for ParaView and read
         // by the PHASE_CLOT_PLATELET gate, never solved and never differentiated
-        // to build Vn.
-        w_ = Wp_/qEff;
+        // to build Vn. OI-62: C6 at n+1, the same rule as the operand above,
+        // so w = 1 wherever Wp = q for either sign of q. It feeds wMin, wMax,
+        // wOverBound and wDevBlood, and the restart's Wp = q*w.
+        w_ = plateletRatioC6(q_, "wC6");
         w_.correctBoundaryConditions();
     }
     w_.correctBoundaryConditions();
@@ -15859,20 +16090,24 @@ void Foam::solvers::phaseClotAxisymmetricFluid::writeBalanceDiagnostic()
     // change buys: psi = (1 - c)/2 did, and that is where the c-balance's
     // -div(F)/2 term came from. There is no such term here.
     //
-    // THE FACE VALUES ARE THE OPERATOR'S OWN. solveContentComponents()
-    // assembles with upwindConv = gaussConvectionScheme(upwind(mesh,
-    // carrier)), so the flux below interpolates with upwind against the SAME
-    // stored carrier. Reusing phaseWeights_ here -- which is what the c
-    // balance correctly did for ITS operator -- would measure the mismatch
-    // between two schemes rather than the conservation error. That warning
-    // is inherited verbatim from the balance this replaces.
+    // THE OUTFLUX IS THE OPERATOR'S OWN, READ FROM ITS OWN MATRICES.
+    // contentBoundaryFlux_ is booked in solveContentComponents() from the
+    // thetaC and thetaH matrices' inlet and outlet coefficients, after their
+    // solves and before the FCT: the content the transport actually removed.
+    // Reusing phaseWeights_ here -- which is what the c balance correctly did
+    // for ITS operator -- would measure the mismatch between two schemes
+    // rather than the conservation error. That warning is inherited verbatim
+    // from the balance this replaces.
     //
-    // S10: UNCHANGED UNDER contentTransportScheme limitedLinear, AND STILL
-    // EXACT. This flux is read only on the inlet and outlet patches, and on a
-    // non-coupled boundary face every surfaceInterpolationScheme returns the
-    // patch value -- upwind, limitedLinear and the shared weights agree there
-    // identically. The interior faces, where the operators differ, never
-    // enter the sum.
+    // OI-59 (2026-10-08): THE RE-INTERPOLATION THIS REPLACED WAS NOT EXACT.
+    // It interpolated thetaC + thetaH onto the inlet and outlet here, at the
+    // end of the step. A non-coupled boundary face does return the patch
+    // value under any scheme, but under the S10 FCT the patch value is no
+    // longer the one the solve used: fctApply() corrects the outlet cells
+    // through interior faces and re-evaluates the zeroGradient patch, so the
+    // balance booked phi_b*theta_FCT,P against a transport that removed
+    // phi_b*theta_low,P. In BATCH 72 S23v_G4_r3 that was all of G23-6's
+    // 6.6e-5 residual.
     //
     // IT IS MEASURED OVER THE TIMESTEP, NOT OVER THE SOLVE, and that is why
     // it lives here rather than beside contentBefore/contentAfter in
@@ -15884,28 +16119,8 @@ void Foam::solvers::phaseClotAxisymmetricFluid::writeBalanceDiagnostic()
     const scalar contentVolume =
         fvc::domainIntegrate(thetaC_ + thetaH_).value();
 
-    scalar contentOuterFlux = 0;
-    if (phaseCarrier_.valid())
-    {
-        const volScalarField thetaTotal("thetaTotal", thetaC_ + thetaH_);
-        const surfaceScalarField& contentCarrier = phaseCarrier_();
-        const surfaceScalarField thetaFace
-        (
-            upwind<scalar>(mesh_, contentCarrier).interpolate(thetaTotal)
-        );
-        const surfaceScalarField contentFlux(contentCarrier*thetaFace);
-
-        if (inletPatch >= 0)
-        {
-            contentOuterFlux +=
-                gSum(contentFlux.boundaryField()[inletPatch]);
-        }
-        if (outletPatch >= 0)
-        {
-            contentOuterFlux +=
-                gSum(contentFlux.boundaryField()[outletPatch]);
-        }
-    }
+    // 0 when no content transport ran this step (zeroed with the carrier).
+    const scalar contentOuterFlux = contentBoundaryFlux_;
 
     // transferClotGrowth_ is int dTheta dV / dt scaled by 2/theta_ref -- the
     // c-currency normalisation PHASE_CLOT_GROWTH_STOICH is defined in, kept

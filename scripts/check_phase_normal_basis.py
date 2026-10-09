@@ -189,15 +189,25 @@ def content_balance_present(src: str) -> bool:
 
 
 def balance_uses_the_operators_own_scheme(src: str) -> bool:
-    """The content equation assembles with upwind; the flux must match.
+    """The balance books the content equation's OWN boundary flux.
 
     Reusing phaseWeights_ here would measure the mismatch between two
     schemes rather than the conservation error -- the warning inherited
     verbatim from the c balance this replaced.
+
+    OI-59 (2026-10-08): the outflux is no longer re-interpolated at the end
+    of the step. Under the S10 FCT the outlet patch value then is theta_FCT,
+    not the theta_low the solve removed, and BATCH 72 S23v_G4_r3 carried all
+    of its 6.6e-5 residual in that difference. solveContentComponents()
+    stores contentBoundaryFlux_ from the thetaC/thetaH matrices' boundary
+    coefficients before the FCT, and the balance books that. (The ordering
+    and the components are pinned by check_s23_torn_network.py.)
     """
     body = compact(strip_comments(src))
     return (
-        "upwind<scalar>(mesh_, contentCarrier).interpolate(thetaTotal)" in body
+        "const scalar contentOuterFlux = contentBoundaryFlux_;" in body
+        and "eqn.internalCoeffs()[patchi]*pf.patchInternalField()" in body
+        and "faceFlux -= eqn.boundaryCoeffs()[patchi];" in body
     )
 
 
@@ -324,9 +334,9 @@ class DeleteC(unittest.TestCase):
     def test_the_balance_uses_the_operators_own_face_scheme(self):
         self.assertTrue(
             balance_uses_the_operators_own_scheme(self.src),
-            "the content flux is not interpolated with upwind against the "
-            "stored carrier. The theta equations assemble with "
-            "upwindConv, so any other scheme makes the residual measure a "
+            "the content outflux is not the theta matrices' own boundary "
+            "flux (contentBoundaryFlux_, OI-59). Any re-interpolation, by "
+            "upwind or another scheme, makes the residual measure a "
             "scheme mismatch rather than a conservation error",
         )
 
@@ -438,13 +448,15 @@ class DeleteC(unittest.TestCase):
         )
 
         broken = src.replace(
-            "upwind<scalar>(mesh_, contentCarrier).interpolate(thetaTotal)",
-            "fvc::interpolate(thetaTotal)", 1)
+            "const scalar contentOuterFlux = contentBoundaryFlux_;",
+            "const scalar contentOuterFlux = gSum((phaseCarrier_()"
+            "*fvc::interpolate(thetaC_ + thetaH_))().boundaryField()"
+            "[outletPatch]);", 1)
         self.assertNotEqual(broken, src, "the scheme mutation did not apply")
         self.assertFalse(
             balance_uses_the_operators_own_scheme(broken),
-            "swapping the balance's face scheme for a linear interpolate "
-            "is NOT caught",
+            "re-interpolating the balance's outflux at the end of the step "
+            "(post-FCT, OI-59) is NOT caught",
         )
 
         # And the deletion check itself must see a reintroduction.

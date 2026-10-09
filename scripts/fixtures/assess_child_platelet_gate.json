@@ -1,0 +1,24 @@
+{
+ "_comment": "SYNTHETIC minimal fixture for assess_case.assess_child (case-engineer 13, OI-62, verification 08 hole A3). NOT a returned run: every number is a placeholder chosen so the child is ADMISSIBLE, and the tests in scripts/check_platelet_diagnostic_semantics.py change only the platelet fields. It replaces the absent preflight/20260906-101812 fixture that left the end-to-end test SKIPPED. spec holds exactly the keys assess_child reads for this child (found by recording every access on a generated P73_G4_r3_40 spec); advect_released false skips the transport report and end_time_s 0.001 matches the last Time line. controls are the real mainCaseControls.json. log_template placeholders: {PLATELET_<t>} = the PHASE_CLOT_PLATELET record at that time, {DRY} = the dryFacesConducting suffix of the PHASE_CLOT_PLATELET_FO line.",
+ "spec": {
+  "child_id": "fixture_platelet_gate",
+  "series": "throat_free_shell",
+  "G_pa": 4.0,
+  "Gc_j_m2": 5.547,
+  "adhesive_strength_pa": 0.4,
+  "growth": false,
+  "k0p_m2": 4.07e-13,
+  "mean_velocity_m_s": 0.0020833333333333333,
+  "wall_condition": "clotWallAdhesion",
+  "wall_shear_rate_1_s": 250.0,
+  "end_time_s": 0.001,
+  "advect_released": false
+ },
+ "log_template": "Time = 0.0005\n{PLATELET_5e-4}\nPHASE_CLOT_PLATELET_FO time=5e-4 plateletFo=0.02 plateletFoLimit=2{DRY}\nPHASE_CLOT_PHASE_BOUNDS time=5e-4 qMin=0.7 qMax=1 qUnder=0 qOver=0 qNegCells=0 qNegMin=0 qNegAmpMax=0 qNegVolume=0 qNegContent=0\nTime = 0.001\n{PLATELET_1e-3}\nPHASE_CLOT_PLATELET_FO time=0.001 plateletFo=0.02 plateletFoLimit=2{DRY}\nPHASE_CLOT_PHASE_BOUNDS time=0.001 qMin=0.7 qMax=1 qUnder=0 qOver=0 qNegCells=0 qNegMin=0 qNegAmpMax=0 qNegVolume=0 qNegContent=0\nEnd\n",
+ "files": {
+  "run-exit-code.txt": "0\n",
+  "0.001/c": "FoamFile{version 2.0;format ascii;class volScalarField;object X;}\ninternalField uniform 1;\n",
+  "0.001/Dg": "FoamFile{version 2.0;format ascii;class volScalarField;object X;}\ninternalField uniform 0;\n",
+  "0.001/Us": "FoamFile{version 2.0;format ascii;class volVectorField;object Us;}\ninternalField nonuniform List<vector> 1((0 0 0));\n"
+ }
+}

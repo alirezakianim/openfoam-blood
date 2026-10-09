@@ -1726,6 +1726,14 @@ class phaseClotAxisymmetricFluid
     //  closing content balance that replaced PHASE_CLOT_MASS in S6c-2.
     scalar previousContentVolume_;
 
+    //- OI-59: the content the transport removed through the inlet and
+    //  outlet this step, in m^3/s of theta, from the thetaC and thetaH
+    //  matrices' own boundary coefficients after their solves and BEFORE
+    //  the FCT. Set in solveContentComponents(), zeroed at the start of
+    //  solvePhaseField(), booked as contentOuterFlux by
+    //  writeBalanceDiagnostic().
+    scalar contentBoundaryFlux_;
+
     scalar transferClotGrowth_;
 
     //- The committed transfer integral int dB dV, carried out of

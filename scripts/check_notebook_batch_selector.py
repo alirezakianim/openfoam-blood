@@ -59,6 +59,9 @@ RUNNER = Path(__file__).resolve().parents[1] / (
 # The arms the comparator scores bitwise (G23-0, scripts/s23_validation_compare.py ARMS "1" and "1p"):
 # they must share ONE launch, i.e. one session and one host.
 IDENTITY_PAIRS = {72: ("S23v_G4_r3", "S23v_G4_r3_S22")}
+# A batch that is ONE session by decision (BATCH 73, the S23 production pair, Alireza 2026-10-08: "both 40 ms. both in one
+# session with 2 concurrency"): its filter is exactly these children, it has no LAUNCHES entry and no reference library.
+ONE_SESSION = {73: ("P73_G4_r3_40", "P73_G40_40")}
 FAKE_SOLVER = "/content/openfoam-blood-ref/user-applications/phaseClotAxisymmetricFluid"
 FAKE_BASE = ["--package", "/content/package.zip", "--repo-digest", "0" * 64]
 
@@ -207,7 +210,13 @@ def check_launches(cell: str, controls: Path = CONTROLS, selected: int | None = 
     known = {c["child_id"] for c in json.loads(controls.read_text())["children"] if c.get("child_id")}
     if names["LAUNCH"] != 1:
         raise LaunchError(f"the default is LAUNCH = {names['LAUNCH']}; it must be LAUNCH = 1")
-    strict = sorted({b for b in by_batch} | ({selected} if selected is not None else set()))
+    # the newest entry is always checked, even while BATCH still selects an older one (BATCH 73 is built before it is the default)
+    strict = sorted({b for b in by_batch} | ({selected} if selected is not None else set()) | {max(batches)})
+    for b, pair in ONE_SESSION.items():
+        if b in launches:
+            raise LaunchError(f"BATCH {b} is ONE session and must have no LAUNCHES entry; it has {sorted(launches[b])}")
+        if b in batches and batches[b][0].split() != list(pair):
+            raise LaunchError(f"BATCH {b} is ONE session of {list(pair)} (its decision); the notebook selects {batches[b][0].split()}")
     records = []
     # structure of every multi-launch batch: the launches partition the batch, in order 1..n
     for b, parts in sorted(launches.items()):
@@ -240,6 +249,9 @@ def check_launches(cell: str, controls: Path = CONTROLS, selected: int | None = 
                 raise LaunchError(f"BATCH {b} launch {lnum}: the notebook refuses it: {error}")
             if not plan["only"].split():
                 raise LaunchError(f"BATCH {b} launch {lnum} selects no child")
+            unknown = [c for c in plan["only"].split() if c not in known]
+            if unknown:
+                raise LaunchError(f"BATCH {b} launch {lnum} names {unknown}, which are not child_ids in mainCaseControls.json")
             extra = fn["library_args"](plan["library"], FAKE_SOLVER) if plan["library"] else []
             argv = fn["runner_argv"]("/content/project/cases/AM2020_planar_mural_detachment/scripts/run_main_case_colab.py",
                                      "20261008-000000-am2020-main-case", FAKE_BASE + extra, plan["only"])
@@ -275,7 +287,25 @@ def negatives(cell: str, controls: Path = CONTROLS, selected: int = 72) -> list:
     if "--s22-solver" not in argv1 or "--s22-solver" in argv2:
         raise AssertionError("the notebook as it stands must pass --s22-solver on launch 1 only")
     i = argv1.index("--s22-solver")
+    argv73 = next(r["argv"] for r in base if r["batch"] == 73 and r["launch"] == 1)
+    if "--s22-solver" in argv73 or "--p2prime-solver" in argv73:
+        raise AssertionError("BATCH 73 must pass no reference-library flag")
     cases = [
+        ("BATCH 73 argv WITH --s22-solver", lambda: runner_accepts(argv73 + ["--s22-solver", FAKE_SOLVER], controls),
+         "built for nothing"),
+        ("BATCH 73 split into two launches", lambda: check_launches(
+            mutate(cell, r"^LAUNCHES = \{", 'LAUNCHES = {\n    73: {1: ("P73_G4_r3_40", 5.0), 2: ("P73_G40_40", 10.1)},'), controls, selected),
+         "ONE session and must have no LAUNCHES entry"),
+        ("BATCH 73 loses a child", lambda: check_launches(
+            _replace_all(cell, '73: ("P73_G4_r3_40 P73_G40_40", 10.1,', '73: ("P73_G4_r3_40", 10.1,', 1), controls, selected),
+         "is ONE session of"),
+        ("BATCH 73 names a child the controls do not define", lambda: check_launches(
+            cell, _controls_without(controls, "P73_G40_40"), selected), "not child_ids in mainCaseControls.json"),
+        ("BATCH 73 given a reference library by launch", lambda: check_launches(
+            mutate(cell, r"^    \(72, 2\): False,", "    (72, 2): False,\n    (73, 1): True,"), controls, selected),
+         "which REFERENCE_LIBRARY_BY_BATCH does not"),
+        ("BATCH 73 at LAUNCH 2", lambda: fn_launch73(cell, 2, controls), "no launch split"),
+        ("BATCH 73 at CONCURRENCY 1", lambda: fn_launch73(cell, 1, controls, concurrency=1), "CONCURRENCY 2"),
         ("launch 2 argv WITH --s22-solver", lambda: runner_accepts(argv2 + ["--s22-solver", FAKE_SOLVER], controls),
          "built for nothing"),
         ("launch 1 argv WITHOUT --s22-solver", lambda: runner_accepts(argv1[:i] + argv1[i + 2:], controls),
@@ -322,10 +352,38 @@ def negatives(cell: str, controls: Path = CONTROLS, selected: int = 72) -> list:
     return seen
 
 
+def _controls_without(controls: Path, child_id: str) -> Path:
+    """A scratch copy of the controls with one child removed (the file is deleted at exit)."""
+    import atexit
+    import os
+    import tempfile
+    data = json.loads(controls.read_text())
+    kept = [c for c in data["children"] if c.get("child_id") != child_id]
+    if len(kept) != len(data["children"]) - 1:
+        raise AssertionError(f"self-test: {child_id} is not a child of the controls")
+    data["children"] = kept
+    handle, name = tempfile.mkstemp(prefix="controls-without-", suffix=".json")
+    with os.fdopen(handle, "w") as out:
+        out.write(json.dumps(data))
+    atexit.register(lambda: os.path.exists(name) and os.unlink(name))
+    return Path(name)
+
+
+def fn_launch73(cell: str, launch: int, controls: Path, concurrency: int = 2) -> None:
+    """The notebook's own launch_plan for BATCH 73 at a launch / concurrency the decision forbids."""
+    names = notebook_names(cell)
+    fn = launch_functions(cell)
+    try:
+        fn["launch_plan"](73, launch, names["BATCHES"], names["LAUNCHES"], names["REFERENCE_LIBRARY_BY_BATCH"],
+                          names["REFERENCE_LIBRARY_BY_LAUNCH"], concurrency, say=lambda _line: None)
+    except ValueError as error:
+        raise LaunchError(f"BATCH 73: the notebook refuses it: {error}")
+
+
 def main() -> int:
     if "--self-test" in sys.argv[1:]:
         try:
-            for label, line in negatives(launch_cell(), CONTROLS, 72):
+            for label, line in negatives(launch_cell(), CONTROLS, 73):
                 print(f"   refused: {label} -> {line}")
         except (LaunchError, AssertionError) as error:
             fail(f"self-test: {error}")
