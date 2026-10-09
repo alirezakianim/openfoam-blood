@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """D74 guard: the passive intact reference ref_I (thetaNetRefIntact_) has NO READER but its own.
 
-research/designs/2026-10-09-D74-passive-intact-reference.md rev. 2, section 2 (red team 36
+research/designs/2026-10-09-D74-passive-intact-reference.md rev. 3.1, section 2 (red team 36
 changes 2 and 3; docket research/investigations/20261007-1807-s24-consistent-network-stress/,
 reports 32, 33, 35, 36). ref_I is a MEASUREMENT: no law may read it, so theta, ref, the partition
 and every momentum face value stay those of the build without it. Its only sites are:
@@ -12,8 +12,10 @@ and every momentum face value stay those of the build without it. Its only sites
               with ref's solver dictionary built in code at tolerance 0, minIter = maxIter = ref's
               executed iterations; the FCT part r_d*lambda*AR, r_d = ref_I^low/ref^low of the donor,
               the denominator guarded, lambda and AR READ (never written), before fctApply;
-  transfers   rupture ref_I*pI_new/pI_old where pI_old > 0; the volumetric tear (A1's event) 0;
-              growth ref's own increment thetaNew - thetaStar; deletion 0;
+  transfers   rupture ref_I*(1 - dsNew)/(1 - ds) ONLY inside `if (dsNew > ds)` (rev. 3); the
+              emptying, ref_I <- 0 where the rewrite sets pI = 0 from pI_old > 0 (rev. 3.1);
+              the volumetric tear (A1's event) 0; growth ref's own increment thetaNew - thetaStar;
+              deletion 0. Rev. 2's ref_I*pI_new/pI_old is REFUSED (round-off ratchet, BATCH 74);
   checkpoint  beginPlateletOuterTransaction, the corrector roll-back, the negAfter count;
   log         PHASE_CLOT_REFI from reportIntactReference() in postSolve(), theta_I = (P1/S) theta.
 
@@ -26,7 +28,9 @@ write missing, lambda written by the kernel, the Sp term dropped, the restore om
 
 usage: python3 -B scripts/check_d74_refI.py      (exit 0 = pass, 1 = fail)
 Written by solver-engineer 37 (docket 20261007-1807-s24-consistent-network-stress); the min and p01 of
-the signed proxy deviation (the pole side; CE ruling 2026-10-09) pinned by solver-engineer 39.
+the signed proxy deviation (the pole side; CE ruling 2026-10-09) pinned by solver-engineer 39; the
+rev. 3.1 rupture and emptying transfers and their five planted defects [rev3.1 a]-[rev3.1 e] by
+solver-engineer 03 (docket 20261009-0955-run100437-b74-d74-refI).
 """
 from __future__ import annotations
 
@@ -95,10 +99,10 @@ EXPECT_FIELD = {
     "reportIntactReference": 1,           # the log
 }
 EXPECT_ALIASES = {
-    "refIW": {"ruptureOverstretchedNetwork": 6},
+    "refIW": {"ruptureOverstretchedNetwork": 8},
     "refIOld": {"ruptureOverstretchedNetwork": 3},
-    "pIOldD74": {"ruptureOverstretchedNetwork": 3},
-    "refITransfer": {"ruptureOverstretchedNetwork": 4},
+    "pIOldD74": {"ruptureOverstretchedNetwork": 2},
+    "refITransfer": {"ruptureOverstretchedNetwork": 5},
     "refIR": {"reportIntactReference": 11},
     "refILowI": {"solveContentComponents": 2},
     "refIC": {"solveContentComponents": 3},
@@ -177,8 +181,13 @@ ROLLBACK = ('thetaNetRefIntact_=thetaNetRefIntactStepAccepted_();'
 REF_ROLLBACK = ('thetaNetRef_=thetaNetRefStepAccepted_();thetaNetRef_.correctBoundaryConditions();}')
 
 RUP_OLD = "constscalarpIOldD74=pI[celli];scalardAfter=d;"
-RUP_LAW = ('if(pIOldD74>0){constscalarrefIOld=refIW[celli];refIW[celli]=refIOld*(pI[celli]/pIOldD74);'
-           'refITransfer+=(refIW[celli]-refIOld)*vol[celli];}')
+# rev. 3: the rupture transfer, the LAST statements of `if (dsNew > ds)`, factor (1 - dsNew)/(1 - ds)
+RUP_IF = "if(dsNew>ds){"
+RUP_LAW = ('constscalarrefIOld=refIW[celli];refIW[celli]=refIOld*((1.0-dsNew)/(1.0-ds));'
+           'refITransfer+=(refIW[celli]-refIOld)*vol[celli];')
+# rev. 3.1: the emptying row, right before the volumetric tear's, after the rewrite and A1
+REWRITE = "pI[celli]=sC*(1.0-dsNew);pP[celli]=sC*pendNew;pB[celli]=sC*dNew;dAfter=dNew;}"
+RUP_EMPTY = "if(pIOldD74>0&&pI[celli]==0){refITransfer-=refIW[celli]*vol[celli];refIW[celli]=0.0;}"
 RUP_TEAR = ('if(sC>0&&volTear&&pI[celli]==0){refITransfer-=refIW[celli]*vol[celli];refIW[celli]=0.0;}'
             'deltaD=max(deltaD,mag(dAfter-dOld));')
 RUP_ALIAS = "scalarField&refIW=thetaNetRefIntact_.primitiveFieldRef();scalarrefITransfer=0;"
@@ -259,15 +268,33 @@ def p_checkpoint(c: str) -> bool:
             and bc.find(NEG_REF) >= 0 and bc.find(NEG_REF + "" + NEG_REFI) >= 0)
 
 
+def braced(b: str, head: str) -> str:
+    """The flattened body of the block opened by `head` (which ends in '{'), up to its matching '}'."""
+    i = b.find(head)
+    if i < 0:
+        return ""
+    k, depth = i + len(head), 1
+    while k < len(b) and depth:
+        depth += {"{": 1, "}": -1}.get(b[k], 0)
+        k += 1
+    return b[i + len(head):k - 1] if depth == 0 else ""
+
+
 def p_transfers(c: str) -> bool:
     br = fn_body(c, "ruptureOverstretchedNetwork")
     bg = fn_body(c, "solvePlateletContent")
     bd = fn_body(c, "releaseDetachedMaterial")
+    blk = braced(br, RUP_IF)
     return (br.count(RUP_ALIAS) == 1 and br.count(RUP_OLD) == 1
-            and br.count(RUP_LAW + RUP_TEAR) == 1
-            and br.find(A1) < br.find(RUP_LAW)
-            and br.find(RUP_OLD) < br.find(A1)
-            and br.count(RUP_TAIL) == 1 and br.find(RUP_LAW) < br.find(RUP_TAIL)
+            # rev. 3: the rupture transfer once, and as the closing statements of `if (dsNew > ds)`
+            and br.count(RUP_IF) == 1 and br.count(RUP_LAW) == 1 and blk.endswith(RUP_LAW)
+            # rev. 2's ratio refused in any form (it ratcheted ref_I on round-off rewrites)
+            and "/pIOldD74" not in br and "pI[celli]/" not in br
+            and br.find(RUP_OLD) < br.find(RUP_IF) < br.find(REWRITE)
+            # rev. 3.1: the emptying row after the rewrite and A1, then the volumetric tear
+            and br.count(REWRITE) == 1 and br.count(RUP_EMPTY + RUP_TEAR) == 1
+            and br.find(REWRITE) < br.find(A1) < br.find(RUP_EMPTY)
+            and br.count(RUP_TAIL) == 1 and br.find(RUP_EMPTY) < br.find(RUP_TAIL)
             and bg.count(GROWTH) == 1 and "hNew-hStar;thetaNetRefIntact" not in bg
             and bd.count(DELETION) == 1 and bd.count(DELETION_BC) == 1)
 
@@ -296,8 +323,9 @@ PREDICATES = (
      "limiter and fctApply (section 2)", p_fct_part),
     ("checkpoint: beginPlateletOuterTransaction, the corrector roll-back after ref's, negAfter beside "
      "ref's (section 2, RT36 change 3)", p_checkpoint),
-    ("transfers: rupture ratio where pI_old > 0, volumetric tear 0 on A1's event, growth ref's increment, "
-     "deletion 0 (section 2 table)", p_transfers),
+    ("transfers: rupture (1-dsNew)/(1-ds) only inside dsNew > ds, emptying 0 where pI_old > 0 and pI = 0, "
+     "volumetric tear 0 on A1's event, growth ref's increment, deletion 0 (section 2 table rev. 3.1)",
+     p_transfers),
     ("log: PHASE_CLOT_REFI with design section 2's keys, theta_I = (P1/S) theta, called in postSolve "
      "after the balance (section 2, RT36 change 7)", p_log),
 )
@@ -307,20 +335,37 @@ MUTATIONS = (
     ("a law reads it (a)", "          + (thetaC_ + thetaH_)\n          - thetaNetRef_\n        );",
      "          + (thetaC_ + thetaH_)\n          - thetaNetRefIntact_\n        );", 0),
     ("a law reads it via an alias (a)",
-     "                refITransfer += (refIW[celli] - refIOld)*vol[celli];\n",
-     "                refITransfer += (refIW[celli] - refIOld)*vol[celli];\n"
-     "                bI[celli] *= (refIW[celli] > 0 ? 1.0 : 1.0);\n", 0),
+     "                    refITransfer += (refIW[celli] - refIOld)*vol[celli];\n",
+     "                    refITransfer += (refIW[celli] - refIOld)*vol[celli];\n"
+     "                    bI[celli] *= (refIW[celli] > 0 ? 1.0 : 1.0);\n", 0),
     ("a law reads it in the growth's stress-free mixing (a)",
      "                const scalar r = r0[celli];\n",
      "                const scalar r = thetaNetRefIntact_[celli];\n", 0),
     ("a transfer omitted: rupture (b)",
-     "                refIW[celli] = refIOld*(pI[celli]/pIOldD74);\n", "", 5),
+     "                    refIW[celli] = refIOld*((1.0 - dsNew)/(1.0 - ds));\n", "", 5),
     ("a transfer omitted: volumetric tear (b)",
+     "            if (sC > 0 && volTear && pI[celli] == 0)\n            {\n"
      "                refITransfer -= refIW[celli]*vol[celli];\n                refIW[celli] = 0.0;\n",
+     "            if (sC > 0 && volTear && pI[celli] == 0)\n            {\n"
      "                refITransfer -= refIW[celli]*vol[celli];\n", 5),
     ("a transfer omitted: growth (b)", "            thetaNetRefIntact_ += thetaNew - thetaStar;\n", "", 5),
     ("a transfer omitted: deletion (b)", "                thetaNetRefIntact_[celli] = 0.0;\n", "", 5),
-    ("rupture without the pI_old guard (b)", "            if (pIOldD74 > 0)\n", "            if (true)\n", 5),
+    # rev. 3.1 (docket 20261009-0955-run100437-b74-d74-refI, brief item 4): five planted defects
+    ("[rev3.1 a] rev. 2's pI/pI_old form restored beside the emptying row",
+     '            if (pIOldD74 > 0 && pI[celli] == 0)\n', '            if (pIOldD74 > 0)\n            {\n                const scalar refIOld = refIW[celli];\n                refIW[celli] = refIOld*(pI[celli]/pIOldD74);\n                refITransfer += (refIW[celli] - refIOld)*vol[celli];\n            }\n            if (pIOldD74 > 0 && pI[celli] == 0)\n', 5),
+    ("[rev3.1 a] rev. 2's pI/pI_old factor inside dsNew > ds",
+     "                    refIW[celli] = refIOld*((1.0 - dsNew)/(1.0 - ds));\n",
+     "                    refIW[celli] = refIOld*(pI[celli]/pIOldD74);\n", 5),
+    ("[rev3.1 b] the rupture transfer moved outside dsNew > ds",
+     '                    const scalar refIOld = refIW[celli];\n                    refIW[celli] = refIOld*((1.0 - dsNew)/(1.0 - ds));\n                    refITransfer += (refIW[celli] - refIOld)*vol[celli];\n                }\n', '                }\n                    const scalar refIOld = refIW[celli];\n                    refIW[celli] = refIOld*((1.0 - dsNew)/(1.0 - ds));\n                    refITransfer += (refIW[celli] - refIOld)*vol[celli];\n', 5),
+    ("[rev3.1 c] the emptying row omitted", '            if (pIOldD74 > 0 && pI[celli] == 0)\n            {\n                refITransfer -= refIW[celli]*vol[celli];\n                refIW[celli] = 0.0;\n            }\n', "", 5),
+    ("[rev3.1 d] the emptying row firing when P1 > 0 (no pI == 0 test)",
+     '            if (pIOldD74 > 0 && pI[celli] == 0)\n', "            if (pIOldD74 > 0)\n", 5),
+    ("[rev3.1 d] the emptying row firing when P1 > 0 (pI >= 0)",
+     '            if (pIOldD74 > 0 && pI[celli] == 0)\n', "            if (pIOldD74 > 0 && pI[celli] >= 0)\n", 5),
+    ("[rev3.1 e] the factor inverted, (1 - ds)/(1 - dsNew)",
+     "                    refIW[celli] = refIOld*((1.0 - dsNew)/(1.0 - ds));\n",
+     "                    refIW[celli] = refIOld*((1.0 - ds)/(1.0 - dsNew));\n", 5),
     ("growth on P1's increment (b)",
      "            thetaNetRefIntact_ += thetaNew - thetaStar;\n",
      "            thetaNetRefIntact_ += hNew - hStar;\n", 5),

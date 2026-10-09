@@ -3648,9 +3648,10 @@ void Foam::solvers::phaseClotAxisymmetricFluid::ruptureOverstretchedNetwork()
         label nVol = 0, nStretch = 0, nA1Deferred = 0;
         std::vector<scalar> Rskel;
         Rskel.reserve(bI.size());
-        // D74 (design 2026-10-09-D74 rev. 2 section 2 table): ref_I's two
-        // event transfers, applied after each cell's event below, and the
-        // content they move (booked for PHASE_CLOT_REFI's label balance).
+        // D74 (design 2026-10-09-D74 rev. 3.1 section 2 table): ref_I's
+        // event transfers in this loop -- the rupture (inside dsNew > ds),
+        // the emptying and the volumetric tear -- and the content they move
+        // (booked for PHASE_CLOT_REFI's label balance).
         scalarField& refIW = thetaNetRefIntact_.primitiveFieldRef();
         scalar refITransfer = 0;
         forAll(bI, celli)
@@ -3780,6 +3781,18 @@ void Foam::solvers::phaseClotAxisymmetricFluid::ruptureOverstretchedNetwork()
                             << " dStar=" << dsNew
                             << endl;
                     }
+                    // D74 rev. 3.1, RUPTURE (intact -> pending; physics 32
+                    // section 3, 83 Eq 2.4): J_I = ref_I/theta_I is kept, so
+                    // ref_I scales with the intact share, S being unchanged
+                    // by the event: ref_I *= (1 - d*_new)/(1 - d*). ONLY on a
+                    // damage increase: rev. 2's pI_new/pI_old fired on every
+                    // round-off rewrite of pI below and ratcheted ref_I
+                    // (BATCH 74). dsNew > ds gives ds < dsNew <= 1, so
+                    // 1 - ds > 0 guards the quotient, and IEEE subtraction is
+                    // monotone, so the factor lies in [0, 1]; dsNew = 1 gives 0.
+                    const scalar refIOld = refIW[celli];
+                    refIW[celli] = refIOld*((1.0 - dsNew)/(1.0 - ds));
+                    refITransfer += (refIW[celli] - refIOld)*vol[celli];
                 }
 
                 {
@@ -4034,18 +4047,25 @@ void Foam::solvers::phaseClotAxisymmetricFluid::ruptureOverstretchedNetwork()
                     }
                 }
             }
-            // D74 (physics 32 section 3): RUPTURE keeps J_I = ref_I/theta_I,
-            // so ref_I scales with the intact content it references (83 Eq
-            // 2.4), only where there was one (pI_old > 0 guards the
-            // quotient); an unchanged pI multiplies by exactly 1. A
-            // VOLUMETRIC TEAR is A1's event above (sC > 0, volTear, the
-            // intact content now 0): no intact network is left, ref_I <- 0.
-            if (pIOldD74 > 0)
+            // D74 rev. 3.1, EMPTYING: the partition rewrite above,
+            // pI = sC (1 - dsNew), runs every step wherever a pending share
+            // exists, with or without a damage increase; it RECOMPUTES pI
+            // (it does not leave it unchanged), so a ratio pI_new/pI_old is
+            // not 1 there, which was rev. 2's defect. Where P1/S is below
+            // about 0.5-0.75 ulp, ds rounds to 1 and dsNew == ds: no rupture
+            // transfer fired, yet the rewrite gives pI = 0, and the shipped
+            // code ends the intact network there (be := I where pI == 0,
+            // above). ref_I <- 0, booked. pI is written nowhere else in this
+            // loop, so this fires once per emptying and never where the
+            // rewrite leaves P1 > 0.
+            if (pIOldD74 > 0 && pI[celli] == 0)
             {
-                const scalar refIOld = refIW[celli];
-                refIW[celli] = refIOld*(pI[celli]/pIOldD74);
-                refITransfer += (refIW[celli] - refIOld)*vol[celli];
+                refITransfer -= refIW[celli]*vol[celli];
+                refIW[celli] = 0.0;
             }
+            // D74: a VOLUMETRIC TEAR is A1's event above (sC > 0, volTear,
+            // the intact content now 0): no intact network is left,
+            // ref_I <- 0.
             if (sC > 0 && volTear && pI[celli] == 0)
             {
                 refITransfer -= refIW[celli]*vol[celli];

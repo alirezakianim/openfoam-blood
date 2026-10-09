@@ -60,9 +60,10 @@ RUNNER = Path(__file__).resolve().parents[1] / (
 # they must share ONE launch, i.e. one session and one host.
 IDENTITY_PAIRS = {72: ("S23v_G4_r3", "S23v_G4_r3_S22")}
 # A batch that is ONE session by decision (BATCH 73, the S23 production pair, Alireza 2026-10-08: "both 40 ms. both in one
-# session with 2 concurrency"; BATCH 74, the D74 passive-field diagnostic, Alireza 2026-10-09: "Approve; run it alone"): its
+# session with 2 concurrency"; BATCH 74, the D74 passive-field diagnostic, Alireza 2026-10-09: "Approve; run it alone"; BATCH 75, the
+# re-run of that measurement on rev. 3.1, Alireza 2026-10-09: "Approve; rebuild and re-run (Recommended)"): its
 # filter is exactly these children, it has no LAUNCHES entry and no reference library.
-ONE_SESSION = {73: ("P73_G4_r3_40", "P73_G40_40"), 74: ("D74_refI",)}
+ONE_SESSION = {73: ("P73_G4_r3_40", "P73_G40_40"), 74: ("D74_refI",), 75: ("D75_refI",)}
 FAKE_SOLVER = "/content/openfoam-blood-ref/user-applications/phaseClotAxisymmetricFluid"
 FAKE_BASE = ["--package", "/content/package.zip", "--repo-digest", "0" * 64]
 
@@ -295,6 +296,9 @@ def negatives(cell: str, controls: Path = CONTROLS, selected: int = 72) -> list:
     argv74 = next(r["argv"] for r in base if r["batch"] == 74 and r["launch"] == 1)
     if "--s22-solver" in argv74 or "--p2prime-solver" in argv74:
         raise AssertionError("BATCH 74 must pass no reference-library flag")
+    argv75 = next(r["argv"] for r in base if r["batch"] == 75 and r["launch"] == 1)
+    if "--s22-solver" in argv75 or "--p2prime-solver" in argv75:
+        raise AssertionError("BATCH 75 must pass no reference-library flag")
     cases = [
         ("BATCH 73 argv WITH --s22-solver", lambda: runner_accepts(argv73 + ["--s22-solver", FAKE_SOLVER], controls),
          "built for nothing"),
@@ -333,6 +337,28 @@ def negatives(cell: str, controls: Path = CONTROLS, selected: int = 72) -> list:
         ("BATCH 74 at LAUNCH 2", lambda: fn_launch73(cell, 2, controls, batch=74), "no launch split"),
         ("BATCH 74 at CONCURRENCY 1", lambda: fn_launch73(cell, 1, controls, concurrency=1, batch=74), "CONCURRENCY 2"),
         ("BATCH 74 at CONCURRENCY 3", lambda: fn_launch73(cell, 1, controls, concurrency=3, batch=74), "CONCURRENCY 2"),
+        # BATCH 75 (D75, the re-run of the D74 measurement on rev. 3.1): ONE session, ONE child, CONCURRENCY 2, no library
+        ("BATCH 75 argv WITH --s22-solver", lambda: runner_accepts(argv75 + ["--s22-solver", FAKE_SOLVER], controls),
+         "built for nothing"),
+        ("BATCH 75 argv WITH --p2prime-solver", lambda: runner_accepts(argv75 + ["--p2prime-solver", FAKE_SOLVER], controls),
+         "built for nothing"),
+        ("BATCH 75 split into two launches", lambda: check_launches(
+            mutate(cell, r"^LAUNCHES = \{", 'LAUNCHES = {\n    75: {1: ("D75_refI", 4.5), 2: ("D75_refI", 1.0)},'), controls, selected),
+         "ONE session and must have no LAUNCHES entry"),
+        ("BATCH 75 gains a second child", lambda: check_launches(
+            _replace_all(cell, '75: ("D75_refI", 4.5,', '75: ("D75_refI D74_refI", 4.5,', 1), controls, selected),
+         "is ONE session of"),
+        ("BATCH 75 loses its child", lambda: check_launches(
+            _replace_all(cell, '75: ("D75_refI", 4.5,', '75: ("", 4.5,', 1), controls, selected),
+         "is ONE session of"),
+        ("BATCH 75 names a child the controls do not define", lambda: check_launches(
+            cell, _controls_without(controls, "D75_refI"), selected), "not child_ids in mainCaseControls.json"),
+        ("BATCH 75 given a reference library by launch", lambda: check_launches(
+            mutate(cell, r"^    \(72, 2\): False,", "    (72, 2): False,\n    (75, 1): True,"), controls, selected),
+         "which REFERENCE_LIBRARY_BY_BATCH does not"),
+        ("BATCH 75 at LAUNCH 2", lambda: fn_launch73(cell, 2, controls, batch=75), "no launch split"),
+        ("BATCH 75 at CONCURRENCY 1", lambda: fn_launch73(cell, 1, controls, concurrency=1, batch=75), "CONCURRENCY 2"),
+        ("BATCH 75 at CONCURRENCY 3", lambda: fn_launch73(cell, 1, controls, concurrency=3, batch=75), "CONCURRENCY 2"),
         ("launch 2 argv WITH --s22-solver", lambda: runner_accepts(argv2 + ["--s22-solver", FAKE_SOLVER], controls),
          "built for nothing"),
         ("launch 1 argv WITHOUT --s22-solver", lambda: runner_accepts(argv1[:i] + argv1[i + 2:], controls),
@@ -397,7 +423,7 @@ def _controls_without(controls: Path, child_id: str) -> Path:
 
 
 def fn_launch73(cell: str, launch: int, controls: Path, concurrency: int = 2, batch: int = 73) -> None:
-    """The notebook's own launch_plan for a ONE_SESSION batch (73, or 74 with batch=74) at a launch / concurrency
+    """The notebook's own launch_plan for a ONE_SESSION batch (73, or 74 / 75 with batch=74 / batch=75) at a launch / concurrency
     the decision forbids."""
     names = notebook_names(cell)
     fn = launch_functions(cell)
@@ -411,7 +437,7 @@ def fn_launch73(cell: str, launch: int, controls: Path, concurrency: int = 2, ba
 def main() -> int:
     if "--self-test" in sys.argv[1:]:
         try:
-            for label, line in negatives(launch_cell(), CONTROLS, 74):
+            for label, line in negatives(launch_cell(), CONTROLS, 75):
                 print(f"   refused: {label} -> {line}")
         except (LaunchError, AssertionError) as error:
             fail(f"self-test: {error}")

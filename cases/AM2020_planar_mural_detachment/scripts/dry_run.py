@@ -1092,6 +1092,23 @@ S23_REFUSALS = (
     ("D74_refI with a frame key dropped (beyond its named keys)",
      lambda c: _s16(c, "D74_refI", frame_interval_s=None),
      "frame_interval_s"),
+    # BATCH 75 (D75, the re-run of the D74 measurement on rev. 3.1): D75_refI is S23v_G4_r3 with NO named key, exactly as D74_refI.
+    # The rev. 3.1 changes are in the BUILD, so a dictionary difference of any kind is refused.
+    ("D75_refI drifting from S23v_G4_r3 in a run control",
+     lambda c: _s16(c, "D75_refI", wall_budget_h=12.0),
+     "FSF parent check: D75_refI differs from S23v_G4_r3 in wall_budget_h"),
+    ("D75_refI drifting from S23v_G4_r3 in the end time",
+     lambda c: _s16(c, "D75_refI", end_time_s=0.03),
+     "FSF parent check: D75_refI differs from S23v_G4_r3 in end_time_s"),
+    ("D75_refI drifting from S23v_G4_r3 in a physics key",
+     lambda c: _s16(c, "D75_refI", k0p_m2=5e-13),
+     "FSF parent check: D75_refI differs from S23v_G4_r3 in k0p_m2"),
+    ("D75_refI pinned to a reference library (it would run without the passive field)",
+     lambda c: _s16(c, "D75_refI", solver_library="s22"),
+     "FSF parent check: D75_refI differs from S23v_G4_r3 in solver_library"),
+    ("D75_refI with a frame key dropped (beyond its named keys)",
+     lambda c: _s16(c, "D75_refI", frame_interval_s=None),
+     "frame_interval_s"),
     ("S23v_G4_r3_S22 without its named key solver_library",
      lambda c: _s16(c, "S23v_G4_r3_S22", solver_library=None),
      "FSF parent check: S23v_G4_r3_S22 does not differ from S23v_G4_r3 in its named key solver_library"),
@@ -1322,7 +1339,9 @@ def s23_generator_negatives(only: str | None = None) -> None:
         assert props("P73_G4_r3_40") == props("S23v_G4_r3") and props("P73_G40_40") == props("S23v_G40")
         # BATCH 74: the diagnostic child has its parent's dictionary exactly (the passive field is the build's), no library pin, no S23 block
         assert props("D74_refI") == props("S23v_G4_r3")
-        for c in ("P73_G4_r3_40", "P73_G40_40", "D74_refI"):
+        # BATCH 75: the re-run child has the same parent's dictionary, no library pin, no S23 block
+        assert props("D75_refI") == props("S23v_G4_r3")
+        for c in ("P73_G4_r3_40", "P73_G40_40", "D74_refI", "D75_refI"):
             assert not (root / "runs" / c / "child.env").exists(), c
             assert "solver_library" not in json.loads((root / "runs" / c / "child.json").read_text()), c
         # the marker is written for ONE child of the 30 (the whitelist), as a word, with nothing else near it
@@ -1335,7 +1354,7 @@ def s23_generator_negatives(only: str | None = None) -> None:
             assert json.loads((root / "runs" / c / "child.json").read_text())["solver_library"] == "s22", c
         assert [c for c in every if json.loads((root / "runs" / c / "child.json").read_text()).get("solver_library") == "s22"] == sorted(["S23v_G4_r3_S22"] + pinned)
         # nOuterCorrectors is 1 on the four arms (the end-of-step partition rule of the log; section 13.6 hand-off)
-        for c in ("S23v_G4_r3", "S23v_G4_r3_S22", "S23v_G4_nor3", "S23v_G40", "P73_G4_r3_40", "P73_G40_40", "D74_refI"):
+        for c in ("S23v_G4_r3", "S23v_G4_r3_S22", "S23v_G4_nor3", "S23v_G40", "P73_G4_r3_40", "P73_G40_40", "D74_refI", "D75_refI"):
             fvs = (root / "runs" / c / "system" / "fvSolution").read_text()
             assert re.findall(r"(?m)^\s*nOuterCorrectors\s+(\S+);", fvs) == ["1"], (c, re.findall(r"nOuterCorrectors\s+\S+;", fvs))
         # the solver's own R1-R4 + marker/kelvinVoigt predicate (mirrored from its source text, below), applied to
@@ -1352,7 +1371,7 @@ def s23_generator_negatives(only: str | None = None) -> None:
         assert sum(s23_solver_would_refuse(props(c)) == "R2" for c in pinned) == 12
         s23_solver_mirror_checks()
         # production write settings on all four (5 ms full writes, 0.2 ms frames)
-        ends = {"S23v_G4_r3": 0.04, "S23v_G4_r3_S22": 0.03, "S23v_G4_nor3": 0.04, "S23v_G40": 0.025, "D74_refI": 0.04}
+        ends = {"S23v_G4_r3": 0.04, "S23v_G4_r3_S22": 0.03, "S23v_G4_nor3": 0.04, "S23v_G40": 0.025, "D74_refI": 0.04, "D75_refI": 0.04}
         for cid, end in ends.items():
             j = json.loads((root / "runs" / cid / "child.json").read_text())
             cd = (root / "runs" / cid / "system" / "controlDict").read_text()
@@ -1453,7 +1472,7 @@ def reference_library_wiring() -> None:
     spec.loader.exec_module(nbsel)
     text = nbsel.source_of(root / "notebooks" / "AM2020_main_case_colab.ipynb")
     batch, batches = nbsel.parse(text)
-    assert batch == max(batches) == 74, (batch, max(batches))
+    assert batch == max(batches) == 75, (batch, max(batches))
     # the build script re-pins by exactly these two patterns; a second match would break the release
     assert len(re.findall(r"EXPECTED_REPO_DIGEST = '[0-9a-f]{64}'", text)) == 1
     assert len(re.findall(r"EXPECTED_TAG = 'digest-[0-9a-f]{12}'", text)) == 1
@@ -1536,6 +1555,13 @@ def reference_library_wiring() -> None:
     assert by[(74, 1)]["library_passed"] == [] and "--s22-solver" not in by[(74, 1)]["argv"] and "--p2prime-solver" not in by[(74, 1)]["argv"]
     refused(need("D74_refI", controls), {"p2prime": "", "s22": "/x"}, "built for nothing")
     check(need("D74_refI", controls), {"p2prime": "", "s22": ""})
+    # BATCH 75 (D75) is likewise ONE session of ONE child: no solver_library, nothing cloned, no flag passed
+    assert [k for k in by if k[0] == 75] == [(75, 1)], sorted(by)
+    assert by[(75, 1)]["children"] == ["D75_refI"], by[(75, 1)]["children"]
+    assert need("D75_refI", controls) == set(), need("D75_refI", controls)
+    assert by[(75, 1)]["library_passed"] == [] and "--s22-solver" not in by[(75, 1)]["argv"] and "--p2prime-solver" not in by[(75, 1)]["argv"]
+    refused(need("D75_refI", controls), {"p2prime": "", "s22": "/x"}, "built for nothing")
+    check(need("D75_refI", controls), {"p2prime": "", "s22": ""})
     assert "--s22-solver" in by[(72, 1)]["argv"] and "--s22-solver" not in by[(72, 2)]["argv"]
     # the same two negatives on this function's own exec'd runner functions
     check(need(" ".join(by[(72, 1)]["children"]), controls), {"p2prime": "", "s22": "/x"})
@@ -1545,7 +1571,7 @@ def reference_library_wiring() -> None:
     seen = nbsel.negatives(cell, controls, 72)
     print("   the reference-library wiring agrees: notebook pins, batch table, generator children, runner flags; "
           f"7 start-of-session cases seen both ways; {len(records)} launch argvs accepted by the runner's own parser "
-          f"(BATCH 72 launch 1 passes --s22-solver, launch 2 does not; BATCH 73 and BATCH 74, one session each, pass none); {len(seen)} launch negatives each refused "
+          f"(BATCH 72 launch 1 passes --s22-solver, launch 2 does not; BATCH 73, BATCH 74 and BATCH 75, one session each, pass none); {len(seen)} launch negatives each refused "
           "for its stated reason")
 
 
@@ -2119,10 +2145,10 @@ S21_GENERATOR_NEGATIVES = (
 
 # The number of children the generator emits: the 18 kept + the 8 S22 validation
 # twins of BATCH 71 + the 4 S23 twins of BATCH 72 + the 2 production children of BATCH 73 + the 1 diagnostic child of BATCH 74
-# (D74_refI, the passive intact-network reference). ONE pin, read by
+# (D74_refI, the passive intact-network reference) + the 1 re-run child of BATCH 75 (D75_refI, the same measurement on rev. 3.1). ONE pin, read by
 # s21_generator_negatives, s23_generator_negatives and main(): BATCH 72 updated main's copy and left this
 # function's at 26, and release 2026-10-07 died on it ten minutes into the build.
-KEPT_CHILDREN = 33
+KEPT_CHILDREN = 34
 
 
 def s21_generator_negatives() -> None:
@@ -2247,7 +2273,7 @@ def main() -> int:
     # required strength, demonstration, transport, tear, source 33, deformation)
     # and the generator negatives of the deleted refusals are cut (the pre-S21
     # file: release-4198bb17).
-    KEPT = KEPT_CHILDREN   # the 18 kept children + the 8 S22 validation twins of BATCH 71 + the 4 S23 twins of BATCH 72 + the 2 production children of BATCH 73 + the 1 diagnostic child of BATCH 74
+    KEPT = KEPT_CHILDREN   # the 18 kept children + the 8 S22 validation twins of BATCH 71 + the 4 S23 twins of BATCH 72 + the 2 production children of BATCH 73 + the 1 diagnostic child of BATCH 74 + the 1 re-run child of BATCH 75
 
     def healthy(r, code):
         assert code == 0, f"exit {code}"
@@ -3107,8 +3133,11 @@ def main() -> int:
         # BATCH 72's two launches stay exercised while a later batch is the default
         run_direct("batch_72_launch_filters_generate", lambda: launch_filters_generate(nbsel, 72, _filtered_generation))
     if _batch != 73:
-        # BATCH 73's one-session filter stays exercised while BATCH 74 is the default
+        # BATCH 73's one-session filter stays exercised while a later batch is the default
         run_direct("batch_73_launch_filters_generate", lambda: launch_filters_generate(nbsel, 73, _filtered_generation))
+    if _batch != 74:
+        # BATCH 74's one-session filter (BATCH 74's record) stays exercised while BATCH 75 is the default
+        run_direct("batch_74_launch_filters_generate", lambda: launch_filters_generate(nbsel, 74, _filtered_generation))
 
     def launch_batch_60():
         filt = _batches[60].split()

@@ -1058,6 +1058,12 @@ FSF_PARENT_PAIRS = (
     # byte under a diagnostic id (already 40 ms, 11 h cap: no key differs, so the pair names none). The
     # passive field belongs to the BUILD; no dictionary key is added, read or refused for it.
     ("D74_refI", "S23v_G4_r3", set(), set()),
+    # BATCH 75 (D75, the re-run of the D74 measurement on rev. 3.1; design 2026-10-09-D74-passive-intact-reference.md
+    # rev. 3.1 sections 3-4, APPROVED by Alireza 2026-10-09: "Approve; rebuild and re-run (Recommended)"; docket
+    # 20261009-0955-run100437-b74-d74-refI, case-engineer 04): D74_refI's dictionary again, S23v_G4_r3 byte for byte
+    # under a NEW id (D74_refI stays as BATCH 74's record). Only the BUILD differs from BATCH 74's (the rupture
+    # transfer and the emptying row); no dictionary key is added, read or refused for it.
+    ("D75_refI", "S23v_G4_r3", set(), set()),
 )
 
 
@@ -3750,7 +3756,9 @@ def main() -> int:
     'P73_G4_r3_40': 50,
     'P73_G40_40': 51,
     # BATCH 74: the one diagnostic child, after the BATCH 73 pair.
-    'D74_refI': 60}
+    'D74_refI': 60,
+    # BATCH 75: the re-run of the diagnostic child on rev. 3.1, after D74_refI.
+    'D75_refI': 61}
     # S17 (design section 6): the mechanical control check, before anything
     # is ordered for launch. The controls-entry half runs for every pair; the
     # child.json half for the pairs whose control is built in this run
