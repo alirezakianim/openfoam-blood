@@ -187,6 +187,14 @@ MUTATIONS = [
 # Mutations of the SOLVER text: (name, [(anchor, replacement)], the pin that
 # must then be reported missing).
 SOURCE_MUTATIONS = [
+    ("S25 F: the default tau_v loses its timeScale_ factor",
+     [('            "networkViscosityTau", timeScale_*2.5e-4\n',
+       '            "networkViscosityTau", 2.5e-4\n')],
+     "R3 tau key, default timeScale_*2.5e-4"),
+    ("S25 F: the default tau_v is mis-scaled (timeScale_*2.5e-3)",
+     [('            "networkViscosityTau", timeScale_*2.5e-4\n',
+       '            "networkViscosityTau", timeScale_*2.5e-3\n')],
+     "R3 tau key, default timeScale_*2.5e-4"),
     ("s19BlockCoupled() returns true (verification 10 D1)",
      [('    return momentumPressureCoupling_ == "blockCoupled";\n',
        "    return true;\n")],
@@ -557,7 +565,9 @@ def source_pins(src: str | None = None, ktext: str | None = None) -> list[str]:
         ("the switch is read with the shipped default",
          'lookupOrDefault<word>("momentumPressureCoupling","segregated")'),
         ("R3 key, default none", 'lookupOrDefault<word>("networkViscosity","none")'),
-        ("R3 tau key, default 2.5e-4", 'lookupOrDefault<scalar>("networkViscosityTau",2.5e-4)'),
+        # S25 F (2026-10-10): the default tau_v is a PHYSICAL time (2.5e-4 s), scaled by the dictionary's timeScale
+        ("R3 tau key, default timeScale_*2.5e-4",
+         'lookupOrDefault<scalar>("networkViscosityTau",timeScale_*2.5e-4)'),
         ("pressureCorrector dispatches to the block only under blockCoupled",
          "if(s19BlockCoupled()){solveBlockCoupledStep();tUEqn.clear();return;}incompressibleFluid::pressureCorrector();"),
         ("the segregated corrector is still the shipped dispatch",

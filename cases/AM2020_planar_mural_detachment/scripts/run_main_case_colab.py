@@ -570,14 +570,99 @@ def s22_physical_cores() -> tuple[int, str]:
     return len(pairs), r.stdout
 
 
-def s22_mkl_environment() -> dict:
+# S25 section 7 (research/designs/2026-10-10-S25-arteriole-bundle.md rev. 2; Alireza 2026-10-09: only the
+# basic 1-core Colab runtime exists). The 1-core batches run ONE solver thread under a PINNED MKL
+# conditional-numerical-reproducibility branch, so that two arms (the baseline binary and S25, B76-OFF-A/B)
+# are compared bitwise on the same branch whatever CPU model each session lands on. The solver calls
+# mkl_cbwr_set(MKL_CBWR_AUTO) before any other MKL call (blockCoupledKernel.H L1610) and is not changed
+# here; whether that call leaves an MKL_CBWR environment pin in force is what the probe below MEASURES on
+# the session's own libmkl_rt, in the solver's own order, and a pin the call overrides refuses the launch.
+S25_CBWR_PROBE = r"""
+import ctypes, json, sys
+lib = ctypes.CDLL(sys.argv[1])
+set_ = lib.MKL_CBWR_Set
+set_.argtypes = [ctypes.c_int]
+set_.restype = ctypes.c_int
+get_ = lib.MKL_CBWR_Get
+get_.argtypes = [ctypes.c_int]
+get_.restype = ctypes.c_int
+out = {"set_auto_rc": None}
+if sys.argv[2] == "auto":
+    out["set_auto_rc"] = set_(2)      # MKL_CBWR_AUTO = 2, as blockCoupledKernel.H L1247 and L1610
+out["branch"] = get_(1)               # MKL_CBWR_BRANCH = 1 (mkl_service.h)
+print(json.dumps(out))
+"""
+
+
+def s25_probe_run(lib: str, extra: dict, mode: str) -> dict:
+    """One fresh process running S25_CBWR_PROBE in `mode` (get / auto) with MKL_CBWR removed from the environment and then set to
+    whatever `extra` says. Its failure is recorded as {"error": ...}, never raised."""
+    env = {k: v for k, v in os.environ.items() if k != "MKL_CBWR"}
+    env.update(extra)
+    try:
+        r = subprocess.run([sys.executable, "-c", S25_CBWR_PROBE, lib, mode], capture_output=True,
+                           text=True, env=env, timeout=120)
+        return json.loads(r.stdout.strip().splitlines()[-1]) if r.returncode == 0 and r.stdout.strip() else {
+            "error": f"exit {r.returncode}: {(r.stdout + r.stderr)[-300:]}"}
+    except Exception as error:   # the probe's own machinery: recorded, not raised
+        return {"error": f"{type(error).__name__}: {error}"}
+
+
+def s25_cpu_flags(cpuinfo_text: str):
+    """The ISA flags of the first logical CPU in /proc/cpuinfo text, sorted and space-joined (None when the file has none: a hypervisor
+    can hide them). S25 section 12.1: with the model, they decide whether two sessions land on the same MKL code path."""
+    m = re.search(r"^flags\s*:\s*(.+)$", cpuinfo_text, re.M)
+    return " ".join(sorted(m.group(1).split())) if m else None
+
+
+def s25_cpu_identity(cpuinfo_text: str, lib, record_auto: bool) -> dict:
+    """S25 section 12.1, what environment.json records so that two arms' sessions can be judged SAME or VOID: {"cpu_flags"} always;
+    and, when `record_auto` (the 1-core batches, which request NO pin because the solver's own mkl_cbwr_set(AUTO) would override it and the
+    baseline binary cannot be changed), {"auto_branch"}: the branch this session's libmkl_rt lands on, measured in a fresh process in the
+    solver's own call order (an {"error": ...} when there is no library or the probe fails; never raised)."""
+    out = {"cpu_flags": s25_cpu_flags(cpuinfo_text)}
+    if record_auto:
+        out["auto_branch"] = s25_probe_run(lib, {}, "auto") if lib else {"error": "no libmkl_rt was found to probe"}
+    return out
+
+
+def s25_cbwr_probe(lib: str, pin: str) -> dict:
+    """Run the solver's CNR sequence against `lib` in three fresh processes (a CNR mode cannot change after
+    the first MKL call): (a) MKL_CBWR=pin, no mkl_cbwr_set; (b) MKL_CBWR=pin, then mkl_cbwr_set(AUTO), as the
+    solver does; (c) no MKL_CBWR, then mkl_cbwr_set(AUTO). Returns the three results and a verdict:
+      "held"        (b) reports the branch (a) reports, and mkl_cbwr_set returned 0: the pin survives the
+                    solver's call (on a CPU whose AUTO branch IS the pin this is true either way);
+      "overridden"  (b) differs from (a): the solver's call replaced the pin, which is therefore inert;
+      "set_failed"  mkl_cbwr_set(AUTO) returned non-zero under the pin: the solver would refuse at start-up;
+      "not_run"     the probe itself could not run (recorded with the reason; never raised)."""
+    out = {"pin": pin, "lib": lib}
+    runs = (("pin_only", {"MKL_CBWR": pin}, "get"), ("pin_then_auto", {"MKL_CBWR": pin}, "auto"),
+            ("auto_only", {}, "auto"))
+    for name, extra, mode in runs:
+        out[name] = s25_probe_run(lib, extra, mode)
+    a, b = out["pin_only"], out["pin_then_auto"]
+    if "branch" not in a or "branch" not in b or "branch" not in out["auto_only"]:
+        out["verdict"] = "not_run"
+    elif b["set_auto_rc"] != 0:
+        out["verdict"] = "set_failed"
+    elif a["branch"] != b["branch"]:
+        out["verdict"] = "overridden"
+    else:
+        out["verdict"] = "held"
+    return out
+
+
+def s22_mkl_environment(threads_pin: int = 0, cbwr_pin: str = "") -> dict:
     """S22 sections 2.5 and 5: pip install the pinned MKL (3 attempts), export
     PHASE_CLOT_MKL_RT (the installed libmkl_rt.so.3), MKL_NUM_THREADS = max(1,
     physical cores // AM2020_CONCURRENCY) and KMP_BLOCKTIME=0, and return what
     environment.json records: the MKL version, the physical and logical CPU
     counts, the CPU model and the `lscpu -e` layout. A failed install is
     recorded, not raised: a pardiso child then refuses at start-up, naming the
-    library, and never runs UMFPACK silently (V22-4)."""
+    library, and never runs UMFPACK silently (V22-4).
+    S25: threads_pin > 0 sets MKL_NUM_THREADS to it whatever the cores (the 1-core batches); cbwr_pin sets
+    MKL_CBWR to it and runs s25_cbwr_probe on the installed library (a pin the solver's own call overrides, or
+    a call that fails under it, raises). Both are recorded under "mkl_threads_pinned" and "mkl_cbwr"."""
     import importlib.metadata
     import site
     import sysconfig
@@ -613,13 +698,27 @@ def s22_mkl_environment() -> dict:
     physical, lscpu_p = s22_physical_cores()
     logical = (len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity")
                else os.cpu_count())
-    os.environ["MKL_NUM_THREADS"] = str(max(1, physical // concurrency))
+    os.environ["MKL_NUM_THREADS"] = str(threads_pin if threads_pin > 0 else max(1, physical // concurrency))
     os.environ["KMP_BLOCKTIME"] = "0"
+    cbwr = {"requested": cbwr_pin or None, "probe": None}
+    if cbwr_pin:
+        os.environ["MKL_CBWR"] = cbwr_pin
+        if lib:
+            cbwr["probe"] = s25_cbwr_probe(lib, cbwr_pin)
+        else:
+            cbwr["probe"] = {"verdict": "not_run", "reason": "no libmkl_rt was found to probe"}
+    cbwr["env_MKL_CBWR"] = os.environ.get("MKL_CBWR")
     model = None
+    cpuinfo_text = ""
     cpuinfo = Path("/proc/cpuinfo")
     if cpuinfo.is_file():
-        m = re.search(r"^model name\s*:\s*(.+)$", cpuinfo.read_text(), re.M)
+        cpuinfo_text = cpuinfo.read_text()
+        m = re.search(r"^model name\s*:\s*(.+)$", cpuinfo_text, re.M)
         model = m.group(1).strip() if m else None
+    identity = s25_cpu_identity(cpuinfo_text, lib, record_auto=threads_pin > 0 and not cbwr_pin)
+    flags = identity["cpu_flags"]
+    if "auto_branch" in identity:
+        cbwr["auto_branch"] = identity["auto_branch"]
     lscpu_e = subprocess.run(["lscpu", "-e"], capture_output=True, text=True)
     env.update({
         "am2020_concurrency": concurrency,
@@ -627,15 +726,38 @@ def s22_mkl_environment() -> dict:
         "logical_cpus": logical,
         "nproc": logical,
         "mkl_num_threads": os.environ["MKL_NUM_THREADS"],
+        "mkl_threads_pinned": threads_pin if threads_pin > 0 else None,
+        "mkl_cbwr": cbwr,
         "kmp_blocktime": os.environ["KMP_BLOCKTIME"],
         "cpu_model": model,
+        "cpu_flags": flags,
         "lscpu_p_core_socket": lscpu_p,
         "lscpu_e": lscpu_e.stdout if lscpu_e.returncode == 0 else None,
     })
     print(f"[main-case] S22: {S22_MKL_PIN} installed={env['mkl_installed']} "
           f"PHASE_CLOT_MKL_RT={env['phase_clot_mkl_rt']} physical={physical} "
           f"logical={logical} MKL_NUM_THREADS={env['mkl_num_threads']} KMP_BLOCKTIME=0")
+    if cbwr_pin:
+        probe = cbwr["probe"] or {}
+        print(f"[main-case] S25: MKL_CBWR={cbwr_pin} probe verdict {probe.get('verdict')} "
+              f"(pin_only {probe.get('pin_only')}, pin_then_auto {probe.get('pin_then_auto')}, "
+              f"auto_only {probe.get('auto_only')})")
+        refusal = s25_cbwr_refusal(cbwr_pin, probe)
+        if refusal:
+            raise RuntimeError(refusal)
     return env
+
+
+def s25_cbwr_refusal(pin: str, probe: dict):
+    """The launch refusal for a probe verdict, or None. Only a MEASURED inert pin refuses; a probe that could
+    not run is recorded in environment.json and does not stop the session."""
+    verdict = probe.get("verdict")
+    if verdict not in ("overridden", "set_failed"):
+        return None
+    return (f"S25: MKL_CBWR={pin} is {'replaced by' if verdict == 'overridden' else 'refused after'} the solver's own "
+            f"mkl_cbwr_set(MKL_CBWR_AUTO) on this session's libmkl_rt ({probe}): the pinned branch would be inert and "
+            f"two arms could not be compared bitwise. Refusing the launch; the pin must live in the solver "
+            f"(hand-off to the solver-engineer).")
 
 
 # REFERENCE LIBRARIES (S22 section 7 arm A0, BATCH 71; S23 section 7 arm (1'), BATCH 72):
@@ -654,8 +776,47 @@ REFERENCE_LIBRARIES = {
                 "p2prime_solver"),
     "s22": ("PHASE_CLOT_S22_LIBBIN", "s22_libbin", "S22 reference", "S22REF_COMPILE_FAILED",
             "s22_solver"),
+    # S25 section 7, B76-OFF-A: the release BEFORE S25 (release-e2a57db1), the do-nothing control binary.
+    "baseline": ("PHASE_CLOT_BASELINE_LIBBIN", "baseline_libbin", "baseline (release-e2a57db1)",
+                 "BASELINE_COMPILE_FAILED", "baseline_solver"),
 }
 P2PRIME_LIB = "libphaseClotAxisymmetricFluid.so"   # the library file, the same for every reference
+
+
+def selected_child_ids(series_filter: str, controls: Path) -> list:
+    """The child ids this launch will build (all with no filter), selected by id or series as Allrun and
+    create_cases.py select them."""
+    tokens = series_filter.split()
+    return [k["child_id"] for k in json.loads(controls.read_text())["children"]
+            if not tokens or k["child_id"] in tokens or k.get("series") in tokens]
+
+
+def stage_restart(restart_from: str, child_ids: list, driver_path: Path, dest: Path) -> dict:
+    """S25 section 2C. `restart_from` is a previous session's case-after-run-*.tar.gz (its full writes and
+    dictionaries are extracted into dest) or a directory laid out dest-style, <dir>/<child>/<time dirs>,
+    constant/, system/. EVERY selected child must have a full intact write in it (restart_driver.choose;
+    there is no latestTime and no frame): refused here, at minute 3, not by Allrun after the compile.
+    Exports AM2020_RESTART_FROM for Allrun, which stages the choice per child after regenerating the case
+    and refuses regenerated dictionaries that differ from the writing session's."""
+    driver = load_module("restart_driver_for_runner", driver_path)
+    src = Path(restart_from)
+    try:
+        if src.is_file():
+            extracted = driver.extract_from_tarball(src, child_ids, dest)
+            source = dest
+        elif src.is_dir():
+            extracted, source = None, src
+        else:
+            raise RuntimeError(f"--restart-from {restart_from!r} is neither a tarball nor a directory")
+        chosen = {}
+        for child in child_ids:
+            if not (source / child).is_dir():
+                raise RuntimeError(f"--restart-from holds no directory for child {child!r} ({source})")
+            chosen[child] = driver.choose(source / child)[0].name
+    except driver.RestartError as error:
+        raise RuntimeError(f"S25 restart: {error}") from error
+    os.environ["AM2020_RESTART_FROM"] = str(source)
+    return {"restart_from": restart_from, "source": str(source), "chosen": chosen, "extracted": extracted}
 
 
 def reference_libraries_needed(series_filter: str, controls: Path) -> set:
@@ -769,6 +930,24 @@ def verify_repo_stamp(project: Path, expected: str, result: dict) -> None:
             f"stamp {stamp.get('repo_digest')}")
 
 
+def _non_negative_int(text: str) -> int:
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not an integer")
+    if value < 0:
+        raise argparse.ArgumentTypeError(f"{value} is negative")
+    return value
+
+
+def _cbwr_value(text: str) -> str:
+    if not text.strip() and text != "":
+        raise argparse.ArgumentTypeError("whitespace only")
+    if re.search(r"\s", text):
+        raise argparse.ArgumentTypeError(f"{text!r} must be one MKL_CBWR value without whitespace")
+    return text
+
+
 def main() -> int:
     global PACKAGE_DRIVE
     parser = argparse.ArgumentParser(description=__doc__)
@@ -814,6 +993,38 @@ def main() -> int:
             "user-applications/phaseClotAxisymmetricFluid directory, built into a "
             "separate FOAM_USER_LIBBIN (s22_libbin) for the child that names "
             "solver_library s22. Empty (the default) builds nothing."
+        ),
+    )
+    parser.add_argument(
+        "--baseline-solver", default="",
+        help=(
+            "S25 verification (BATCH 76, B76-OFF-A) only: the clone of release-e2a57db1's "
+            "user-applications/phaseClotAxisymmetricFluid directory, built into a separate "
+            "FOAM_USER_LIBBIN (baseline_libbin) for the child that names solver_library baseline. "
+            "Empty (the default) builds nothing."
+        ),
+    )
+    parser.add_argument(
+        "--mkl-threads", type=_non_negative_int, default=0,
+        help=(
+            "S25 (the 1-core batches): pin MKL_NUM_THREADS to this many solver threads whatever the "
+            "cores. 0 (the default) is the S22 rule, physical cores // AM2020_CONCURRENCY."
+        ),
+    )
+    parser.add_argument(
+        "--mkl-cbwr", type=_cbwr_value, default="",
+        help=(
+            "S25 (the 1-core batches): export MKL_CBWR=<branch> and probe, on the session's own "
+            "libmkl_rt and in the solver's own call order, that the pin survives mkl_cbwr_set(AUTO). "
+            "Recorded in environment.json under s22.mkl_cbwr. Empty (the default) pins nothing."
+        ),
+    )
+    parser.add_argument(
+        "--restart-from", default="",
+        help=(
+            "S25 (OI-65): restart every selected child from its last FULL write (restart_driver.py; never "
+            "latestTime, never a frame): a previous session's case-after-run-*.tar.gz, or a directory of "
+            "<child>/<time dirs>. Empty (the default) is a cold start; AM2020_RESTART_FROM is then unset."
         ),
     )
     args = parser.parse_args()
@@ -915,7 +1126,19 @@ def main() -> int:
 
         # S22 sections 2.5 and 5: the pinned MKL and its environment, before
         # the solver is built and run (every child inherits the exports).
-        s22_env = s22_mkl_environment()
+        # S25 (OI-65): a restart is explicit. An inherited AM2020_RESTART_FROM must never restart a cold launch.
+        os.environ.pop("AM2020_RESTART_FROM", None)
+        restart_record = None
+        if args.restart_from:
+            restart_record = stage_restart(
+                args.restart_from,
+                selected_child_ids(series_filter, PROJECT_LOCAL / "cases" / "AM2020_planar_mural_detachment"
+                                   / "constant" / "mainCaseControls.json"),
+                PROJECT_LOCAL / "cases" / "AM2020_planar_mural_detachment" / "scripts" / "restart_driver.py",
+                CONTENT / "restart_source")
+            result["restart"] = restart_record
+            print(f"[main-case] S25: restarting from {restart_record['chosen']} ({restart_record['source']})", flush=True)
+        s22_env = s22_mkl_environment(args.mkl_threads, args.mkl_cbwr.strip())
         result["s22_mkl_installed"] = s22_env["mkl_installed"]
         solver = PROJECT_LOCAL / "user-applications" / "phaseClotAxisymmetricFluid"
         openfoam_bash = f"source {bootstrap.quoted(bootstrap.OF_BASHRC)}"
@@ -933,7 +1156,7 @@ def main() -> int:
         # Reference libraries (S22 arm A0: p2prime; S23 arm (1'): s22), only when the notebook
         # passes the clone. Each selected child's solver_library must have been passed, and no
         # library is built for nothing; both are refused here, before the first build.
-        reference_args = {"p2prime": args.p2prime_solver, "s22": args.s22_solver}
+        reference_args = {"p2prime": args.p2prime_solver, "s22": args.s22_solver, "baseline": args.baseline_solver}
         check_reference_libraries(
             reference_libraries_needed(
                 series_filter, PROJECT_LOCAL / "cases" / "AM2020_planar_mural_detachment"
@@ -950,7 +1173,7 @@ def main() -> int:
             except RuntimeError:
                 result["verdict"] = REFERENCE_LIBRARIES[_name][3]
                 raise
-            result[_name if _name == "p2prime" else "s22_reference"] = references[_name]
+            result[{"p2prime": "p2prime", "s22": "s22_reference", "baseline": "baseline_reference"}[_name]] = references[_name]
         p2prime = references.get("p2prime")
 
         ignore = shutil.ignore_patterns(
@@ -983,8 +1206,10 @@ def main() -> int:
             ),
             **bootstrap.build_environment(),
             "s22": s22_env,
+            "restart": restart_record,
             "p2prime": p2prime,
             "s22_reference": references.get("s22"),
+            "baseline_reference": references.get("baseline"),
         }
         (artifact / "environment.json").write_text(
             json.dumps(environment, indent=2) + "\n"

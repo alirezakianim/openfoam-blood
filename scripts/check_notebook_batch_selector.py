@@ -64,6 +64,12 @@ IDENTITY_PAIRS = {72: ("S23v_G4_r3", "S23v_G4_r3_S22")}
 # re-run of that measurement on rev. 3.1, Alireza 2026-10-09: "Approve; rebuild and re-run (Recommended)"): its
 # filter is exactly these children, it has no LAUNCHES entry and no reference library.
 ONE_SESSION = {73: ("P73_G4_r3_40", "P73_G40_40"), 74: ("D74_refI",), 75: ("D75_refI",)}
+# S25 BATCH 76 (the verification) is THREE sessions on the 1-core runtime, by decision (design 2026-10-10-S25-arteriole-bundle.md rev. 2.2 section 7 and 12.1; case-engineer report 15): the
+# children of each launch IN THE ORDER THEY RUN, which is the generator's matrix order (Allrun runs a launch's children in matrix order, never in the order BATCHES names them; dry_run
+# launch_filters_generate asserts the built order for these batches). Launch 1 holds the baseline arm (solver_library baseline), the only launch that clones a reference library.
+ONE_CORE_SESSIONS = {76: {1: ("B76_OFF_A",), 2: ("B76_OFF_B",),
+                          3: ("RT_P73_A", "RT_P73_B", "RT_5a_A", "RT_5a_B", "S25_5a_tan", "S25_5a_tan_half")}}
+ONE_CORE_LIBRARY_LAUNCHES = {76: {1: ["baseline"], 2: [], 3: []}}
 FAKE_SOLVER = "/content/openfoam-blood-ref/user-applications/phaseClotAxisymmetricFluid"
 FAKE_BASE = ["--package", "/content/package.zip", "--repo-digest", "0" * 64]
 
@@ -121,8 +127,9 @@ def launch_cell(notebook: Path = NOTEBOOK) -> str:
     return hits[0]
 
 
-NAMES = ("P2PRIME_TAG", "P2PRIME_REPO_DIGEST", "S22REF_TAG", "S22REF_REPO_DIGEST", "BATCHES", "LAUNCHES", "LAUNCH",
-         "LAUNCH_CONCURRENCY", "CONCURRENCY", "REFERENCE_LIBRARY_BY_BATCH", "REFERENCE_LIBRARY_BY_LAUNCH")
+NAMES = ("P2PRIME_TAG", "P2PRIME_REPO_DIGEST", "S22REF_TAG", "S22REF_REPO_DIGEST", "BASELINE_TAG", "BASELINE_REPO_DIGEST", "BATCHES", "LAUNCHES", "LAUNCH",
+         "LAUNCH_CONCURRENCY", "CONCURRENCY", "REFERENCE_LIBRARY_BY_BATCH", "REFERENCE_LIBRARY_BY_LAUNCH",
+         "ONE_CORE_BATCHES", "ONE_CORE_MKL_THREADS", "RESTART_FROM")
 
 
 def notebook_names(cell: str) -> dict:
@@ -158,7 +165,7 @@ def runner_namespace() -> dict:
     if not _RUNNER_NS:
         src = RUNNER.read_text()
         # the two lines of main() this check mirrors; if they move, this must be re-read
-        for pin in ('reference_args = {"p2prime": args.p2prime_solver, "s22": args.s22_solver}',
+        for pin in ('reference_args = {"p2prime": args.p2prime_solver, "s22": args.s22_solver, "baseline": args.baseline_solver}',
                     "reference_libraries_needed(\n                series_filter,"):
             if src.count(pin) != 1:
                 raise LaunchError(f"the runner no longer contains the pinned text {pin!r} once; re-read main()")
@@ -196,7 +203,7 @@ def runner_accepts(argv: list, controls: Path = CONTROLS) -> argparse.Namespace:
         sys.argv = saved
     needed = ns["reference_libraries_needed"](args.only.strip(), controls)
     try:
-        ns["check_reference_libraries"](needed, {"p2prime": args.p2prime_solver, "s22": args.s22_solver})
+        ns["check_reference_libraries"](needed, {"p2prime": args.p2prime_solver, "s22": args.s22_solver, "baseline": args.baseline_solver})
     except RuntimeError as error:
         raise LaunchError(f"the runner would refuse this argv at the start of the session: {error}")
     return args
@@ -212,6 +219,15 @@ def check_launches(cell: str, controls: Path = CONTROLS, selected: int | None = 
     known = {c["child_id"] for c in json.loads(controls.read_text())["children"] if c.get("child_id")}
     if names["LAUNCH"] != 1:
         raise LaunchError(f"the default is LAUNCH = {names['LAUNCH']}; it must be LAUNCH = 1")
+    if names["RESTART_FROM"] != "":
+        raise LaunchError(f"RESTART_FROM is {names['RESTART_FROM']!r}; the shipped notebook must be a cold start (RESTART_FROM = ''), "
+                          f"a restart names its tarball by hand for one session (S25 section 2C)")
+    one_core = {"batches": names["ONE_CORE_BATCHES"], "threads": names["ONE_CORE_MKL_THREADS"]}
+    # the baseline release's pin (BATCH 76 launch 1): its own constants, spelt so the release re-pin never touches them
+    if not re.fullmatch(r"[0-9a-f]{64}", names["BASELINE_REPO_DIGEST"]) or names["BASELINE_TAG"] != "digest-" + names["BASELINE_REPO_DIGEST"][:12]:
+        raise LaunchError(f"BASELINE_TAG {names['BASELINE_TAG']!r} is not 'digest-' + the first 12 hex of BASELINE_REPO_DIGEST {names['BASELINE_REPO_DIGEST']!r}")
+    if 76 in by_batch and tuple(by_batch[76][:3]) != ("baseline", names["BASELINE_TAG"], names["BASELINE_REPO_DIGEST"]):
+        raise LaunchError(f"REFERENCE_LIBRARY_BY_BATCH[76] must be the baseline library at BASELINE_TAG / BASELINE_REPO_DIGEST; it is {by_batch.get(76)!r}")
     # the newest entry is always checked, even while BATCH still selects an older one (BATCH 73 is built before it is the default)
     strict = sorted({b for b in by_batch} | ({selected} if selected is not None else set()) | {max(batches)}
                     | {b for b in ONE_SESSION if b in batches})
@@ -247,7 +263,7 @@ def check_launches(cell: str, controls: Path = CONTROLS, selected: int | None = 
         for lnum in sorted(launches.get(b, {1: None})):
             lines: list = []
             try:
-                plan = fn["launch_plan"](b, lnum, batches, launches, by_batch, by_launch, concurrency, say=lines.append)
+                plan = fn["launch_plan"](b, lnum, batches, launches, by_batch, by_launch, concurrency, say=lines.append, one_core=one_core)
             except ValueError as error:
                 raise LaunchError(f"BATCH {b} launch {lnum}: the notebook refuses it: {error}")
             if not plan["only"].split():
@@ -257,14 +273,74 @@ def check_launches(cell: str, controls: Path = CONTROLS, selected: int | None = 
                 raise LaunchError(f"BATCH {b} launch {lnum} names {unknown}, which are not child_ids in mainCaseControls.json")
             extra = fn["library_args"](plan["library"], FAKE_SOLVER) if plan["library"] else []
             argv = fn["runner_argv"]("/content/project/cases/AM2020_planar_mural_detachment/scripts/run_main_case_colab.py",
-                                     "20261008-000000-am2020-main-case", FAKE_BASE + extra, plan["only"])
+                                     "20261008-000000-am2020-main-case", FAKE_BASE + extra + plan["runner_args"], plan["only"])
             args = runner_accepts(argv, controls)
             if args.only.strip() != plan["only"]:
                 raise LaunchError(f"BATCH {b} launch {lnum}: the runner reads --only {args.only!r}, the plan is {plan['only']!r}")
-            passed = [n for n, v in (("p2prime", args.p2prime_solver), ("s22", args.s22_solver)) if v]
+            _want = (one_core["threads"], "") if b in one_core["batches"] else (0, "")   # S25 section 12.1: a 1-core batch pins NO MKL_CBWR
+            if (args.mkl_threads, args.mkl_cbwr) != _want:
+                raise LaunchError(f"BATCH {b} launch {lnum}: the runner reads --mkl-threads {args.mkl_threads} --mkl-cbwr {args.mkl_cbwr!r}; "
+                                  f"{'a 1-core runtime batch' if b in one_core['batches'] else 'a multi-core batch'} must pass {_want}")
+            passed = [n for n, v in (("p2prime", args.p2prime_solver), ("s22", args.s22_solver), ("baseline", args.baseline_solver)) if v]
             records.append({"batch": b, "launch": lnum, "children": plan["only"].split(), "hours": plan["hours"],
                             "library_passed": passed, "argv": argv, "printed": lines})
+    # S25 BATCH 76: three sessions, their children in the order they run, the baseline library on launch 1 only
+    for b, sessions in ONE_CORE_SESSIONS.items():
+        if b not in batches:
+            continue
+        got = {r["launch"]: r for r in records if r["batch"] == b}
+        if sorted(got) != sorted(sessions):
+            raise LaunchError(f"BATCH {b} runs launches {sorted(got)}; its decision is the sessions {sorted(sessions)}")
+        for lnum, kids in sessions.items():
+            if tuple(got[lnum]["children"]) != kids:
+                raise LaunchError(f"BATCH {b} launch {lnum} runs {got[lnum]['children']} but its session is {list(kids)}, in this order "
+                                  f"(a pair runs A then B; the runner follows the matrix order)")
+            if got[lnum]["library_passed"] != ONE_CORE_LIBRARY_LAUNCHES[b][lnum]:
+                raise LaunchError(f"BATCH {b} launch {lnum} passes the reference libraries {got[lnum]['library_passed']}, "
+                                  f"its session passes {ONE_CORE_LIBRARY_LAUNCHES[b][lnum]}")
+            if "--mkl-cbwr" in got[lnum]["argv"]:
+                raise LaunchError(f"BATCH {b} launch {lnum} passes --mkl-cbwr; a 1-core batch pins no MKL CNR branch (design section 12.1)")
+        if names["LAUNCH_CONCURRENCY"].get(b) != 1:
+            raise LaunchError(f"BATCH {b} must be forced to CONCURRENCY 1 by LAUNCH_CONCURRENCY")
     return records
+
+
+def check_one_core(cell: str, controls: Path = CONTROLS, concurrency: int = 1) -> dict:
+    """S25 (the 1-core runtime batches). BATCHES has no entry for batch 76/77 until its children exist, so the
+    mechanism is exercised on a SYNTHETIC entry that names an existing child: the notebook's own launch_plan for
+    each batch in ONE_CORE_BATCHES at `concurrency`, the exact runner argv it builds, parsed by the runner's own
+    argparse. It must carry --mkl-threads and NO --mkl-cbwr (S25 section 12.1), and a batch outside ONE_CORE_BATCHES must not carry --mkl-threads."""
+    names = notebook_names(cell)
+    fn = launch_functions(cell)
+    one_core = {"batches": names["ONE_CORE_BATCHES"], "threads": names["ONE_CORE_MKL_THREADS"]}
+    if not one_core["batches"]:
+        raise LaunchError("ONE_CORE_BATCHES is empty")
+    if one_core["threads"] != 1:
+        raise LaunchError(f"the 1-core runtime batches run ONE solver thread (S25 section 7) and pin NO MKL_CBWR (section 12.1: the solver's own "
+                          f"mkl_cbwr_set(AUTO) overrides it): ONE_CORE_MKL_THREADS must be 1; got {one_core['threads']!r}")
+    if names["LAUNCH_CONCURRENCY"].get(76) != 1 or names["LAUNCH_CONCURRENCY"].get(77) != 1:
+        raise LaunchError("LAUNCH_CONCURRENCY must force batches 76 and 77 to 1")
+    child = "P73_G4_r3_40"
+    out = {}
+    for b in one_core["batches"]:
+        batches = {b: (child, 7.5, "S25 synthetic 1-core entry")}
+        lines: list = []
+        try:
+            plan = fn["launch_plan"](b, 1, batches, {}, {}, {}, concurrency, say=lines.append, one_core=one_core)
+        except ValueError as error:
+            raise LaunchError(f"BATCH {b} (1-core): the notebook refuses it: {error}")
+        argv = fn["runner_argv"]("/content/project/cases/AM2020_planar_mural_detachment/scripts/run_main_case_colab.py",
+                                 "20261010-000000-am2020-main-case", FAKE_BASE + plan["runner_args"], plan["only"])
+        args = runner_accepts(argv, controls)
+        if (args.mkl_threads, args.mkl_cbwr) != (one_core["threads"], ""):
+            raise LaunchError(f"BATCH {b} (1-core): the argv {argv} must carry --mkl-threads {one_core['threads']} and NO --mkl-cbwr "
+                              f"(section 12.1; the runner reads {args.mkl_threads}, {args.mkl_cbwr!r})")
+        if "--mkl-cbwr" in argv:
+            raise LaunchError(f"BATCH {b} (1-core): the argv {argv} carries --mkl-cbwr; a 1-core batch pins no MKL CNR branch (section 12.1)")
+        if args.restart_from != "":
+            raise LaunchError(f"BATCH {b} (1-core): a restart in the default argv")
+        out[b] = argv
+    return out
 
 
 def _replace_all(cell: str, old: str, new: str, count: int) -> str:
@@ -359,6 +435,50 @@ def negatives(cell: str, controls: Path = CONTROLS, selected: int = 72) -> list:
         ("BATCH 75 at LAUNCH 2", lambda: fn_launch73(cell, 2, controls, batch=75), "no launch split"),
         ("BATCH 75 at CONCURRENCY 1", lambda: fn_launch73(cell, 1, controls, concurrency=1, batch=75), "CONCURRENCY 2"),
         ("BATCH 75 at CONCURRENCY 3", lambda: fn_launch73(cell, 1, controls, concurrency=3, batch=75), "CONCURRENCY 2"),
+        # S25, the 1-core runtime batches (76, 77): CONCURRENCY 1, ONE solver thread, NO pinned MKL_CBWR (design section 12.1); the BATCH 72-75 branches are not reused
+        ("a 1-core batch at CONCURRENCY 2", lambda: check_one_core(cell, controls, concurrency=2), "CONCURRENCY must be 1"),
+        ("a 1-core batch at CONCURRENCY 3", lambda: check_one_core(cell, controls, concurrency=3), "CONCURRENCY must be 1"),
+        ("a 1-core batch that loses its thread pin", lambda: check_one_core(
+            _replace_all(cell, "runner_args = ['--mkl-threads', str(one_core['threads'])]", "runner_args = []", 1), controls),
+         "must carry --mkl-threads"),
+        ("a 1-core batch that pins an MKL CNR branch again", lambda: check_one_core(
+            _replace_all(cell, "runner_args = ['--mkl-threads', str(one_core['threads'])]",
+                         "runner_args = ['--mkl-threads', str(one_core['threads']), '--mkl-cbwr', 'AVX2,STRICT']", 1), controls),
+         "NO --mkl-cbwr"),
+        ("BATCH 76 launch 3 swaps a pair (B before A)", lambda: check_launches(
+            _replace_all(cell, '3: ("RT_P73_A RT_P73_B RT_5a_A RT_5a_B S25_5a_tan S25_5a_tan_half", 4.1)}',
+                         '3: ("RT_P73_B RT_P73_A RT_5a_A RT_5a_B S25_5a_tan S25_5a_tan_half", 4.1)}', 1), controls, selected),
+         "in this order"),
+        ("BATCH 76 launch 3 runs the 5a pair before the RT pairs", lambda: check_launches(
+            _replace_all(cell, '3: ("RT_P73_A RT_P73_B RT_5a_A RT_5a_B S25_5a_tan S25_5a_tan_half", 4.1)}',
+                         '3: ("S25_5a_tan S25_5a_tan_half RT_P73_A RT_P73_B RT_5a_A RT_5a_B", 4.1)}', 1), controls, selected),
+         "in this order"),
+        ("BATCH 76 launch 2 clones the baseline library", lambda: check_launches(
+            mutate(cell, r"^    \(76, 2\): False,", "    (76, 2): True,"), controls, selected), "built for nothing"),
+        ("BATCH 76 launch 1 does not clone the baseline library", lambda: check_launches(
+            mutate(cell, r"^    \(76, 1\): True,", "    (76, 1): False,"), controls, selected), "--baseline-solver was not passed"),
+        ("BATCH 76 loses its CONCURRENCY 1 forcing", lambda: check_launches(
+            _replace_all(cell, "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 76: 1, 77: 1}", "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 77: 1}", 1), controls, selected),
+         "CONCURRENCY must be 1"),
+        ("the baseline tag is not its digest's prefix", lambda: check_launches(
+            mutate(cell, r"^BASELINE_TAG = 'digest-[0-9a-f]{12}'$", "BASELINE_TAG = 'digest-000000000000'"), controls, selected),
+         "is not 'digest-' + the first 12 hex"),
+        ("BATCH 76 clones another release as its baseline", lambda: check_launches(
+            _replace_all(cell, "76: ('baseline', BASELINE_TAG, BASELINE_REPO_DIGEST,", "76: ('baseline', S22REF_TAG, S22REF_REPO_DIGEST,", 1), controls, selected),
+         "must be the baseline library"),
+        ("a 1-core batch with 6 solver threads", lambda: check_one_core(
+            mutate(cell, r"^ONE_CORE_MKL_THREADS = 1$", "ONE_CORE_MKL_THREADS = 6"), controls),
+         "ONE_CORE_MKL_THREADS must be 1"),
+        ("BATCH 75 declared a 1-core batch (its branch needs CONCURRENCY 2)", lambda: check_launches(
+            mutate(cell, r"^ONE_CORE_BATCHES = \(76, 77\)$", "ONE_CORE_BATCHES = (75, 76, 77)"), controls, selected),
+         "CONCURRENCY must be 1"),
+        ("a multi-core batch whose argv carries the 1-core pin", lambda: check_launches(
+            _replace_all(cell, "'library': library, 'runner_args': runner_args}",
+                         "'library': library, 'runner_args': ['--mkl-threads', '1']}", 1), controls, selected),
+         "a multi-core batch must pass (0, '')"),
+        ("the shipped notebook restarts", lambda: check_launches(
+            mutate(cell, r"^RESTART_FROM = ''$", "RESTART_FROM = '/content/drive/x.tar.gz'"), controls, selected),
+         "must be a cold start"),
         ("launch 2 argv WITH --s22-solver", lambda: runner_accepts(argv2 + ["--s22-solver", FAKE_SOLVER], controls),
          "built for nothing"),
         ("launch 1 argv WITHOUT --s22-solver", lambda: runner_accepts(argv1[:i] + argv1[i + 2:], controls),
@@ -437,7 +557,7 @@ def fn_launch73(cell: str, launch: int, controls: Path, concurrency: int = 2, ba
 def main() -> int:
     if "--self-test" in sys.argv[1:]:
         try:
-            for label, line in negatives(launch_cell(), CONTROLS, 75):
+            for label, line in negatives(launch_cell(), CONTROLS, 76):
                 print(f"   refused: {label} -> {line}")
         except (LaunchError, AssertionError) as error:
             fail(f"self-test: {error}")
@@ -510,6 +630,13 @@ def main() -> int:
     for r in records:
         print(f"  BATCH {r['batch']} launch {r['launch']}: {len(r['children'])} child(ren) {' '.join(r['children'])}; "
               f"runner library flags passed: {r['library_passed'] or 'none'}")
+
+    try:
+        one_core_argv = check_one_core(launch_cell(), CONTROLS)
+    except LaunchError as error:
+        fail(str(error))
+    for b, argv in sorted(one_core_argv.items()):
+        print(f"  BATCH {b} (1-core runtime, synthetic entry): argv carries (no --mkl-cbwr) {' '.join(argv[argv.index('--mkl-threads'):argv.index('--mkl-threads') + 2])}")
 
     named = batches[selected].split()
     unscheduled = [

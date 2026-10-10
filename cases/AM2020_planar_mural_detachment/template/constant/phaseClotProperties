@@ -37,3 +37,9 @@ fsiRelaxation 0.5;
 etaP [0 0 1 0 0 0 0] 1e-5;
 penaltyExponent 1;
 qFloor [0 0 0 0 0 0 0] 1e-6;
+
+// S25 (design 2026-10-10-S25 sections 2F and 12 item 7): timeScale = S_t = t_sim/t_phys. The solver
+// refuses a dictionary without it (no default): its release and viscosity times are physical
+// seconds. 1.0 is the unscaled series; a scaled child states it through the generator
+// (mainCaseControls.json time_scale).
+timeScale 1.0;

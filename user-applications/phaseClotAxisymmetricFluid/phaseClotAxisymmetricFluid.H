@@ -10,6 +10,7 @@
 #include "IOdictionary.H"
 #include "damagePartitionKernel.H"  // S18p: PassengersDebug (no OpenFOAM deps)
 #include "blockCoupledKernel.H"     // S19: the block step, UMFPACK (no OpenFOAM deps)
+#include "skeletonLawKernel.H"      // S25 A: the LT skeleton law (no OpenFOAM deps)
 
 namespace Foam
 {
@@ -43,6 +44,17 @@ class phaseClotAxisymmetricFluid
     // fixedValue 1 (valid because q = 1 there, asserted at construction),
     // zeroGradient elsewhere. Derivation section 3.5.
     volScalarField Wp_;
+
+    // S25 B, R1 (design 2026-10-10-S25 section 2B; OI-68; S25 01 Q2,
+    // physics 02): the TRANSPORTED platelet variable is the deviation
+    // e = Wp - q, and Wp := q + e wherever q is formed (updateDerivedFields)
+    // and after the e solve. Wp = q is then e == 0, an exact fixed point that
+    // does not depend on round-off, the sweep count or the limiter. Only
+    // EVENTS are booked into e (the accepted deposit T; the adhesion sink),
+    // never a step's change in q. Written, and read on a restart (no file:
+    // e = q*(w - 1) from today's 0/w seed). Boundary types are w's (inlet
+    // fixedValue, value 0: q = 1 and Wp = 1 there).
+    volScalarField e_;
 
     // Derived/output fields
     volScalarField q_;
@@ -932,6 +944,29 @@ class phaseClotAxisymmetricFluid
     //  2013 -- the same paper skeletonVolumeFraction_ is anchored to.
     scalar phiSMax_;
 
+    //- S25 G (design 2026-10-10-S25 section 2G; stiffening 08 Q3): the
+    //  deposition acceptance cap, the AS-DEPOSITED packing fraction. A cell
+    //  accepts new deposit up to (cap - theta)_+/Y; a cell compacted past it
+    //  accepts none, which is a legal state and not an error. Its own key
+    //  `depositionContentCap`, default phiSMax_ (0.6, today's value;
+    //  unsourced). It does NOT follow the network-pressure pole.
+    scalar depositionContentCap_;
+
+        //- S25 A (design 2026-10-10-S25 sections 2A, 3A, 5): skeletonLaw
+        //  "shipped" (G dev(be), the default: F1, every LT site a branch
+        //  that is not entered) or "valanisLandelTrilinear" (LT: Valanis-
+        //  Landel trilinear deviator, G = E1/2, the network pole at 1).
+        //  skeletonLawCoeffs {E1 E2 D1 D2 kappa} is read only under LT;
+        //  skeletonLawTable_ is its tauHat segment table (zero otherwise).
+        //  elasticCourantModulus: "constant" (G0, the shipped wave CFL) or
+        //  "tangent" (max_cells G (3/4) stiff; the default under LT, refused
+        //  under shipped).
+        word skeletonLaw_;
+        bool skeletonLawLT_;
+        skeletonLawKernel::Coeffs skeletonLawCoeffs_;
+        skeletonLawKernel::Law skeletonLawTable_;
+        word elasticCourantModulus_;
+
         //- Which p_n(phi_s) form to use: "poleAtMax" (the shipped law, a
         //  divergence at phiSMax) or "cubic" (Cogan & Guy 2010 Fig. 4: a
         //  double root at phi_s = 0, a simple root at phi_s0). The cubic
@@ -1095,6 +1130,17 @@ class phaseClotAxisymmetricFluid
         //  to 0.18-0.25 in ~220 core/shell-boundary cells, i.e. k0p (x100
         //  core to shell) wrong there by up to 3x.
         word materialLabelBasis_;
+
+        //- S25 F (design 2026-10-10-S25 section 2F): S_t = t_sim/t_phys, the
+        //  key `timeScale`, with NO default. Every physical time hard-coded
+        //  in seconds scales with it: the tau_v floor (timeScale*5e-4), the
+        //  default t_rel (timeScale*3.3e-4) and the default tau_v
+        //  (timeScale*2.5e-4). Required where consumed: networkRupture
+        //  fibreRelease (built in since S21, so on every dictionary) or
+        //  networkViscosity kelvinVoigt. Refused if missing, non-finite or
+        //  <= 0. Declared before networkReleaseTime_ and
+        //  networkViscosityTau_, whose defaults read it.
+        scalar timeScale_;
 
         //- S16 (research/designs/2026-09-24-S16-timed-terminal-rupture.md).
         //  networkRupture terminalRelease: the network's target damage d*
@@ -1675,6 +1721,29 @@ class phaseClotAxisymmetricFluid
     //  this step (B's conformance; 0 under wallPatchSplit split).
     mutable scalar s18CarrierDtLimit_;
     mutable scalar s18WallSplitDevMax_;
+    //  S25 D (design 2026-10-10-S25 section 2D; OI-69): every dt limit as
+    //  maxDeltaT() last computed it (mutable: maxDeltaT() is const), for
+    //  PHASE_CLOT_DT. great where a limit is inactive. The carrier limit is
+    //  s18CarrierDtLimit_ above.
+    mutable scalar s25DtFluidCo_;
+    mutable scalar s25DtWave_;
+    mutable scalar s25DtKV_;
+    //  S25 (design section 3A, red team 04 change 5): the KV limit on the
+    //  tangent modulus max_cells G (3/4) stiff, logged beside dtKV (G0);
+    //  never applied.
+    mutable scalar s25DtKVTangent_;
+    mutable scalar s25DtNetDiff_;
+    mutable scalar s25DtMax_;
+    mutable scalar s25DtGrowth_;
+    //  S25 D (OI-74; red team 04 change 3): the explicit network-pressure
+    //  diffusion number's argmax cell on the block path, as the block
+    //  solve priced it -- the Schur mobility iA_S, R3's diagonal r3AsB, R3's
+    //  stress weight w and the network argument a. Cell -1: none.
+    label s25NetDiffCell_;
+    scalar s25NetDiffIAS_;
+    scalar s25NetDiffR3As_;
+    scalar s25NetDiffW_;
+    scalar s25NetDiffA_;
     //  S18p (projSiteLog yes only): per-step P-LS counters by site, [0] the
     //  rupture-law transfer (T), [1] the transport projection (P); their
     //  sums are S17's projCount and projRaised. The dump's quotas: 5 raised
@@ -2646,6 +2715,20 @@ class phaseClotAxisymmetricFluid
     //  dictionary entry, defaulting to what it was.
     scalar permeabilityFloor_;
 
+    //- S25 B: this step's accepted deposit Y*dB per cell (the rise of
+    //  thetaH by T), booked into e as +Y*dB/(theta_ref*dt). Overwritten by
+    //  every phase corrector's transfer (the last one is the accepted one)
+    //  and zeroed at the start of each step. Not written: it is consumed in
+    //  the same step.
+    scalarField plateletDepositStep_;
+
+    //- S25 C (design 2026-10-10-S25 section 2C; OI-65): the scalar state a
+    //  step reads before it writes it -- explicitDiffusionRate_, the S23
+    //  balance integrals and V0, the s17 flux history and the s18p dump
+    //  counters -- at <time>/uniform/phaseClotState. Declared LAST: its
+    //  initialiser is the last in the list.
+    IOdictionary phaseClotState_;
+
     //- Which quantity drives the interphase drag: "legacy" (the shipped
     //  chi-driven path, unchanged and the default) or "content" (Stage 3).
     //
@@ -2880,6 +2963,30 @@ class phaseClotAxisymmetricFluid
     //  stiff the STRIPES form under elasticStabilityStiffness.
     tmp<volScalarField> mixedTangentStiffness() const;
 
+    //- S25 (design 2026-10-10-S25 section 3A): the intact network's
+    //  tangent stiff per unit G at one be -- the value mixedTangentStiffness
+    //  (and so Gamma_t) uses for that be, by the same function on the same
+    //  arguments -- and k_c, the largest principal shear-wave c^2 rho/G at
+    //  that be under the same law. F3 mixes k_c with Gamma_t's shares over
+    //  Gamma_t's own kEff (rev. 2.1 amendment 11); the tangent dt
+    //  limits read G (3/4) stiff.
+    scalar intactTangentStiffness(const symmTensor& be) const;
+    scalar intactWaveTangent(const symmTensor& be) const;
+
+    //- S25 A: the network pressure's pole, ONE value for every site that
+    //  reads it (the law, checkNetworkArgument for the pressure and the
+    //  permeability, the phi0 < pole check, the network dt bounds and the
+    //  pole-keyed diagnostics): 1 under LT (a <= 1 <=> J >= phi0, the
+    //  kinematic bound), phiSMax_ otherwise. The deposition cap does not
+    //  read it.
+    scalar networkPole() const;
+
+    //- S25 A: LT's deviator per unit G at one be (skeletonLawKernel::
+    //  deviator; invariant-only, no eigenvectors), refused when be is not
+    //  SPD; and the field of it over be_'s cells and patch faces.
+    symmTensor skeletonLawDeviator(const symmTensor& be) const;
+    tmp<volSymmTensorField> skeletonLawDeviatorField() const;
+
     //- S17 split: max over cells of |M_used - M_ref|, the reference rebuilt
     //  HERE from the raw fields (site 0 skeletonFaceStress, 1 elasticStress).
     void recordStressSplit(const symmTensorField& Mused, const label site) const;
@@ -3072,6 +3179,17 @@ class phaseClotAxisymmetricFluid
     void writeBalanceDiagnostic();
     //- D74: the per-step PHASE_CLOT_REFI line (design section 2).
     void reportIntactReference();
+
+    //- S25 C: copy the persisted scalar state into phaseClotState_ (every
+    //  step, end of postSolve) and restore it (constructor, last).
+    void storeRestartState();
+    void restoreRestartState();
+
+    //- S25 E (design 2026-10-10-S25 section 2E; OI-70): PHASE_CLOT_LAMBDA,
+    //  the load ratio, every step in postSolve(). lambdaClot = rho(max_K p -
+    //  min_K p)/G over K = {ind > 0.5}, lambdaDom = rho(pIn - pOut)/G with
+    //  area-weighted patch means; G = gMax(GField_); p is kinematic.
+    void reportLoadRatio() const;
 
         //- Assemble and write the skeleton momentum residual. Diagnostic only.
 

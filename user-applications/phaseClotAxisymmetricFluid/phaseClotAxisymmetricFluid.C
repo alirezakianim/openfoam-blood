@@ -122,6 +122,199 @@ public:
 
 namespace
 {
+    // S25 F (design 2026-10-10-S25 section 2F): timeScale = S_t, read with
+    // NO default. Its consumers are networkRupture fibreRelease (t_rel;
+    // built in since S21, so every dictionary) and networkViscosity
+    // kelvinVoigt (tau_v and its floor), so it is required on every
+    // dictionary. Refused if missing, non-finite or <= 0. A free function so
+    // the member-initialiser list holds no braces.
+    Foam::scalar s25TimeScale(const Foam::dictionary& props)
+    {
+        using namespace Foam;
+        if (!props.found("timeScale"))
+        {
+            FatalErrorInFunction
+                << "phaseClotProperties key `timeScale` is missing. It is "
+                << "S_t = t_sim/t_phys and has no default: networkRupture "
+                << "fibreRelease (built in) consumes t_rel, and "
+                << "networkViscosity kelvinVoigt consumes tau_v and its "
+                << "floor, all physical times in seconds. State timeScale "
+                << "1.0 for an unscaled (legacy) series (design "
+                << "2026-10-10-S25 section 2F)." << exit(FatalError);
+        }
+        const scalar ts = props.lookup<scalar>("timeScale");
+        if (!(std::isfinite(ts) && ts > 0))
+        {
+            FatalErrorInFunction
+                << "phaseClotProperties key `timeScale` = " << ts
+                << " must be finite and > 0: it is the ratio S_t = "
+                << "t_sim/t_phys that scales t_rel, tau_v and the tau_v "
+                << "floor (design 2026-10-10-S25 section 2F)."
+                << exit(FatalError);
+        }
+        return ts;
+    }
+
+    // S25 A (design 2026-10-10-S25 sections 2A, 3A, 5): skeletonLaw,
+    // default "shipped". Free functions, so the initialiser list holds no
+    // braces; each refusal names its key and its reason.
+    Foam::word s25SkeletonLaw(const Foam::dictionary& props)
+    {
+        using namespace Foam;
+        const word law =
+            props.lookupOrDefault<word>("skeletonLaw", "shipped");
+        if (law != "shipped" && law != "valanisLandelTrilinear")
+        {
+            FatalErrorInFunction
+                << "phaseClotProperties key `skeletonLaw` = " << law
+                << " is not one of shipped (G dev(be), the default) or "
+                << "valanisLandelTrilinear (design 2026-10-10-S25 section "
+                << "2A)." << exit(FatalError);
+        }
+        return law;
+    }
+
+    // skeletonLawCoeffs {E1 E2 D1 D2 kappa}: read ONLY under LT (under the
+    // shipped law nothing new is evaluated, F1). Each value present and
+    // finite; E1, E2 > 0; 0 <= D1 < D2 (the segment table's breaks 1 -+ D2,
+    // 1 -+ D1 must be ordered); kappa > 0 (K0 = kappa E1/2).
+    ::skeletonLawKernel::Coeffs s25SkeletonLawCoeffs
+    (
+        const Foam::dictionary& props,
+        const bool lt
+    )
+    {
+        using namespace Foam;
+        skeletonLawKernel::Coeffs c = {0, 0, 0, 0, 0};
+        if (!lt)
+        {
+            return c;
+        }
+        if (!props.isDict("skeletonLawCoeffs"))
+        {
+            FatalErrorInFunction
+                << "skeletonLaw valanisLandelTrilinear needs the subdictionary "
+                << "`skeletonLawCoeffs {E1 E2 D1 D2 kappa;}` (design "
+                << "2026-10-10-S25 section 2A); it is missing."
+                << exit(FatalError);
+        }
+        const dictionary& d = props.subDict("skeletonLawCoeffs");
+        const char* const names[5] = {"E1", "E2", "D1", "D2", "kappa"};
+        scalar v[5] = {0, 0, 0, 0, 0};
+        for (label k = 0; k < 5; ++k)
+        {
+            if (!d.found(names[k]))
+            {
+                FatalErrorInFunction
+                    << "skeletonLawCoeffs key `" << names[k] << "` is "
+                    << "missing; skeletonLaw valanisLandelTrilinear has no "
+                    << "default for any of E1 E2 D1 D2 kappa (design "
+                    << "2026-10-10-S25 section 5)." << exit(FatalError);
+            }
+            v[k] = d.lookup<scalar>(names[k]);
+            if (!std::isfinite(v[k]))
+            {
+                FatalErrorInFunction
+                    << "skeletonLawCoeffs key `" << names[k] << "` = "
+                    << v[k] << " is not finite (design 2026-10-10-S25 "
+                    << "section 5)." << exit(FatalError);
+            }
+        }
+        if (!(v[0] > 0) || !(v[1] > 0))
+        {
+            FatalErrorInFunction
+                << "skeletonLawCoeffs E1 = " << v[0] << ", E2 = " << v[1]
+                << ": both moduli must be > 0 (design 2026-10-10-S25 "
+                << "section 5)." << exit(FatalError);
+        }
+        if (!(v[2] < v[3]))
+        {
+            FatalErrorInFunction
+                << "skeletonLawCoeffs D1 = " << v[2] << ", D2 = " << v[3]
+                << ": D1 >= D2 is refused; the blend between them needs "
+                << "D1 < D2 (design 2026-10-10-S25 section 5)."
+                << exit(FatalError);
+        }
+        if (!(v[2] >= 0))
+        {
+            FatalErrorInFunction
+                << "skeletonLawCoeffs D1 = " << v[2] << " < 0: the toe "
+                << "is |lambda - 1| < D1, so the breaks 1 - D1 and 1 + D1 "
+                << "would be out of order and the tau segment table "
+                << "undefined." << exit(FatalError);
+        }
+        if (!(v[4] > 0))
+        {
+            FatalErrorInFunction
+                << "skeletonLawCoeffs kappa = " << v[4] << " <= 0 is "
+                << "refused: K0 = kappa E1/2 is the bulk modulus of the "
+                << "pole law at s'(1), and kappa <= 0 removes or inverts it "
+                << "(design 2026-10-10-S25 section 5, rev. 2.1; the "
+                << "generator refuses it too)." << exit(FatalError);
+        }
+        c.E1 = v[0];
+        c.E2 = v[1];
+        c.D1 = v[2];
+        c.D2 = v[3];
+        c.kappa = v[4];
+        return c;
+    }
+
+    // The tauHat table, built only under LT (makeLaw divides by E1 and by
+    // D2 - D1, both refused above when they are not > 0).
+    ::skeletonLawKernel::Law s25SkeletonLawTable
+    (
+        const ::skeletonLawKernel::Coeffs& c,
+        const bool lt
+    )
+    {
+        ::skeletonLawKernel::Law L =
+            {{0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}, {0, 0, 0, 0, 0}};
+        if (lt)
+        {
+            L = ::skeletonLawKernel::makeLaw(c);
+        }
+        return L;
+    }
+
+    // elasticCourantModulus: "tangent" by default under LT, "constant"
+    // under shipped; tangent under shipped is refused (it would move the
+    // wave CFL off G0 and break F1).
+    Foam::word s25ElasticCourantModulus
+    (
+        const Foam::dictionary& props,
+        const bool lt
+    )
+    {
+        using namespace Foam;
+        const word m =
+            props.lookupOrDefault<word>
+            (
+                "elasticCourantModulus", lt ? "tangent" : "constant"
+            );
+        if (m != "constant" && m != "tangent")
+        {
+            FatalErrorInFunction
+                << "phaseClotProperties key `elasticCourantModulus` = " << m
+                << " is not one of constant (G0) or tangent (max over cells "
+                << "of G (3/4) stiff) (design 2026-10-10-S25 section 3A)."
+                << exit(FatalError);
+        }
+        if (m == "tangent" && !lt)
+        {
+            FatalErrorInFunction
+                << "elasticCourantModulus tangent is refused under "
+                << "skeletonLaw shipped: the shipped law's wave CFL reads G0, "
+                << "and moving it would break F1 (design 2026-10-10-S25 "
+                << "section 5). Use constant, or skeletonLaw "
+                << "valanisLandelTrilinear." << exit(FatalError);
+        }
+        return m;
+    }
+}
+
+namespace
+{
     // Monotonic wall clock in seconds. std::chrono rather than Foam::clockTime
     // because clockTime measures from ITS OWN construction, which makes it
     // awkward to accumulate across separate call sites in one time step.
@@ -210,6 +403,20 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
     (
         IOobject("Wp", runTime.name(), mesh, IOobject::NO_READ, IOobject::AUTO_WRITE),
         w_
+    ),
+    // S25 B (R1): e = Wp - q, on w's boundary TYPES with value 0 (the
+    // inlet's fixedValue becomes 0: q = 1 and Wp = 1 there). Read on a
+    // restart; otherwise set from today's seed in the constructor body.
+    e_
+    (
+        IOobject
+        (
+            "e", runTime.name(), mesh,
+            IOobject::READ_IF_PRESENT, IOobject::AUTO_WRITE
+        ),
+        mesh,
+        dimensionedScalar("zero", w_.dimensions(), 0),
+        w_.boundaryField().types()
     ),
 
     q_
@@ -632,6 +839,24 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
     (
         phaseClotProperties_.lookupOrDefault<scalar>("phiSMax", 0.6)
     ),
+    depositionContentCap_
+    (
+        phaseClotProperties_.lookupOrDefault<scalar>
+        (
+            "depositionContentCap", phiSMax_
+        )
+    ),
+    skeletonLaw_(s25SkeletonLaw(phaseClotProperties_)),
+    skeletonLawLT_(skeletonLaw_ == "valanisLandelTrilinear"),
+    skeletonLawCoeffs_
+    (
+        s25SkeletonLawCoeffs(phaseClotProperties_, skeletonLawLT_)
+    ),
+    skeletonLawTable_(s25SkeletonLawTable(skeletonLawCoeffs_, skeletonLawLT_)),
+    elasticCourantModulus_
+    (
+        s25ElasticCourantModulus(phaseClotProperties_, skeletonLawLT_)
+    ),
     explicitDiffusionRate_(0),
     networkPressureWeight_
     (
@@ -668,14 +893,21 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
             "materialLabelBasis", "transportedLabel"
         )
     ),
+    // S25 F (design 2026-10-10-S25 section 2F): timeScale = S_t, NO
+    // default. Its consumers are networkRupture fibreRelease (t_rel; built
+    // in since S21, so every dictionary) and networkViscosity kelvinVoigt
+    // (tau_v and its floor), so it is required on every dictionary. Legacy
+    // series state 1.0 explicitly (the generator writes it).
+    timeScale_(s25TimeScale(phaseClotProperties_)),
     // S16: every default is the shipped behaviour. networkReleaseTime and
     // networkDamageProgressive are read only under networkRupture
-    // terminalRelease; 3.3e-4 s is waiver D4's value (source 63).
+    // terminalRelease; 3.3e-4 s is waiver D4's value (source 63). S25 F:
+    // the default is timeScale*3.3e-4 (a physical time in seconds, scaled).
     networkReleaseTime_
     (
         phaseClotProperties_.lookupOrDefault<scalar>
         (
-            "networkReleaseTime", 3.3e-4
+            "networkReleaseTime", timeScale_*3.3e-4
         )
     ),
     // S23 section 2.6: R_c, a physical constant (21.95 = lc^3, waived).
@@ -703,11 +935,12 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
     (
         phaseClotProperties_.lookupOrDefault<word>("networkViscosity", "none")
     ),
+    // S25 F: the default tau_v is timeScale*2.5e-4 (source 97, scaled).
     networkViscosityTau_
     (
         phaseClotProperties_.lookupOrDefault<scalar>
         (
-            "networkViscosityTau", 2.5e-4
+            "networkViscosityTau", timeScale_*2.5e-4
         )
     ),
     sensitivityLimit_
@@ -728,12 +961,14 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
         phaseClotProperties_.lookupOrDefault<label>("blockSolverThreads", 0)
     ),
     blockSolverReproducible_(blockCoupled::blockSolverReproducibleDefault),
+    // S25 C (OI-65; S25 01 finding 3b): read on a restart, so the first
+    // step's volumetric-tear population is not empty. No file: 0, as before.
     phiSkel_
     (
         IOobject
         (
             "phiSkel", runTime.name(), mesh,
-            IOobject::NO_READ, IOobject::AUTO_WRITE
+            IOobject::READ_IF_PRESENT, IOobject::AUTO_WRITE
         ),
         mesh,
         dimensionedScalar("zero", dimless, 0)
@@ -750,12 +985,15 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
     ),
     // Seeded from phi_, which at construction is the single-velocity flux and
     // is therefore exactly the fluid's own flux -- the correct cold start.
+    // S25 C (OI-65; S25 01 findings 1-3): both carriers are WRITTEN, so a
+    // restart reads the fluxes the last step used rather than the mixture
+    // flux (fluid) and zero (skeleton). No file: today's seeds.
     phiFluidOwn_
     (
         IOobject
         (
             "phiFluidOwn", runTime.name(), mesh,
-            IOobject::READ_IF_PRESENT, IOobject::NO_WRITE
+            IOobject::READ_IF_PRESENT, IOobject::AUTO_WRITE
         ),
         phi_
     ),
@@ -764,7 +1002,7 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
         IOobject
         (
             "phiSkelOwn", runTime.name(), mesh,
-            IOobject::READ_IF_PRESENT, IOobject::NO_WRITE
+            IOobject::READ_IF_PRESENT, IOobject::AUTO_WRITE
         ),
         phi_*dimensionedScalar("zero", dimless, 0)
     ),
@@ -968,16 +1206,18 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
         dimensionedScalar("zero", dimless, 0),
         zeroGradientFvPatchField<scalar>::typeName
     ),
-    // S17 A: the pending fibre. The contents are never written (they are
-    // thetaP times the written intensive fields, rebuilt on a restart); the
-    // four intensive fields are read all-or-none and switched to NO_WRITE in
-    // the constructor body unless networkRupture is fibreRelease.
+    // S17 A: the pending fibre. The four intensive fields are read
+    // all-or-none and switched to NO_WRITE in the constructor body unless
+    // networkRupture is fibreRelease. S25 C (red team 04 change 8): the two
+    // contents are now WRITTEN and read back (all-or-none), so a restart
+    // restores the written values instead of re-deriving them from the
+    // rounded intensive fields. No files: re-derived, as before.
     thetaPendingB_
     (
         IOobject
         (
             "thetaPendingB", runTime.name(), mesh,
-            IOobject::NO_READ, IOobject::NO_WRITE
+            IOobject::READ_IF_PRESENT, IOobject::AUTO_WRITE
         ),
         mesh,
         dimensionedSymmTensor("zero", dimless, Zero),
@@ -988,7 +1228,7 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
         IOobject
         (
             "thetaPendingP", runTime.name(), mesh,
-            IOobject::NO_READ, IOobject::NO_WRITE
+            IOobject::READ_IF_PRESENT, IOobject::AUTO_WRITE
         ),
         mesh,
         dimensionedScalar("zero", dimPressure, 0),
@@ -1214,6 +1454,20 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
     permeabilityFloor_
     (
         phaseClotProperties_.lookupOrDefault<scalar>("permeabilityFloor", small)
+    ),
+    plateletDepositStep_(mesh.nCells(), 0.0),
+    // S25 C (OI-65; S25 01 Q1(c)): the scalar state a step reads before it
+    // writes it, persisted at <time>/uniform/phaseClotState. Filled every
+    // step at the end of postSolve() (so a writeNow from a function object
+    // writes the current state too); restored at the end of the constructor
+    // body. No file: today's seeds.
+    phaseClotState_
+    (
+        IOobject
+        (
+            "phaseClotState", runTime.name(), "uniform", mesh,
+            IOobject::READ_IF_PRESENT, IOobject::AUTO_WRITE
+        )
     )
 {
     // ---- S21: THE BUILT-IN KEYS ------------------------------------------
@@ -1405,6 +1659,8 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
             << " networkPressureCoeff=" << networkPressureCoeff_
             << " skeletonVolumeFraction=" << skeletonVolumeFraction_
             << " phiSMax=" << phiSMax_
+            << " skeletonLaw=" << skeletonLaw_
+            << " networkPole=" << networkPole()
             << " residualPhiS=" << residualPhiS_
             << " residualChi=" << residualChi_
             << (residualChi_ > 0
@@ -1422,6 +1678,66 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
             << " note=poleAtMax-applies-a-fringe-force-see-networkPressure"
             << nl;
 
+        // S25 A: LT HOLDS ONE MODULUS AND ONE BULK RATIO (design
+        // 2026-10-10-S25 section 2A). G0 = E1/2 exactly (halving is exact
+        // in binary, so a dictionary that writes both from one value
+        // passes); K0 = kappa G0 is the convexExcess law's K_n =
+        // networkPressureCoeff gD G at s'(1), so networkPressureCoeff must
+        // equal kappa exactly. A disagreeing (or absent, i.e. defaulted) G
+        // or networkPressureCoeff is refused, never overridden. coreShell
+        // is refused: its G is a geometric blend of Gcore and G that one E1
+        // cannot match (red team 04 change 10).
+        if (skeletonLawLT_)
+        {
+            if (coreShell_)
+            {
+                FatalErrorInFunction
+                    << "skeletonLaw valanisLandelTrilinear with coreShell "
+                    << "true is refused: GField is a geometric blend of "
+                    << "Gcore and G there, which one E1 cannot match (design "
+                    << "2026-10-10-S25 sections 2A, 5)." << exit(FatalError);
+            }
+            if
+            (
+                !phaseClotProperties_.found("G")
+             || G_.value() != 0.5*skeletonLawCoeffs_.E1
+            )
+            {
+                FatalErrorInFunction
+                    << "skeletonLaw valanisLandelTrilinear: G must be "
+                    << "stated and equal E1/2 = " << 0.5*skeletonLawCoeffs_.E1
+                    << " exactly (the solver holds ONE modulus, G0 = E1/2), "
+                    << "but G = "
+                    << (
+                           phaseClotProperties_.found("G")
+                         ? G_.value() : -1.0
+                       )
+                    << (phaseClotProperties_.found("G") ? "" : " (absent)")
+                    << " (design 2026-10-10-S25 sections 2A, 5)."
+                    << exit(FatalError);
+            }
+            if
+            (
+                !phaseClotProperties_.found("networkPressureCoeff")
+             || networkPressureCoeff_ != skeletonLawCoeffs_.kappa
+            )
+            {
+                FatalErrorInFunction
+                    << "skeletonLaw valanisLandelTrilinear: "
+                    << "networkPressureCoeff must be stated and equal "
+                    << "skeletonLawCoeffs kappa = " << skeletonLawCoeffs_.kappa
+                    << " exactly (K0 = kappa E1/2 is the convexExcess law's "
+                    << "K_n = networkPressureCoeff gD G at s'(1)), but "
+                    << "networkPressureCoeff = " << networkPressureCoeff_
+                    << (
+                           phaseClotProperties_.found("networkPressureCoeff")
+                         ? "" : " (absent, defaulted)"
+                       )
+                    << " (design 2026-10-10-S25 section 2A)."
+                    << exit(FatalError);
+            }
+        }
+
         // THE POLE NEEDS ROOM TO BE A POLE.
         //
         // poleAtMax and poleCubic both divide by (phi_s_max - phi_s), and
@@ -1437,7 +1753,25 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
         // The cubic is exempt and the exemption is checked, not assumed: it
         // never reads phiSMax_, which is why the banner above prints
         // note=phiSMax-is-UNUSED-by-the-cubic.
-        if
+        //
+        // S25 A (design 2026-10-10-S25 sections 2A, 3A, 5): under LT the
+        // pole is networkPole() = 1, so the check is phi0 < 1; phiSMax_
+        // is not a pole there (it only defaults depositionContentCap).
+        // Under the shipped law the check below is today's, unchanged.
+        if (skeletonLawLT_)
+        {
+            if (!(skeletonVolumeFraction_ < networkPole()))
+            {
+                FatalErrorInFunction
+                    << "skeletonLaw valanisLandelTrilinear needs "
+                    << "skeletonVolumeFraction < the network pole "
+                    << networkPole() << ", but skeletonVolumeFraction = "
+                    << skeletonVolumeFraction_ << " (design 2026-10-10-S25 "
+                    << "section 5: phi0 >= 1 is refused)."
+                    << exit(FatalError);
+            }
+        }
+        else if
         (
             phiSMax_ <= skeletonVolumeFraction_
         )
@@ -1467,9 +1801,24 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
     // W = q*w, once q exists. Done BEFORE the second updateDerivedFields()
     // because on the content branch Vn is built from W, and the first call
     // above ran while W still held w's initial values.
+    //
+    // S25 B (R1): Wp := q + e. With e read (a directory written by S25),
+    // that is the restored state, exact at e == 0 at any precision. Without
+    // it (a cold start, or a directory written before S25), today's seed
+    // Wp = q*w, carried as e = q*(w - 1): exactly 0 where w == 1.
     {
-        Wp_ = q_*w_;
+        if (!e_.headerOk())
+        {
+            e_.primitiveFieldRef() =
+                q_.primitiveField()*(w_.primitiveField() - 1.0);
+            e_.correctBoundaryConditions();
+        }
+        Wp_.primitiveFieldRef() = q_.primitiveField() + e_.primitiveField();
         Wp_.correctBoundaryConditions();
+        Info<< "PHASE_CLOT_S25_R1 seed="
+            << (e_.headerOk() ? "eRead" : "eFromW")
+            << " eAbsMax=" << gMax(mag(e_.primitiveField())())
+            << endl;
 
         // The inlet W BC is fixedValue 1, inherited from w. That is only the
         // right content if the inlet is pure blood. Checked rather than
@@ -2162,6 +2511,18 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
     // C, E, F. D (R3), I and H are deferred to OI-44 and are not here.
     // Values first, then each switch's dependency; each default is S17b's.
     s18CarrierDtLimit_ = great;
+    s25DtFluidCo_ = great;
+    s25DtWave_ = great;
+    s25DtKV_ = great;
+    s25DtKVTangent_ = great;
+    s25DtNetDiff_ = great;
+    s25DtMax_ = great;
+    s25DtGrowth_ = great;
+    s25NetDiffCell_ = -1;
+    s25NetDiffIAS_ = 0;
+    s25NetDiffR3As_ = 0;
+    s25NetDiffW_ = 0;
+    s25NetDiffA_ = 0;
     s18WallSplitDevMax_ = 0;
     Info<< "PHASE_CLOT_S18_CONFIG"
         << " networkPressureWeight=" << networkPressureWeight_
@@ -2330,6 +2691,12 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
     label s22MklMaxThreads = 0;
     std::string s22MklVersion("none");
     std::string s22MklLibrary("none");
+    // S25 section 12.2: mkl_cbwr_get(MKL_CBWR_BRANCH) after the solver's own
+    // set, AUTO's branch on this CPU, and the CPU's model and ISA flags, once.
+    std::string s25CbwrBranch("none");
+    std::string s25CbwrAutoBranch("none");
+    std::string s25CpuModel, s25CpuFlags;
+    blockCoupled::cpuIdentity(s25CpuModel, s25CpuFlags);
     if (s19BlockCoupled() && blockLinearSolver_ == "pardiso")
     {
         int nThreads = 0;
@@ -2367,6 +2734,8 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
         s22MklVersion = blockPardiso_->version();
         std::replace(s22MklVersion.begin(), s22MklVersion.end(), ' ', '_');
         s22MklLibrary = blockPardiso_->library();
+        s25CbwrBranch = std::to_string(blockPardiso_->cbwrBranch());
+        s25CbwrAutoBranch = std::to_string(blockPardiso_->cbwrAutoBranch());
     }
     else if (s19BlockCoupled() && blockSolverThreads_ > 0)
     {
@@ -2406,6 +2775,10 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
            )
         << " mklVersion=" << s22MklVersion.c_str()
         << " mklLibrary=" << s22MklLibrary.c_str()
+        << " mklCbwrBranch=" << s25CbwrBranch.c_str()
+        << " mklCbwrAutoBranch=" << s25CbwrAutoBranch.c_str()
+        << " cpuModel=" << s25CpuModel.c_str()
+        << " cpuFlags=" << s25CpuFlags.c_str()
         << endl;
 
     // S17 A, THE INITIAL CONDITION: the fibre is read all-or-none; on a
@@ -2432,6 +2805,19 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
                 << "pendingPressure were read -- the fibre it carries cannot "
                 << "be invented." << exit(FatalError);
         }
+        // S25 C: the contents, when written, are read back as written (all
+        // or none); otherwise they are re-derived below, as before S25.
+        const bool hasPB = thetaPendingB_.headerOk();
+        const bool hasPP = thetaPendingP_.headerOk();
+        if (hasPB != hasPP)
+        {
+            FatalErrorInFunction
+                << "networkRupture fibreRelease: the pending contents are "
+                << "read all-or-none; found thetaPendingB " << hasPB
+                << ", thetaPendingP " << hasPP << " (design 2026-10-10-S25 "
+                << "section 2C)." << exit(FatalError);
+        }
+        const bool pendingContentsRead = hasPB && hasPP;
         // S17b A1: the contents are the CARRIER's (theta_T under v1).
         const scalarField& pP = fibreCarrier().primitiveField();
         vectorField& nI = pendingAxis_.primitiveFieldRef();
@@ -2459,9 +2845,13 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
             nI[celli] = n;
             const double nA[3] = {n.x(), n.y(), n.z()};
             double B[6];
-            fibreReleaseKernel::fibre(nA, lI[celli], B);
-            cB[celli] = pP[celli]*symmTensor(B[0], B[1], B[2], B[3], B[4], B[5]);
-            qP[celli] = pP[celli]*ppI[celli];
+            if (!pendingContentsRead)
+            {
+                fibreReleaseKernel::fibre(nA, lI[celli], B);
+                cB[celli] =
+                    pP[celli]*symmTensor(B[0], B[1], B[2], B[3], B[4], B[5]);
+                qP[celli] = pP[celli]*ppI[celli];
+            }
         }
         pendingAxis_.correctBoundaryConditions();
         thetaPendingB_.correctBoundaryConditions();
@@ -2580,8 +2970,10 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
     // kelvinVoigt (the CE, ratifying report 24: otherwise a marked
     // kelvinVoigt with a tiny tau_v would waive the floor). 5e-4 exactly is
     // accepted. Mirrors the generator's refusals (defence in depth against
-    // a hand-edited dictionary).
-    const scalar s23TauVFloor = 5e-4;
+    // a hand-edited dictionary). S25 F: the floor is a physical time in
+    // seconds, so it scales: timeScale*5e-4 (timeScale 1.0 is the S23 floor
+    // exactly).
+    const scalar s23TauVFloor = timeScale_*5e-4;
     if
     (
         phaseClotProperties_.found("sensitivityLimit")
@@ -2649,6 +3041,45 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
         << " tornThreshold="
         << damagePartitionKernel::tornThreshold(progressiveDamageCeiling())
         << " sensitivityLimit=" << sensitivityLimit_
+        << endl;
+
+    // ---- S25 (design 2026-10-10-S25, build 1: parts B-G) -------------------
+    // G: the deposition acceptance cap is a packing fraction. The transfer
+    // kernel refuses one outside (0, 1) on its first call; refused here, at
+    // construction, by name.
+    if
+    (
+        !(
+            std::isfinite(depositionContentCap_)
+         && depositionContentCap_ > 0
+         && depositionContentCap_ < 1
+        )
+    )
+    {
+        FatalErrorInFunction
+            << "phaseClotProperties key `depositionContentCap` = "
+            << depositionContentCap_ << " must be finite and in (0, 1): it "
+            << "is the as-deposited packing fraction up to which a cell "
+            << "accepts new deposit (default phiSMax; design 2026-10-10-S25 "
+            << "section 2G)." << exit(FatalError);
+    }
+    // ONE LINE: the S25 keys as the solver evaluates them.
+    Info<< "PHASE_CLOT_S25_CONFIG"
+        << " timeScale=" << timeScale_
+        << " networkReleaseTime=" << networkReleaseTime_
+        << " networkViscosityTau=" << networkViscosityTau_
+        << " tauVFloor=" << s23TauVFloor
+        << " depositionContentCap=" << depositionContentCap_
+        << " plateletTransport=" << "deviationR1"
+        << " restartState=" << "persisted"
+        << " skeletonLaw=" << skeletonLaw_
+        << " elasticCourantModulus=" << elasticCourantModulus_
+        << " networkPole=" << networkPole()
+        << " ltE1=" << skeletonLawCoeffs_.E1
+        << " ltE2=" << skeletonLawCoeffs_.E2
+        << " ltD1=" << skeletonLawCoeffs_.D1
+        << " ltD2=" << skeletonLawCoeffs_.D2
+        << " ltKappa=" << skeletonLawCoeffs_.kappa
         << endl;
 
     {
@@ -3022,6 +3453,10 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
         << " pinExponent=" << skeletonPinExponent_
         << " permeabilityFloor=" << permeabilityFloor_
         << endl;
+
+    // S25 C: LAST, after every seed above, so a restored value is the one
+    // the first step reads.
+    restoreRestartState();
 }
 
 
@@ -3198,7 +3633,8 @@ Foam::solvers::phaseClotAxisymmetricFluid::networkPressure() const
     const volScalarField gD(sqr(1.0 - Dg_) + etaRes_);
 
     const dimensionedScalar phiS0("phiS0", dimless, skeletonVolumeFraction_);
-    const dimensionedScalar phiSMax("phiSMax", dimless, phiSMax_);
+    // S25 A: the pole (phiSMax_ under the shipped law, 1 under LT).
+    const dimensionedScalar phiSMax("phiSMax", dimless, networkPole());
 
     // S11 FIX 5: A LAW DERIVED FROM A CONVEX VOLUMETRIC ENERGY.
     //
@@ -3252,11 +3688,14 @@ void Foam::solvers::phaseClotAxisymmetricFluid::checkNetworkArgument
     // is the one that carries theta and thetaNetRef. The cells are checked
     // and reported first; a boundary face is reported only when every cell
     // is inside, with the owner cell's state beside it.
+    // S25 A: ONE pole for the pressure's and the permeability's calls
+    // (phiSMax under the shipped law, 1 under LT).
+    const scalar phiSMax = networkPole();
     const scalarField& aIn = a.primitiveField();
     label worst = -1;
     forAll(aIn, celli)
     {
-        if (!(aIn[celli] > 0 && aIn[celli] < phiSMax_))
+        if (!(aIn[celli] > 0 && aIn[celli] < phiSMax))
         {
             worst = celli;
             break;
@@ -3269,7 +3708,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::checkNetworkArgument
             FatalErrorInFunction
                 << who << ": network argument a = " << aIn[worst]
                 << " at cell " << worst << " (" << mesh.C()[worst]
-                << ") is outside (0, phiSMax = " << phiSMax_
+                << ") is outside (0, phiSMax = " << phiSMax
                 << "): theta = " << thetaC_[worst] + thetaH_[worst]
                 << ", thetaNetRef = " << thetaNetRef_[worst]
                 << ". Both ends are infinite barriers, so this is a transport "
@@ -3289,14 +3728,14 @@ void Foam::solvers::phaseClotAxisymmetricFluid::checkNetworkArgument
         const labelUList& fc = mesh.boundary()[patchi].faceCells();
         forAll(aB, facei)
         {
-            if (!(aB[facei] > 0 && aB[facei] < phiSMax_))
+            if (!(aB[facei] > 0 && aB[facei] < phiSMax))
             {
                 const label c = fc[facei];
                 FatalErrorInFunction
                     << who << ": network argument a = " << aB[facei]
                     << " on patch " << mesh.boundary()[patchi].name()
                     << " face " << facei << " is outside (0, phiSMax = "
-                    << phiSMax_ << ") while every cell is inside; owner cell "
+                    << phiSMax << ") while every cell is inside; owner cell "
                     << c << " (" << mesh.C()[c] << ") has a = " << aIn[c]
                     << ", theta = " << thetaC_[c] + thetaH_[c]
                     << ", thetaNetRef = " << thetaNetRef_[c]
@@ -4738,6 +5177,11 @@ void Foam::solvers::phaseClotAxisymmetricFluid::s17bForceParts
     volSymmTensorField MP("MP", 0.0*dev(be_));
     volScalarField pInt("pIntactPart", networkPartialPressureUndamaged());
     volScalarField pFro("pFrozenPart", 0.0*pInt);
+    if (skeletonLawLT_)
+    {
+        // S25 A: the intact part's deviator is LT's (as splitDeviatoricStress).
+        MI = skeletonLawDeviatorField();
+    }
     {
         symmTensorField& mi = MI.primitiveFieldRef();
         symmTensorField& mp = MP.primitiveFieldRef();
@@ -5369,6 +5813,13 @@ Foam::solvers::phaseClotAxisymmetricFluid::splitDeviatoricStress() const
     (
         volSymmTensorField::New("splitDev", dev(be_))
     );
+    if (skeletonLawLT_)
+    {
+        // S25 A: M_LT on the cells AND on every patch face (the non-wall
+        // patches keep it; the wall patches are re-set below exactly as
+        // under the shipped law).
+        tM.ref() = skeletonLawDeviatorField();
+    }
     const scalarField& pI = thetaIntact_.primitiveField();
     const scalarField& pP = thetaPending_.primitiveField();
     // S17b A1: the fibre's carrier (theta_T under V1, P2 otherwise)
@@ -5468,12 +5919,159 @@ Foam::solvers::phaseClotAxisymmetricFluid::mixedTangentStiffness() const
                 b1, ev.x() + ev.y() + ev.z() - b1
             );
         }
+        if (skeletonLawLT_)
+        {
+            // S25 A: LT's tangent (design section 3A).
+            stiff = intactTangentStiffness(beI[celli]);
+        }
         scalar aI, aP, omd;
         fibreReleaseKernel::sharesCarrier(pI[celli], pP[celli], pB[celli], pC[celli], aI, aP, omd);
         k[celli] = fibreReleaseKernel::mixedStiffness(aI, stiff, aP, lI[celli], omd);
     }
     tK.ref().correctBoundaryConditions();
     return tK;
+}
+
+
+Foam::scalar
+Foam::solvers::phaseClotAxisymmetricFluid::intactTangentStiffness
+(
+    const symmTensor& be
+) const
+{
+    if (skeletonLawLT_)
+    {
+        // S25 A: stiff_LT = [(4/9) t1 + (1/9)(t2 + t3)]/J (numerics 07
+        // finding 4), refused unless be is SPD.
+        const vector evL(eigenValues(be));
+        const double eL[3] = {evL.x(), evL.y(), evL.z()};
+        double stiffL = 0;
+        if
+        (
+            !skeletonLawKernel::tangentStiffness
+            (
+                skeletonLawTable_, eL, det(be), stiffL
+            )
+        )
+        {
+            FatalErrorInFunction
+                << "skeletonLaw valanisLandelTrilinear: be = " << be
+                << " (eigenvalues " << evL << ", det " << det(be) << ") is "
+                << "not SPD, so LT's tangent has no real stretches. be is "
+                << "checked SPD after each update; this is a defect."
+                << exit(FatalError);
+        }
+        return stiffL;
+    }
+    // The shipped STRIPES stiff, (8/9) b1 + (2/9)(b2 + b3), as
+    // mixedTangentStiffness forms it (same kernel, same argument order).
+    const vector evT(eigenValues(be));
+    const scalar bMax = cmptMax(evT);
+    return fibreReleaseKernel::stiffIntact
+    (
+        bMax, evT.x() + evT.y() + evT.z() - bMax
+    );
+}
+
+
+Foam::scalar
+Foam::solvers::phaseClotAxisymmetricFluid::intactWaveTangent
+(
+    const symmTensor& be
+) const
+{
+    // Shipped law (G dev(be)): rho c_ij^2/G = (b_i - b_j)/(b_i - b_j) b_i
+    // = b_i, so k_c = the largest eigenvalue of be (numerics 07 finding 4
+    // with tau = lambda^2).
+    if (skeletonLawLT_)
+    {
+        // S25 A: max_{i != j} tauHat[l_i,l_j] l_i^2/(l_i + l_j), over J.
+        const vector evW(eigenValues(be));
+        const double eW[3] = {evW.x(), evW.y(), evW.z()};
+        double kcL = 0;
+        if
+        (
+            !skeletonLawKernel::waveTangent
+            (
+                skeletonLawTable_, eW, det(be), kcL
+            )
+        )
+        {
+            FatalErrorInFunction
+                << "skeletonLaw valanisLandelTrilinear: be = " << be
+                << " (eigenvalues " << evW << ", det " << det(be) << ") is "
+                << "not SPD, so LT's wave tangent has no real stretches."
+                << exit(FatalError);
+        }
+        return kcL;
+    }
+    return cmptMax(eigenValues(be));
+}
+
+
+Foam::scalar Foam::solvers::phaseClotAxisymmetricFluid::networkPole() const
+{
+    // S25 A (design 2026-10-10-S25 section 3A): ONE pole. Under LT the
+    // constituents' incompressibility gives a <= 1 <=> J >= phi0, so the
+    // pole is 1 and no fitted number ships with it.
+    return skeletonLawLT_ ? 1.0 : phiSMax_;
+}
+
+
+Foam::symmTensor
+Foam::solvers::phaseClotAxisymmetricFluid::skeletonLawDeviator
+(
+    const symmTensor& be
+) const
+{
+    const vector evD(eigenValues(be));
+    const double bD[6] = {be.xx(), be.xy(), be.xz(), be.yy(), be.yz(), be.zz()};
+    const double eD[3] = {evD.x(), evD.y(), evD.z()};
+    double mD[6];
+    if
+    (
+        !skeletonLawKernel::deviator
+        (
+            skeletonLawTable_, bD, eD, det(be), mD
+        )
+    )
+    {
+        FatalErrorInFunction
+            << "skeletonLaw valanisLandelTrilinear: be = " << be
+            << " (eigenvalues " << evD << ", det " << det(be) << ") is not "
+            << "SPD, so LT's deviator has no real stretches. be is checked "
+            << "SPD after each update; this is a transport defect, not a "
+            << "state the law may be evaluated at." << exit(FatalError);
+    }
+    return symmTensor(mD[0], mD[1], mD[2], mD[3], mD[4], mD[5]);
+}
+
+
+Foam::tmp<Foam::volSymmTensorField>
+Foam::solvers::phaseClotAxisymmetricFluid::skeletonLawDeviatorField() const
+{
+    // dev(be)'s shape and patch types (calculated), then M_LT on every
+    // cell and every patch face of be_.
+    tmp<volSymmTensorField> tL
+    (
+        volSymmTensorField::New("skeletonLawDev", dev(be_))
+    );
+    symmTensorField& LI = tL.ref().primitiveFieldRef();
+    const symmTensorField& beL = be_.primitiveField();
+    forAll(LI, celli)
+    {
+        LI[celli] = skeletonLawDeviator(beL[celli]);
+    }
+    volSymmTensorField::Boundary& LB = tL.ref().boundaryFieldRef();
+    forAll(LB, patchi)
+    {
+        const symmTensorField& beP = be_.boundaryField()[patchi];
+        forAll(LB[patchi], facei)
+        {
+            LB[patchi][facei] = skeletonLawDeviator(beP[facei]);
+        }
+    }
+    return tL;
 }
 
 
@@ -5502,7 +6100,13 @@ void Foam::solvers::phaseClotAxisymmetricFluid::recordStressSplit(
         scalar aI, aP, omd;
         fibreReleaseKernel::sharesCarrier(pI[celli], pP[celli], pB[celli], pC[celli], aI, aP, omd);
         const symmTensor d(dev(beI[celli]));
-        const double devBe[6] = {d.xx(), d.xy(), d.xz(), d.yy(), d.yz(), d.zz()};
+        // S25 A: under LT the reference is rebuilt on LT's deviator.
+        const symmTensor dLaw
+        (
+            skeletonLawLT_ ? skeletonLawDeviator(beI[celli]) : d
+        );
+        const double devBe[6] =
+            {dLaw.xx(), dLaw.xy(), dLaw.xz(), dLaw.yy(), dLaw.yz(), dLaw.zz()};
         const double n[3] = {nI[celli].x(), nI[celli].y(), nI[celli].z()};
         double m[6];
         fibreReleaseKernel::splitDev(aI, devBe, aP, lI[celli], n, omd, m);
@@ -5539,6 +6143,11 @@ void Foam::solvers::phaseClotAxisymmetricFluid::recordStiffnessSplit(
             (
                 b1, ev.x() + ev.y() + ev.z() - b1
             );
+        }
+        if (skeletonLawLT_)
+        {
+            // S25 A: LT's tangent (design section 3A).
+            stiff = intactTangentStiffness(beI[celli]);
         }
         scalar aI, aP, omd;
         fibreReleaseKernel::sharesCarrier(pI[celli], pP[celli], pB[celli], pC[celli], aI, aP, omd);
@@ -6590,6 +7199,15 @@ void Foam::solvers::phaseClotAxisymmetricFluid::updateDerivedFields()
        /dimensionedScalar("thetaRef", dimless, skeletonVolumeFraction_);
     q_.correctBoundaryConditions();
 
+    // S25 B (R1): Wp := q + e WHEREVER q IS FORMED. A change of q that is
+    // not an event -- the content solve, a corrector roll-back, a partition
+    // re-expression, the detachment release -- moves Wp with it and leaves e
+    // unchanged; so after the release Wp is q + e before wGrowth below or a
+    // write reads it (physics 02 Q3). The inlet keeps its fixedValue
+    // (q = 1, Wp = 1, asserted at construction).
+    Wp_.primitiveFieldRef() = q_.primitiveField() + e_.primitiveField();
+    Wp_.correctBoundaryConditions();
+
     // THE INTERFACE NORMAL. S6c-1 built both forms and batch 42 returned
     // dAdhesionSpeedMax = 0 at every one of 272 steps, which is what
     // authorised this deletion. phaseNormalBasis 'legacy' is REFUSED at
@@ -6815,13 +7433,14 @@ void Foam::solvers::phaseClotAxisymmetricFluid::updateDerivedFields()
     // interfaceDepletionModel seriesResistance restores the other branch
     // through kEff above, for both the sink and the growth at once.
     {
-        // The same operand the adhesion sink uses, W/max(|q|, qFloor), built
-        // the same way. NOT a gradient of it. It is NOT the diffusion operand
-        // or the written w_ (OI-62): those are C6, w = W/q signed, so at
-        // Wp = q < 0 they read w = +1 where this and the sink read -1, and
-        // in the band 0 < |q| < qFloor they read 1 where this reads q/qFloor.
-        // The law for the sink, wGrowth and wStoich at q <= 0 is OI-63, owed;
-        // no record may take the written w as the w growth used at q < 0.
+        // The same operand the adhesion sink uses, TODAY'S
+        // Wp/max(|q|, qFloor) with Wp = q + e, in every cell (S25 R1;
+        // design rev. 2.1 amendment 10: the band law is WITHDRAWN, Alireza
+        // 2026-10-10). NOT a gradient of it. It is NOT
+        // the diffusion operand or the written w_ (OI-62): those are C6,
+        // w = W/q signed, so at Wp = q <= -qFloor they read w = +1 where
+        // this and the sink read -1. The law at q < 0 is OI-63, owed; no
+        // record may take the written w as the w growth used at q < 0.
         volScalarField wGrowth
         (
             IOobject
@@ -6870,7 +7489,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::updateDerivedFields()
             // This is the amplifier, not the root. The root is that c has no
             // mechanism holding it in [-1, 1] under a growth source with
             // mobility = 0; see PHASE_CLOT_PHASE_BOUNDS qNegCells.
-            wGrowth = Wp_/max(mag(q_), qFloor_);
+            wGrowth = (q_ + e_)/max(mag(q_), qFloor_);
         }
 
         // THE STOICHIOMETRIC RATIO, and why it is not simply alpha_/D_.
@@ -8225,6 +8844,60 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveDamage()
         psiPlusRaw =
             0.5*bulkK*sqr(lnJPos)
           + 0.5*GField_*(I1bar - dimensionedScalar("three", dimless, 3));
+
+        if (skeletonLawLT_)
+        {
+            // S25 A (design section 2A, physics 08 Q1): the damage energy
+            // under LT is LT's own isochoric energy, G0 sum_i w(lbar_i)
+            // (w' = tauHat/l; 0.5 G (I1bar - 3) is the same sum for
+            // tauHat = l^2), with today's vol/dev split: the same J and
+            // the same volumetric half.
+            volScalarField WLT("WLT", 0.0*I1bar);
+            const auto lawEnergy = [this]
+            (
+                const symmTensor& beV, const scalar JV
+            )
+            {
+                const vector evE(eigenValues(beV));
+                const double eE[3] = {evE.x(), evE.y(), evE.z()};
+                double WV = 0;
+                if
+                (
+                    !skeletonLawKernel::energy
+                    (
+                        skeletonLawTable_, eE, JV, WV
+                    )
+                )
+                {
+                    FatalErrorInFunction
+                        << "skeletonLaw valanisLandelTrilinear: be = " << beV
+                        << " (eigenvalues " << evE << ", J " << JV << ") is "
+                        << "not SPD, so LT's energy has no real stretches."
+                        << exit(FatalError);
+                }
+                return WV;
+            };
+            {
+                scalarField& WI = WLT.primitiveFieldRef();
+                const symmTensorField& beW = be_.primitiveField();
+                const scalarField& JW = J.primitiveField();
+                forAll(WI, celli)
+                {
+                    WI[celli] = lawEnergy(beW[celli], JW[celli]);
+                }
+                volScalarField::Boundary& WB = WLT.boundaryFieldRef();
+                forAll(WB, patchi)
+                {
+                    const symmTensorField& beP = be_.boundaryField()[patchi];
+                    const scalarField& JP = J.boundaryField()[patchi];
+                    forAll(WB[patchi], facei)
+                    {
+                        WB[patchi][facei] = lawEnergy(beP[facei], JP[facei]);
+                    }
+                }
+            }
+            psiPlusRaw = 0.5*bulkK*sqr(lnJPos) + GField_*WLT;
+        }
     }
 
     // WEIGHT THE DRIVING ENERGY BY THE SOLID FRACTION.
@@ -9441,6 +10114,10 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePhaseField()
     // exist. phaseGrowthDriver 'front' is REFUSED at construction rather
     // than silently treated as 'transfer'.
 
+    // S25 B: the deposit booked into e is reset per step too, for the reason
+    // given for transferClotGrowth_ below.
+    plateletDepositStep_ = 0;
+
     // Reset per step, not per corrector: solvePlateletContent() overwrites it
     // on every corrector it runs, and a step whose transfer never ran must
     // report zero growth rather than the previous step's.
@@ -10575,6 +11252,8 @@ void Foam::solvers::phaseClotAxisymmetricFluid::checkPlateletConfiguration()
         << " adhesionSpeed=" << plateletAdhesionSpeed_
         << " transportOnly=" << plateletTransportOnly_
         << " thetaMax=" << phiSMax_
+        << " depositionContentCap=" << depositionContentCap_
+        << " networkPole=" << networkPole()
         << endl;
 
 
@@ -10831,9 +11510,28 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlateletContent
         plateletContent::acceptedTransfer
         (
             NStar, thetaStar, dt, bindRate, plateletYield_,
-            phiSMax_, dB, nAvail, nCap
+            depositionContentCap_, dB, nAvail, nCap
         );
         dBSum = fvc::domainIntegrate(dB).value();
+    }
+
+    // S25 G (design section 2G, red team 04 change 12): the acceptance law
+    // removed a tripwire (theta > cap was fatal), so its activity is LOGGED
+    // every step on the line below: the count of cells whose transport-trial
+    // content exceeds depositionContentCap_ (they accept no deposit), and
+    // max(theta - cap) over all cells (negative when none does).
+    label contentOverCapCells = 0;
+    scalar contentOverCapMax = -great;
+    {
+        const scalarField& thSOC = thetaStar.primitiveField();
+        forAll(thSOC, celli)
+        {
+            const scalar excess = thSOC[celli] - depositionContentCap_;
+            if (excess > 0) { ++contentOverCapCells; }
+            contentOverCapMax = max(contentOverCapMax, excess);
+        }
+        reduce(contentOverCapCells, sumOp<label>());
+        reduce(contentOverCapMax, maxOp<scalar>());
     }
 
     // S17 A (09 rule 2): the stress-free mixing below weights the old strain
@@ -10852,7 +11550,8 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlateletContent
     volScalarField NNew("NNew", NStar);
     plateletContent::applyAcceptedTransfer
     (
-        NStar, thetaC_, thetaHStar, dB, plateletYield_, phiSMax_, NNew, thetaH_
+        NStar, thetaC_, thetaHStar, dB, plateletYield_, depositionContentCap_,
+        NNew, thetaH_
     );
     // S16 C: thetaH_ WAS JUST WRITTEN, through the output parameter above
     // (red-team Change 4; lesson a-writer-can-be-an-output-parameter). The
@@ -10892,6 +11591,12 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlateletContent
         s16MirrorDevMax_ =
             max(s16MirrorDevMax_, thMax > 0 ? dev/thMax : dev);
     }
+
+    // S25 B (R1, physics 02 Q1): the deposit is an EVENT for e. It lowers q
+    // by Y*dB/theta_ref and leaves Wp unchanged (the ledger removes only the
+    // bound platelets, N - dB), so e rises by the same amount. Booked from
+    // the ACCEPTED array; this corrector's value replaces the last one's.
+    plateletDepositStep_ = plateletYield_*dB.primitiveField();
 
     // The pairing residual, per cell. Zero by construction here, which is
     // exactly why it is reported: if it is ever not zero, the two consumers
@@ -11104,6 +11809,8 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlateletContent
         << " epsMin=" << epsMin
         << " availClamped=" << nAvail
         << " capClamped=" << nCap
+        << " contentOverCapCells=" << contentOverCapCells
+        << " contentOverCapMax=" << contentOverCapMax
         << " Y=" << plateletYield_
         << " Deff=" << plateletDiffusivity_
         << " convention=intrinsic"
@@ -11556,16 +12263,21 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlatelets()
         // Built on a calculated-patch temporary and ASSIGNED to w_, as
         // w_ = Wp_/qEffOld was: fixedValue patches ignore operator= (OF-13
         // fixedValueFvPatchField.H:179-193), so the inlet keeps its fixed
-        // value exactly as before. NOT changed (OI-63): the adhesion sink,
-        // wGrowth and wStoich keep W/max(|q|, qFloor).
+        // value exactly as before. The adhesion sink, wGrowth and wStoich
+        // read today's operand (q + e)/max(|q|, qFloor) in every cell (S25
+        // R1, rev. 2.1 amendment 10), so OI-63 stays undecided.
         const volScalarField qOldS
         (
             "qOldS",
             qOldPlatelet_.valid() ? qOldPlatelet_() : q_
         );
 
+        // S25 B (R1): the content W is an ARGUMENT, because Wp_ is now
+        // formed as q + e wherever q is formed; the operand at time level n
+        // is C6(q^n + e^n, q^n) (S25 01 Q2(1)), not C6(Wp_, q^n).
         const auto plateletRatioC6 = [this]
         (
+            const volScalarField& WS,
             const volScalarField& qS,
             const word& ratioName
         )
@@ -11576,7 +12288,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlatelets()
                 (
                     ratioName,
                     mesh_,
-                    dimensionedScalar(Wp_.dimensions()/qS.dimensions(), 0)
+                    dimensionedScalar(WS.dimensions()/qS.dimensions(), 0)
                 )
             );
             const scalar qFloorC6 = qFloor_.value();
@@ -11589,7 +12301,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlatelets()
 
             volScalarField& ratio = tRatio.ref();
             scalarField& ratioIn = ratio.primitiveFieldRef();
-            const scalarField& WpIn = Wp_.primitiveField();
+            const scalarField& WpIn = WS.primitiveField();
             const scalarField& qSIn = qS.primitiveField();
             forAll(ratioIn, celli)
             {
@@ -11599,7 +12311,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlatelets()
             forAll(ratioB, patchi)
             {
                 scalarField& ratioP = ratioB[patchi];
-                const scalarField& WpP = Wp_.boundaryField()[patchi];
+                const scalarField& WpP = WS.boundaryField()[patchi];
                 const scalarField& qSP = qS.boundaryField()[patchi];
                 forAll(ratioP, facei)
                 {
@@ -11609,7 +12321,8 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlatelets()
             return tRatio;
         };
 
-        w_ = plateletRatioC6(qOldS, "wOperandC6");
+        const volScalarField WOldS("WOldS", qOldS + e_);
+        w_ = plateletRatioC6(WOldS, qOldS, "wOperandC6");
         w_.correctBoundaryConditions();
 
         // THE FACE DIFFUSIVITY IS A HARMONIC MEAN, NOT AN ARITHMETIC ONE.
@@ -11830,6 +12543,23 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlatelets()
                    " trustworthy" << endl;
         }
 
+        // S25 B: the accepted deposit as e's source, +Y dB/(theta_ref dt).
+        // theta_ref = skeletonVolumeFraction_ > 0 is q's own divisor
+        // (updateDerivedFields) and dt > 0.
+        volScalarField::Internal eDepositS25
+        (
+            IOobject
+            (
+                "eDeposit", mesh_.time().name(), mesh_,
+                IOobject::NO_READ, IOobject::NO_WRITE
+            ),
+            mesh_,
+            dimensionedScalar(e_.dimensions()/dimTime, 0)
+        );
+        eDepositS25.primitiveFieldRef() =
+            plateletDepositStep_
+           /(skeletonVolumeFraction_*mesh_.time().deltaTValue());
+
         if (phaseCarrier_.valid())
         {
             // THE SAME OPERATOR AS c, NOT MERELY THE SAME SCHEME NAME.
@@ -11923,56 +12653,102 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlatelets()
             // not safe to assume from limiter agreement alone.
             const surfaceScalarField& carrier = phaseCarrier_();
 
-            solve
+            // S25 B, R1 (design 2026-10-10-S25 section 2B and 3 B-G; S25 01
+            // Q2; physics 02 Q1-Q3): THE DEVIATION e = Wp - q IS TRANSPORTED,
+            // NOT Wp. Its matrix is theta's (contentFaceWeights_, the same
+            // ddt and conservative convection); the carrier divergence and
+            // q's own inflow cancel against q's equation and are absent. The
+            // sources are events and the laws only:
+            //   +lap(gamma, w^n), w^n = C6(q^n + e^n, q^n): Wp's diffusion,
+            //     kept (red team 04 change 6); exactly 0 at e == 0 (w == 1);
+            //   the adhesion sink, TODAY'S: -(delta k) Wp/qEff with
+            //     Wp = q + e and qEff = max(|q|, qFloor), so implicit
+            //     Sp(delta k/qEff, e) and explicit -delta k q/qEff (design
+            //     rev. 2.1 amendment 10: the band law is WITHDRAWN, Alireza
+            //     2026-10-10, "Revert to today's sink"; its fixed point was
+            //     Wp = q - qFloor < 0 in band cells, V-A 13 finding 5). For
+            //     |q| >= qFloor, q/qEff = q/|q| = +-1 exactly (IEEE), so the
+            //     explicit part is -delta k sign(q) bit for bit; in the band
+            //     it is -delta k q/qFloor, today's. OI-63 stays undecided;
+            //   +Y dB/(theta_ref dt): the accepted deposit T (Wp does not
+            //     follow q at deposition).
+            // The release books nothing (e unchanged; Wp is re-formed in
+            // updateDerivedFields after it). At e^n == 0 with no adhesion and
+            // no deposit the right-hand side is exactly 0 and so is e.
+            fvScalarMatrix eEqn
             (
-                fvm::ddt(Wp_)
-              + plateletContentConvection(carrier, Wp_)
-              + fvm::Sp(interfaceDelta_*adhesionSpeedEff_/qEff, Wp_)
+                fvm::ddt(e_)
+              + plateletContentConvection(carrier, e_)
+              + fvm::Sp(interfaceDelta_*adhesionSpeedEff_/qEff, e_)
+              - eDepositS25
              ==
                 fvc::laplacian(gammaPlateletf, w_)
-              + carrierDivergence(carrier)
+              - interfaceDelta_*adhesionSpeedEff_*(q_/qEff)
+            );
+            // Wp's solver controls (no new fvSolution key): e replaces Wp's
+            // transport.
+            eEqn.solve
+            (
+                mesh_.solution().solverDict
+                (
+                    Wp_.select
+                    (
+                        !mesh_.schemes().steady()
+                     && solutionControl::finalIteration(mesh_)
+                    )
+                )
             );
 
-            // S10 FIX 3: Wp RIDES THE SAME FLUX CORRECTION AS THE CONTENT.
-            // Under contentTransportScheme fct, contentFaceWeights_ is upwind,
-            // so the solve above is the M-matrix predictor; this adds the
-            // limited (linear - upwind) correction with the content's shared
-            // limiter, tightened only where Wp's OWN bounds require it. Wp is
-            // a conserved platelet content; it is NOT non-negative: where
-            // q < 0 (theta > theta_ref) Wp is a ledger value, Wp = q*w < 0
-            // with w >= 0 (OI-62, physics 09). Handing it the
-            // content's second-order weights implicitly would re-create the
-            // non-M-matrix defect of run 20260923-012704 in Wp. Where Wp's
-            // limiter does not bind, Wp and theta move on identical face
-            // fluxes, which is what the content basis exists to guarantee.
+            // S10 FIX 3 carried to e: the content's limited (linear - upwind)
+            // correction with the content's own limiter lambda_c, on e's
+            // antidiffusive flux (design section 3 B-G). Wp's own limiter is
+            // gone with Wp's transport: at e == 0, A(e) = 0 and nothing moves.
             if
             (
                 contentFctLambda_.valid()
             )
             {
-                const surfaceScalarField AW(fctAntidiffusiveFlux(carrier, Wp_));
-                const surfaceScalarField lambdaW
-                (
-                    "fctLambdaWp",
-                    min(contentFctLambda_(), fctLimiter(Wp_, Wp_.oldTime(), AW))
-                );
-                fctApply(Wp_, lambdaW, AW);
+                const surfaceScalarField AE(fctAntidiffusiveFlux(carrier, e_));
+                fctApply(e_, contentFctLambda_(), AE);
             }
         }
         else
         {
-            // c was not advected on this step, so W is not either. Advecting
-            // it here would be the same carrier mismatch with one of the two
-            // carriers set to nothing.
-            solve
+            // c was not advected on this step, so neither is e: the same
+            // sources, no convection.
+            fvScalarMatrix eEqn
             (
-                fvm::ddt(Wp_)
-              + fvm::Sp(interfaceDelta_*adhesionSpeedEff_/qEff, Wp_)
+                fvm::ddt(e_)
+              + fvm::Sp(interfaceDelta_*adhesionSpeedEff_/qEff, e_)
+              - eDepositS25
              ==
                 fvc::laplacian(gammaPlateletf, w_)
+              - interfaceDelta_*adhesionSpeedEff_*(q_/qEff)
+            );
+            eEqn.solve
+            (
+                mesh_.solution().solverDict
+                (
+                    Wp_.select
+                    (
+                        !mesh_.schemes().steady()
+                     && solutionControl::finalIteration(mesh_)
+                    )
+                )
             );
         }
+        e_.correctBoundaryConditions();
+        // Wp := q + e^{n+1} (q is this step's: no content solve since).
+        Wp_.primitiveFieldRef() = q_.primitiveField() + e_.primitiveField();
         Wp_.correctBoundaryConditions();
+        {
+            const scalar eAbsMaxS25 = gMax(mag(e_.primitiveField())());
+            Info<< "PHASE_CLOT_S25_R1 time=" << mesh_.time().userTimeValue()
+                << " eAbsMax=" << eAbsMaxS25
+                << " depositBooked="
+                << gSum(plateletDepositStep_*mesh_.V().primitiveField())
+                << endl;
+        }
 
         // THE LED AUDIT -- does the Wp convection CREATE a local extremum?
         //
@@ -12162,7 +12938,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlatelets()
         // to build Vn. OI-62: C6 at n+1, the same rule as the operand above,
         // so w = 1 wherever Wp = q for either sign of q. It feeds wMin, wMax,
         // wOverBound and wDevBlood, and the restart's Wp = q*w.
-        w_ = plateletRatioC6(q_, "wC6");
+        w_ = plateletRatioC6(Wp_, q_, "wC6");
         w_.correctBoundaryConditions();
     }
     w_.correctBoundaryConditions();
@@ -12174,6 +12950,32 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlatelets()
 Foam::scalar Foam::solvers::phaseClotAxisymmetricFluid::maxDeltaT() const
 {
     scalar dt = incompressibleFluid::maxDeltaT();
+
+    // S25 D (design 2026-10-10-S25 section 2D; OI-69): each limit, stored
+    // for PHASE_CLOT_DT. The base solver's two, as fluidSolver::maxDeltaT()
+    // forms them (OF-13 fluidSolver.C L229-239, read L54-60): the fluid
+    // Courant limit and the controlDict/fvModels maxDeltaT; and foamRun's
+    // growth limit, deltaTFactor*dt_prev (setDeltaT.C adjustDeltaT).
+    {
+        const dictionary& cdS25 = runTime.controlDict();
+        const scalar maxCoS25 = cdS25.lookupOrDefault<scalar>("maxCo", vGreat);
+        s25DtFluidCo_ =
+            (maxCoS25 < vGreat && CoNum > small)
+          ? maxCoS25/CoNum*runTime.deltaTValue()
+          : great;
+        s25DtMax_ =
+            min
+            (
+                fvModels().maxDeltaT(),
+                cdS25.found("maxDeltaT")
+              ? cdS25.lookup<scalar>("maxDeltaT", runTime.userUnits())
+              : vGreat
+            );
+        s25DtGrowth_ = solver::deltaTFactor*runTime.deltaTValue();
+        s25DtWave_ = great;
+        s25DtKV_ = great;
+        s25DtKVTangent_ = great;
+    }
 
     // The fluid Courant number is the wrong one once c rides the mixture
     // material velocity. In run 20260815-182036 the fluid stayed inside its
@@ -12216,7 +13018,42 @@ Foam::scalar Foam::solvers::phaseClotAxisymmetricFluid::maxDeltaT() const
 
             if (gMaxValue > 0 && rhoValue > 0)
             {
-                const scalar cShear = Foam::sqrt(gMaxValue/rhoValue);
+                // S25 (design section 3A; red team 04 change 5): the
+                // tangent modulus, max over cells of G (3/4) stiff (= G at
+                // be = I). Every cell, as gMax(G). Read by the wave CFL under
+                // elasticCourantModulus tangent (LT only) and logged as
+                // dtKVTangent always.
+                scalar gTangentMax = 0;
+                {
+                    const scalarField& GTan = GField_.primitiveField();
+                    const symmTensorField& beTan = be_.primitiveField();
+                    forAll(GTan, celli)
+                    {
+                        gTangentMax =
+                            max
+                            (
+                                gTangentMax,
+                                GTan[celli]*0.75
+                               *intactTangentStiffness(beTan[celli])
+                            );
+                    }
+                    reduce(gTangentMax, maxOp<scalar>());
+                }
+                const bool waveOnTangent = elasticCourantModulus_ == "tangent";
+                if (waveOnTangent && !(gTangentMax > 0))
+                {
+                    FatalErrorInFunction
+                        << "elasticCourantModulus tangent: max over cells "
+                        << "of G (3/4) stiff = " << gTangentMax << " is not "
+                        << "> 0 while max G = " << gMaxValue << " > 0; stiff "
+                        << "> 0 for SPD be, so this is a defect."
+                        << exit(FatalError);
+                }
+                const scalar cShear =
+                    Foam::sqrt
+                    (
+                        (waveOnTangent ? gTangentMax : gMaxValue)/rhoValue
+                    );
 
                 // Same length scale as the material limiter used, so the two
                 // cannot disagree about what h means.
@@ -12224,6 +13061,7 @@ Foam::scalar Foam::solvers::phaseClotAxisymmetricFluid::maxDeltaT() const
                     max(Foam::pow(gMin(mesh.V()), 1.0/3.0), vSmall);
 
                 dt = min(dt, elasticCourant_*hMinElastic/cShear);
+                s25DtWave_ = elasticCourant_*hMinElastic/cShear;
 
                 // THE SECOND ELASTIC LIMIT, AND RUN 20260817-052515 SHOWED IT
                 // IS THE ONE THAT ACTUALLY BINDS IN A STIFF CASE.
@@ -12254,6 +13092,15 @@ Foam::scalar Foam::solvers::phaseClotAxisymmetricFluid::maxDeltaT() const
                     rhoValue*nu_.value()/gMaxValue;
 
                 dt = min(dt, elasticRelaxCourant_*tauKelvinVoigt);
+                s25DtKV_ = elasticRelaxCourant_*tauKelvinVoigt;
+
+                // S25 (design section 3A; red team 04 change 5): the same
+                // limit on the TANGENT modulus gTangentMax (above), LOGGED
+                // and not applied. The coded KV reads G0 (above).
+                s25DtKVTangent_ =
+                    gTangentMax > 0
+                  ? elasticRelaxCourant_*rhoValue*nu_.value()/gTangentMax
+                  : great;
             }
         }
 
@@ -12281,6 +13128,13 @@ Foam::scalar Foam::solvers::phaseClotAxisymmetricFluid::maxDeltaT() const
             {
                 dt = min(dt, 0.2/explicitDiffusionRate_);
             }
+            // S25 D: the network-pressure diffusion limit, from the block
+            // form (solveBlockCoupledStep) or the segregated form
+            // (correctPressureTwoVelocity), whichever path ran.
+            s25DtNetDiff_ =
+                explicitDiffusionRate_ > vSmall
+              ? 0.2/explicitDiffusionRate_
+              : great;
         }
 
         return dt;
@@ -12295,6 +13149,60 @@ void Foam::solvers::phaseClotAxisymmetricFluid::prePredictor()
     // phase/platelet split only once per physical time step.
     if (pimple.firstIter())
     {
+        // S25 D (design 2026-10-10-S25 section 2D; OI-69): every dt limit
+        // that set THIS step's dt (maxDeltaT() ran in adjustDeltaT, before
+        // runTime++), the binder -- the argmin, or writeAlign when deltaT
+        // sits below every limit (Time::adjustDeltaT only lowers it) -- and
+        // the block-path network bound's argmax cell as the block priced it
+        // last step (the step whose rate set this limit).
+        {
+            const scalar dtS25 = runTime.deltaTValue();
+            const scalar dtCarrierS25 = s18CarrierDtLimit_;
+            const scalar limS25[7] =
+            {
+                s25DtFluidCo_, s25DtWave_, s25DtKV_, dtCarrierS25,
+                s25DtNetDiff_, s25DtMax_, s25DtGrowth_
+            };
+            const char* const limNameS25[7] =
+            {
+                "fluidCo", "wave", "KV", "carrier", "netDiff", "max", "growth"
+            };
+            label argS25 = 0;
+            for (label k = 1; k < 7; ++k)
+            {
+                if (limS25[k] < limS25[argS25]) { argS25 = k; }
+            }
+            const bool writeAlignS25 =
+                dtS25 < limS25[argS25]*(1.0 - 1e-12);
+            Info<< "PHASE_CLOT_DT step=" << runTime.timeIndex()
+                << " time=" << runTime.userTimeValue()
+                << " deltaT=" << dtS25
+                << " dtFluidCo=" << s25DtFluidCo_
+                << " dtWave=" << s25DtWave_
+                << " dtKV=" << s25DtKV_
+                << " dtKVTangent=" << s25DtKVTangent_
+                << " dtCarrier=" << dtCarrierS25
+                << " dtNetDiff=" << s25DtNetDiff_
+                << " netDiffForm="
+                << (s19BlockCoupled() ? "block" : "segregated")
+                << " dtMax=" << s25DtMax_
+                << " dtGrowth=" << s25DtGrowth_
+                << " binder="
+                << (writeAlignS25 ? "writeAlign" : limNameS25[argS25])
+                << " threads="
+                << (
+                       blockPardiso_.valid()
+                     ? label(blockPardiso_->threads())
+                     : blockSolverThreads_
+                   )
+                << " netDiffCell=" << s25NetDiffCell_
+                << " netDiffIAS=" << s25NetDiffIAS_
+                << " netDiffR3As=" << s25NetDiffR3As_
+                << " netDiffW=" << s25NetDiffW_
+                << " netDiffA=" << s25NetDiffA_
+                << endl;
+        }
+
         // S16: the per-step maxima start again at every step.
         s16LawReleaseMax_ = 0;
         s16LawRate_ = 0;
@@ -13598,7 +14506,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::correctPressureTwoVelocity()
                 const scalarField& DgI = Dg_.primitiveField();
                 const scalarField& phiSI = phiSkel_.primitiveField();
                 const scalarField& iA = iAD11.primitiveField();
-                const scalar pm = phiSMax_;
+                const scalar pm = networkPole();
                 const scalar dt = runTime.deltaTValue();
                 const scalar rhoV = rho_.value();
                 const volScalarField intactF(intactFraction());
@@ -14037,7 +14945,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::correctPressureTwoVelocity()
                     label halfCells = 0, sNeg = 0, netCells = 0;
                     {
                         const scalar phi0 = skeletonVolumeFraction_;
-                        const scalar pm = phiSMax_;
+                        const scalar pm = networkPole();
                         const scalar resid = residualChi_*phi0;
                         const scalarField& refb = thetaNetRef_.primitiveField();
                         const scalarField& GIb = GField_.primitiveField();
@@ -14496,6 +15404,152 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solveBlockCoupledStep()
     const volScalarField BblkB("BblkB", -KdB);
     const volScalarField CblkB("CblkB", -(KdB + KresB));
     const volScalarField DblkB("DblkB", VsEqn.A() + KdB + KresB + r3AsB);
+
+    // ---- S25 D: THE NETWORK-PRESSURE DIFFUSION BOUND ON THE BLOCK PATH -----
+    // (design 2026-10-10-S25 section 2D; OI-74; S25 03 findings 1-2.) The
+    // block applies the network pressure EXPLICITLY (time level n, in the
+    // elastic force fSigmaEB above), and its diffusion bound was computed
+    // only in correctPressureTwoVelocity(), which this path never calls --
+    // so it was dead here since S19. It is a stability bound (S25 03 Q3).
+    // The mobility is the solve's PRESSURE-PROJECTED (Schur) one, from the
+    // cell 2x2 assembled just above -- with R3's diagonal r3AsB in Dblk --
+    // and NOT the local inverse Ablk/det, which overstates the clot-cell
+    // mobility by ~Kd*dt/phiF^2:
+    //   iA_S = i11 - aS*cE/rA,  aS = i10*phiF + i11*phiS,
+    //   cE = phiF*i01 + phiS*i11,  rA = phiF*(i00*phiF + i01*phiS) + phiS*aS,
+    // the cell form of aByADsfB, cEfB and rAfB below. The number per unit
+    // dt is phiS*iA_S*slope*maxDC^2/rho, with the slope wPi*dPi/da exactly
+    // as the segregated site forms it (convexExcess, the same weight
+    // networkPartialPressure() applies), and maxDeltaT() holds it to 0.2 at
+    // the next step, the same one-step lag as the segregated path. No extra
+    // solve; no field is written.
+    //
+    // The population is the cells that carry the term: phiS > 0 (the lumen
+    // has no skeleton, so phiS*slope = 0 there, skipped BEFORE any division)
+    // and a positive slope (wPi > 0: deposited network). In that population
+    // the cell det and rA are refused if not positive, as the face tripwire
+    // below refuses det_f.
+    {
+        const volScalarField argS25(networkPressureArgument());
+        const volScalarField wS25(skeletonStressWeight());
+        const scalarField& aS25 = argS25.primitiveField();
+        const scalarField& wS25I = wS25.primitiveField();
+        const scalarField& refS25 = thetaNetRef_.primitiveField();
+        const scalarField& GS25 = GField_.primitiveField();
+        const scalarField& DgS25 = Dg_.primitiveField();
+        const scalar phi0S25 = skeletonVolumeFraction_;
+        const scalar pmS25 = networkPole();
+        const scalar residualContentS25 = residualChi_*skeletonVolumeFraction_;
+        const scalar rhoS25 = rho_.value();
+
+        scalarField maxDCS25(mesh.nCells(), 0.0);
+        {
+            const scalarField& dcS25 = mesh.deltaCoeffs().primitiveField();
+            const labelUList& ownS25 = mesh.owner();
+            const labelUList& neiS25 = mesh.neighbour();
+            forAll(dcS25, facei)
+            {
+                maxDCS25[ownS25[facei]] =
+                    max(maxDCS25[ownS25[facei]], dcS25[facei]);
+                maxDCS25[neiS25[facei]] =
+                    max(maxDCS25[neiS25[facei]], dcS25[facei]);
+            }
+        }
+
+        scalar netRateS25 = 0;
+        label netCellS25 = -1;
+        scalar netIASS25 = 0;
+        forAll(aS25, celli)
+        {
+            const scalar phiSc = phiSB[celli];
+            if (!(phiSc > 0))
+            {
+                continue;
+            }
+            const scalar wPiS25 =
+                networkPressureWeight_ == "depositedOccupancy"
+              ? refS25[celli]/phi0S25
+              : min(1.0, refS25[celli]/residualContentS25);
+            if (!(wPiS25 > 0))
+            {
+                continue;
+            }
+            const scalar aC = aS25[celli];
+            const scalar gDS25 = sqr(1.0 - DgS25[celli]) + etaRes_;
+            const scalar KnS25 = networkPressureCoeff_*gDS25*GS25[celli];
+            const scalar dpdaS25 =
+                KnS25*(pmS25 - phi0S25)
+               *(sqr(aC - phi0S25) + phi0S25*(pmS25 - phi0S25))
+               /sqr(aC*(pmS25 - aC));
+            scalar slopeS25 = wPiS25*dpdaS25;
+            if (networkPressureWeight_ == "contentRatio")
+            {
+                const scalar thS25 = thetaC_[celli] + thetaH_[celli];
+                const scalar paS25 =
+                    networkPressureKernel::convexExcessPressure
+                    (
+                        KnS25, pmS25, phi0S25, aC
+                    );
+                slopeS25 =
+                    wPiS25
+                   *networkPressureKernel::contentRatioSlope
+                    (
+                        thS25, refS25[celli], dpdaS25, paS25
+                    );
+            }
+            if (!(slopeS25 > 0))
+            {
+                continue;
+            }
+
+            const scalar AbS25 = AblkB[celli];
+            const scalar BbS25 = BblkB[celli];
+            const scalar CbS25 = CblkB[celli];
+            const scalar DbS25 = DblkB[celli];
+            const scalar detS25 = AbS25*DbS25 - BbS25*CbS25;
+            if (!(detS25 > 0))
+            {
+                FatalErrorInFunction
+                    << "S25 network diffusion bound: the cell 2x2 block is "
+                    << "singular or sign-indefinite in cell " << celli
+                    << " (det " << detS25 << ", phiS " << phiSc
+                    << ") where the explicit network term acts."
+                    << exit(FatalError);
+            }
+            const scalar i00S25 = DbS25/detS25;
+            const scalar i01S25 = -BbS25/detS25;
+            const scalar i10S25 = -CbS25/detS25;
+            const scalar i11S25 = AbS25/detS25;
+            const scalar phiFc = phiFB[celli];
+            const scalar aSS25 = i10S25*phiFc + i11S25*phiSc;
+            const scalar cES25 = phiFc*i01S25 + phiSc*i11S25;
+            const scalar rAS25 = phiFc*(i00S25*phiFc + i01S25*phiSc) + phiSc*aSS25;
+            if (!(rAS25 > 0))
+            {
+                FatalErrorInFunction
+                    << "S25 network diffusion bound: the projected mixture "
+                    << "mobility rA is not positive in cell " << celli
+                    << " (rA " << rAS25 << ", phiS " << phiSc << ", phiF "
+                    << phiFc << ")." << exit(FatalError);
+            }
+            const scalar iASS25 = i11S25 - aSS25*cES25/rAS25;
+            const scalar rateS25 =
+                phiSc*iASS25*slopeS25*sqr(maxDCS25[celli])/rhoS25;
+            if (rateS25 > netRateS25)
+            {
+                netRateS25 = rateS25;
+                netCellS25 = celli;
+                netIASS25 = iASS25;
+            }
+        }
+        // Serial (S19: the block path refuses coupled patches).
+        explicitDiffusionRate_ = netRateS25;
+        s25NetDiffCell_ = netCellS25;
+        s25NetDiffIAS_ = netIASS25;
+        s25NetDiffR3As_ = netCellS25 >= 0 ? r3AsB[netCellS25] : 0;
+        s25NetDiffW_ = netCellS25 >= 0 ? wS25I[netCellS25] : 0;
+        s25NetDiffA_ = netCellS25 >= 0 ? aS25[netCellS25] : 0;
+    }
     const surfaceScalarField AfB(fvc::interpolate(AblkB));
     const surfaceScalarField BfB(fvc::interpolate(BblkB));
     const surfaceScalarField CfB(fvc::interpolate(CblkB));
@@ -15969,6 +17023,93 @@ void Foam::solvers::phaseClotAxisymmetricFluid::momentumPredictor()
                            *fvc::interpolate(gD*GField_*kEff)
                            *runTime.deltaT()/rho_;
                         GammaBSD = wT*gD*GField_*kEff*runTime.deltaT()/rho_;
+
+                        // S25 F3 (design section 3A; rev. 2.1 amendment 11,
+                        // V-A 13 finding 4): r = k_true/k_used over the cells
+                        // where Gamma_t acts (> 0). k_used is kEff above, the
+                        // very field Gamma_t was built from
+                        // (mixedTangentStiffness: the pending share and the
+                        // damage in). k_true mixes the law's true tangent k_c
+                        // (intactWaveTangent) with the SAME shares, by the
+                        // same kernels on the same arguments as
+                        // mixedTangentStiffness (sharesCarrier,
+                        // mixedStiffness). A wrong stiff in Gamma_t moves
+                        // k_used and not k_true, so r sees it; build 2's
+                        // k_c/intactTangentStiffness could not. The pair is
+                        // neutrally stable while r s/(1 + s) <= 4 (numerics
+                        // 07 finding 6); F3 FAILS on max r > 4. A cell whose
+                        // k_used is not > 0 is counted (stiffNonPositive),
+                        // not divided by.
+                        {
+                            const scalarField& gamF3 =
+                                GammaBSD.primitiveField();
+                            const scalarField& kUsedF3 = kEff.primitiveField();
+                            const symmTensorField& beF3 = be_.primitiveField();
+                            const scalarField& pIF3 =
+                                thetaIntact_.primitiveField();
+                            const scalarField& pPF3 =
+                                thetaPending_.primitiveField();
+                            const scalarField& pCF3 =
+                                fibreCarrier().primitiveField();
+                            const scalarField& pBF3 =
+                                thetaBroken_.primitiveField();
+                            const scalarField& lIF3 =
+                                pendingStretch_.primitiveField();
+                            label cellsF3 = 0, stiffBadF3 = 0, cellF3 = -1;
+                            scalar rMaxF3 = -1, kTrueF3 = 0, kUsedCellF3 = 0;
+                            forAll(gamF3, celli)
+                            {
+                                if (!(gamF3[celli] > 0))
+                                {
+                                    continue;
+                                }
+                                ++cellsF3;
+                                const scalar kU = kUsedF3[celli];
+                                if (!(kU > 0))
+                                {
+                                    ++stiffBadF3;
+                                    continue;
+                                }
+                                scalar aIF3, aPF3, omdF3;
+                                fibreReleaseKernel::sharesCarrier
+                                (
+                                    pIF3[celli], pPF3[celli], pBF3[celli],
+                                    pCF3[celli], aIF3, aPF3, omdF3
+                                );
+                                const scalar kT =
+                                    fibreReleaseKernel::mixedStiffness
+                                    (
+                                        aIF3, intactWaveTangent(beF3[celli]),
+                                        aPF3, lIF3[celli], omdF3
+                                    );
+                                if (kT/kU > rMaxF3)
+                                {
+                                    rMaxF3 = kT/kU;
+                                    kTrueF3 = kT;
+                                    kUsedCellF3 = kU;
+                                    cellF3 = celli;
+                                }
+                            }
+                            reduce(cellsF3, sumOp<label>());
+                            reduce(stiffBadF3, sumOp<label>());
+                            reduce(rMaxF3, maxOp<scalar>());
+                            Info<< "PHASE_CLOT_S25_F3"
+                                << " time=" << runTime.userTimeValue()
+                                << " cells=" << cellsF3
+                                << " stiffNonPositive=" << stiffBadF3;
+                            if (rMaxF3 >= 0)
+                            {
+                                Info<< " rMax=" << rMaxF3
+                                    << " rCell=" << cellF3
+                                    << " kc=" << kTrueF3
+                                    << " stiffGamma=" << kUsedCellF3;
+                            }
+                            else
+                            {
+                                Info<< " rMax=none";
+                            }
+                            Info<< endl;
+                        }
                     }
                     {
                         tVsEqn.ref() -= fvm::laplacian(GammaBSDf, Vs_);
@@ -16854,7 +17995,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::writeBalanceDiagnostic()
             // is what held it, which is precisely the claim "close packing is
             // unreachable by force balance" failing. Reported every step so
             // the first occurrence has a time against it.
-            const scalar capLevel = 0.99*phiSMax_;
+            const scalar capLevel = 0.99*networkPole();
             label pnCapCells = 0;
             // S10: the cap is on the law's ARGUMENT, which under "deposited"
             // is not the force fraction. Counting on phiSdiag would gate a
@@ -16917,7 +18058,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::writeBalanceDiagnostic()
                 << " phiSNominal=" << skeletonVolumeFraction_
                 << " phiSOverNominal="
                 << phiSMaxSeen/max(skeletonVolumeFraction_, small)
-                << " phiSFracOfMax=" << phiSMaxSeen/max(phiSMax_, small)
+                << " phiSFracOfMax=" << phiSMaxSeen/max(networkPole(), small)
                 << " forceBasis=content"
                 << " phiSLegacyMax="
                 << gMax(volScalarField(solidFraction())().primitiveField())
@@ -16972,8 +18113,9 @@ void Foam::solvers::phaseClotAxisymmetricFluid::writeBalanceDiagnostic()
         );
         {
             // mag(q_): see wGrowth. A diagnostic that reports the
-            // 1e+06-amplified quotient is worse than no diagnostic.
-            wStoich = Wp_/max(mag(q_), qFloor_);
+            // 1e+06-amplified quotient is worse than no diagnostic. The
+            // sink's own operand (q + e)/max(|q|, qFloor), as wGrowth.
+            wStoich = (q_ + e_)/max(mag(q_), qFloor_);
         }
 
         const scalar plateletUptake =
@@ -18541,7 +19683,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::reportIntactReference()
     const scalarField& refIR = thetaNetRefIntact_.primitiveField();
     const scalarField& VR = mesh_.V();
     const scalar phi0R = skeletonVolumeFraction_;
-    const scalar poleBand = phiSMax_ - 0.05;
+    const scalar poleBand = networkPole() - 0.05;
 
     label aICells = 0;
     label aIMaxCell = -1;
@@ -18688,6 +19830,180 @@ void Foam::solvers::phaseClotAxisymmetricFluid::reportIntactReference()
 }
 
 
+namespace
+{
+    // S25 C: the keys of uniform/phaseClotState, written and read together.
+    const char* const s25StateScalars[] =
+    {
+        "explicitDiffusionRate",
+        "s23ContentV0",
+        "s23ContentResInt",
+        "s23OutfluxInt"
+    };
+    const char* const s25StateFields[] =
+    {
+        "s17OutletPhi1", "s17OutletPhi2", "s17OutletPhi3",
+        "s17SurfPhi1", "s17SurfPhi2", "s17SurfPhi3"
+    };
+    const char* const s25StateLabels[] =
+    {
+        "s17SecondDiffSteps",
+        "s18pPresentDumped",
+        "s18pWindow0", "s18pWindow1",
+        "s18pWindowDumped0", "s18pWindowDumped1"
+    };
+}
+
+
+void Foam::solvers::phaseClotAxisymmetricFluid::storeRestartState()
+{
+    // S25 C (design 2026-10-10-S25 section 2C): every step, so whatever
+    // writes the time directory -- the write interval or a function object's
+    // writeNow at the start of the next step -- writes this step's state.
+    // Written at the run's writePrecision (17 on S25 children).
+    dictionary& d = phaseClotState_;
+    d.set("explicitDiffusionRate", explicitDiffusionRate_);
+    d.set("s23ContentV0", s23ContentV0_);
+    d.set("s23ContentResInt", s23ContentResInt_);
+    d.set("s23OutfluxInt", s23OutfluxInt_);
+    d.set("s17OutletPhi1", s17OutletPhi1_);
+    d.set("s17OutletPhi2", s17OutletPhi2_);
+    d.set("s17OutletPhi3", s17OutletPhi3_);
+    d.set("s17SurfPhi1", s17SurfPhi1_);
+    d.set("s17SurfPhi2", s17SurfPhi2_);
+    d.set("s17SurfPhi3", s17SurfPhi3_);
+    d.set("s17SecondDiffSteps", s17SecondDiffSteps_);
+    d.set("s18pPresentDumped", s18pPresentDumped_);
+    d.set("s18pWindow0", s18pWindow_[0]);
+    d.set("s18pWindow1", s18pWindow_[1]);
+    d.set("s18pWindowDumped0", s18pWindowDumped_[0]);
+    d.set("s18pWindowDumped1", s18pWindowDumped_[1]);
+}
+
+
+void Foam::solvers::phaseClotAxisymmetricFluid::restoreRestartState()
+{
+    // S25 C: no file (a cold start, or a directory written before S25) keeps
+    // every constructor seed, exactly as before. A file is read all-or-none:
+    // a partial one is a defect, not a state to complete with seeds.
+    const dictionary& d = phaseClotState_;
+    if (d.empty())
+    {
+        Info<< "PHASE_CLOT_S25_RESTART state=seeded" << endl;
+        return;
+    }
+    wordList missing;
+    for (const char* k : s25StateScalars)
+    {
+        if (!d.found(k)) { missing.append(word(k)); }
+    }
+    for (const char* k : s25StateFields)
+    {
+        if (!d.found(k)) { missing.append(word(k)); }
+    }
+    for (const char* k : s25StateLabels)
+    {
+        if (!d.found(k)) { missing.append(word(k)); }
+    }
+    if (missing.size())
+    {
+        FatalErrorInFunction
+            << "uniform/phaseClotState is read all-or-none, and it lacks "
+            << missing << " (design 2026-10-10-S25 section 2C)."
+            << exit(FatalError);
+    }
+    explicitDiffusionRate_ = d.lookup<scalar>("explicitDiffusionRate");
+    s23ContentV0_ = d.lookup<scalar>("s23ContentV0");
+    s23ContentResInt_ = d.lookup<scalar>("s23ContentResInt");
+    s23OutfluxInt_ = d.lookup<scalar>("s23OutfluxInt");
+    s17OutletPhi1_ = d.lookup<scalarField>("s17OutletPhi1");
+    s17OutletPhi2_ = d.lookup<scalarField>("s17OutletPhi2");
+    s17OutletPhi3_ = d.lookup<scalarField>("s17OutletPhi3");
+    s17SurfPhi1_ = d.lookup<scalarField>("s17SurfPhi1");
+    s17SurfPhi2_ = d.lookup<scalarField>("s17SurfPhi2");
+    s17SurfPhi3_ = d.lookup<scalarField>("s17SurfPhi3");
+    s17SecondDiffSteps_ = d.lookup<label>("s17SecondDiffSteps");
+    s18pPresentDumped_ = d.lookup<label>("s18pPresentDumped");
+    s18pWindow_[0] = d.lookup<label>("s18pWindow0");
+    s18pWindow_[1] = d.lookup<label>("s18pWindow1");
+    s18pWindowDumped_[0] = d.lookup<label>("s18pWindowDumped0");
+    s18pWindowDumped_[1] = d.lookup<label>("s18pWindowDumped1");
+    Info<< "PHASE_CLOT_S25_RESTART state=restored"
+        << " explicitDiffusionRate=" << explicitDiffusionRate_
+        << " s23ContentV0=" << s23ContentV0_
+        << " s17SecondDiffSteps=" << s17SecondDiffSteps_
+        << endl;
+}
+
+
+void Foam::solvers::phaseClotAxisymmetricFluid::reportLoadRatio() const
+{
+    // S25 E (design 2026-10-10-S25 section 2E; S25 01 Q3): O(N) reductions,
+    // after the pressure solve. A ratio whose denominator or population is
+    // empty is printed as `none`, never as a number.
+    const volScalarField indLR(phaseIndicator());
+    const scalarField& indLRI = indLR.primitiveField();
+    const scalarField& pLRI = p.primitiveField();
+    label clotCellsLR = 0;
+    scalar pClotMax = -great, pClotMin = great;
+    forAll(indLRI, celli)
+    {
+        if (indLRI[celli] > 0.5)
+        {
+            ++clotCellsLR;
+            pClotMax = max(pClotMax, pLRI[celli]);
+            pClotMin = min(pClotMin, pLRI[celli]);
+        }
+    }
+    reduce(clotCellsLR, sumOp<label>());
+    reduce(pClotMax, maxOp<scalar>());
+    reduce(pClotMin, minOp<scalar>());
+    const scalar GLR = gMax(GField_.primitiveField());
+    const scalar rhoLR = rho_.value();
+
+    // Area-weighted mean of the kinematic p on a named patch; false when
+    // the patch is absent or has no area.
+    const auto patchMeanP = [this](const word& name, scalar& mean)
+    {
+        const label patchi = mesh.boundaryMesh().findIndex(name);
+        if (patchi < 0) { return false; }
+        const scalar area = gSum(mesh.magSf().boundaryField()[patchi]);
+        if (!(area > 0)) { return false; }
+        mean =
+            gSum
+            (
+                p.boundaryField()[patchi]*mesh.magSf().boundaryField()[patchi]
+            )/area;
+        return true;
+    };
+    scalar pInLR = 0, pOutLR = 0;
+    const bool hasIn = patchMeanP("inlet", pInLR);
+    const bool hasOut = patchMeanP("outlet", pOutLR);
+
+    Info<< "PHASE_CLOT_LAMBDA time=" << runTime.userTimeValue()
+        << " step=" << runTime.timeIndex()
+        << " G=" << GLR
+        << " clotCells=" << clotCellsLR;
+    if (GLR > 0 && clotCellsLR > 0)
+    {
+        Info<< " lambdaClot=" << rhoLR*(pClotMax - pClotMin)/GLR;
+    }
+    else
+    {
+        Info<< " lambdaClot=none";
+    }
+    if (GLR > 0 && hasIn && hasOut)
+    {
+        Info<< " lambdaDom=" << rhoLR*(pInLR - pOutLR)/GLR;
+    }
+    else
+    {
+        Info<< " lambdaDom=none";
+    }
+    Info<< endl;
+}
+
+
 void Foam::solvers::phaseClotAxisymmetricFluid::postSolve()
 {
 
@@ -18695,6 +20011,12 @@ void Foam::solvers::phaseClotAxisymmetricFluid::postSolve()
 
     // D74: the intact reference's per-step line, after every writer of it.
     reportIntactReference();
+
+    // S25 E: the load ratio, after the pressure solve.
+    reportLoadRatio();
+
+    // S25 C: LAST, after every writer of the persisted scalars this step.
+    storeRestartState();
 
     // Diagnostic only, and only when asked for. Evaluated at write times so
     // the cost is bounded by the number of write steps rather than by the

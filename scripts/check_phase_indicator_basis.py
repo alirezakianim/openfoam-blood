@@ -55,6 +55,19 @@ def compact(text: str) -> str:
     return re.sub(r"\s+", "", text)
 
 
+def sites_in(src: str, pattern: str) -> dict:
+    """call_sites() evaluated on the GIVEN text. check_content_consumer_map.call_sites reads the
+    live solver file whatever the caller passes, so a predicate built on it could not be mutated
+    (found in S25 V25-11: a planted extra indicator read left the census True)."""
+    lines = code_lines(src)
+    owners = enclosing_functions(lines)
+    found: dict = {}
+    for number, line in enumerate(lines, 1):
+        if re.search(pattern, line):
+            found.setdefault(owners[number - 1], []).append(number)
+    return found
+
+
 def live(text: str) -> str:
     """Whitespace-free source with comments and string bodies removed.
 
@@ -615,7 +628,7 @@ def not_migrated_sites_still_read_the_raw_form(src: str) -> bool:
     reference. If one of them quietly moves, the consumer map's reasons --
     unreachable, superseded, diagnostic-last -- stop describing the code.
     """
-    raw = {f: v for f, v in call_sites(r"max\s*\(\s*1\.0\s*-\s*q_").items()
+    raw = {f: v for f, v in sites_in(src, r"max\s*\(\s*1\.0\s*-\s*q_").items()
            if f not in INDICATOR_ACCESSORS}
     # S21C1 b23 deleted solveSkeleton() and b27 writeSkeletonResidual().
     return set(raw) == {"momentumPredictor", "writeBalanceDiagnostic"}
@@ -686,10 +699,15 @@ def every_indicator_site_is_one_of_two_forms(src: str) -> bool:
     indicator for the torn set's isSkel (the block's rule) and for the
     packing scale s = (1 - d*) + d* ind of the torn-face correction, which
     drives the skeleton force (required).
+
+    S25 (2026-10-10) took it to 36 across 24: reportLoadRatio() (the E log,
+    PHASE_CLOT_LAMBDA) reads the indicator to select the clot cells of the
+    load ratio. It is a diagnostic and drives nothing, so the required set
+    below is unchanged.
     """
-    sites = {f: v for f, v in call_sites(INDICATOR).items()
+    sites = {f: v for f, v in sites_in(src, INDICATOR).items()
              if f not in INDICATOR_ACCESSORS}
-    return (sum(len(v) for v in sites.values()) == 35 and len(sites) == 23
+    return (sum(len(v) for v in sites.values()) == 36 and len(sites) == 24
             and {"updateReleasedIndicator", "updateBondHold", "tornNetworkCells",
                  "releaseDetachedMaterial", "skeletonFaceStress",
                  "writeBalanceDiagnostic", "intrinsicDragRate",
@@ -1371,6 +1389,18 @@ class IndicatorBasisTests(unittest.TestCase):
 
     def test_site_inventory_totals(self):
         self.assertTrue(every_indicator_site_is_one_of_two_forms(self.src))
+
+    def test_site_inventory_sees_a_site_added_or_removed(self):
+        # S25 V25-11: the census must FAIL on a site appearing or vanishing (36 across 24).
+        anchor = "    const volScalarField indLR(phaseIndicator());\n"
+        self.assertEqual(self.src.count(anchor), 1, "census mutation anchor not unique")
+        added = self.src.replace(anchor, anchor + "    const volScalarField indLR2(phaseIndicator());\n", 1)
+        self.assertFalse(every_indicator_site_is_one_of_two_forms(added),
+                         "a 37th indicator read in the same function was not detected")
+        removed = self.src.replace(anchor, "", 1)
+        self.assertFalse(every_indicator_site_is_one_of_two_forms(removed),
+                         "removing reportLoadRatio()'s read (35 across 23) was not detected")
+        self.assertTrue(every_indicator_site_is_one_of_two_forms(self.src + "\n// no-op control\n"))
 
 
     # ---- S4, the growth driver -------------------------------------------

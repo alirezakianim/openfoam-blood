@@ -114,11 +114,16 @@ def domain_check_reports_cells_first(src: str) -> bool:
     """The cell loop and its FatalError precede the boundary loop, and the
     convexExcess law goes through the shared check."""
     b = flat(body(src, "phaseClotAxisymmetricFluid::checkNetworkArgument"))
-    cell = b.find("if(!(aIn[celli]>0&&aIn[celli]<phiSMax_)){worst=celli;break;}")
+    # S25 A: the pole is the local `phiSMax = networkPole()` (phiSMax_ under the shipped law,
+    # 1 under LT), read once, before the cell loop; both loops test against it.
+    pole = b.find("constscalarphiSMax=networkPole();")
+    cell = b.find("if(!(aIn[celli]>0&&aIn[celli]<phiSMax)){worst=celli;break;}")
     fatal = b.find("if(returnReduce(worst>=0,orOp<bool>()))")
     bnd = b.find("forAll(a.boundaryField(),patchi)")
     return (
-        0 <= cell < fatal < bnd
+        0 <= pole < cell < fatal < bnd
+        and b.count("constscalarphiSMax=")==1 and "phiSMax_" not in b
+        and "if(!(aB[facei]>0&&aB[facei]<phiSMax))" in b
         and 'checkNetworkArgument(phiS,"convexExcessnetworkpressure");' in flat(src)
     )
 
@@ -171,8 +176,17 @@ MUTATIONS = [
      "        if (skeletonDiluteDragRate_ > 0)\n        {\n            FatalErrorInFunction\n                << \"dragOccupancyBasis intrinsic gives",
      "        if (skeletonDiluteDragRate_ > 1e30)\n        {\n            FatalErrorInFunction\n                << \"dragOccupancyBasis intrinsic gives"),
     ("cell check disabled", domain_check_reports_cells_first,
-     "        if (!(aIn[celli] > 0 && aIn[celli] < phiSMax_))\n        {\n            worst = celli;",
+     "        if (!(aIn[celli] > 0 && aIn[celli] < phiSMax))\n        {\n            worst = celli;",
      "        if (false)\n        {\n            worst = celli;"),
+    ("S25 pole not read from networkPole()", domain_check_reports_cells_first,
+     "    const scalar phiSMax = networkPole();\n    const scalarField& aIn = a.primitiveField();",
+     "    const scalar phiSMax = phiSMax_;\n    const scalarField& aIn = a.primitiveField();"),
+    ("S25 boundary loop tests the old member", domain_check_reports_cells_first,
+     "            if (!(aB[facei] > 0 && aB[facei] < phiSMax))",
+     "            if (!(aB[facei] > 0 && aB[facei] < phiSMax_))"),
+    ("S25 cell loop tests the old member", domain_check_reports_cells_first,
+     "        if (!(aIn[celli] > 0 && aIn[celli] < phiSMax))\n        {\n            worst = celli;",
+     "        if (!(aIn[celli] > 0 && aIn[celli] < phiSMax_))\n        {\n            worst = celli;"),
     ("fringe line never printed", diagnostic_is_logged,
      "        reportSkeletonVelocity();\n        reportFringe();",
      "        reportSkeletonVelocity();"),

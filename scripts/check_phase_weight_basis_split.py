@@ -217,7 +217,9 @@ def only_Wp_takes_the_selected_weights(src: str) -> bool:
     key two changes and its gate unattributable."""
     calls = re.findall(r"plateletContentConvection\(([^)]*)\)", src)
     calls = [a for a in calls if "const surfaceScalarField&" not in a]
-    return len(calls) == 1 and "Wp_" in calls[0]
+    # S25 B (R1): the transported platelet-content variable is e = Wp - q, so the ONE call carries e_
+    # (it carried Wp_ until 2026-10-10). Wp_ is re-formed as q + e after the solve.
+    return len(calls) == 1 and calls[0].replace(" ", "") == "carrier,e_"
 
 
 def one_implementation_of_the_operator(src: str) -> bool:
@@ -438,6 +440,22 @@ class PhaseWeightBasisSplit(unittest.TestCase):
             only_Wp_takes_the_selected_weights(spread),
             "extending the key to shell_ was not detected -- that is the "
             "bundled second change this split exists to prevent")
+
+        # S25 B: the pre-S25 variable (Wp_) must now be refused: under R1 the transported field is e_
+        wp_back = self.src.replace(
+            "+ plateletContentConvection(carrier, e_)",
+            "+ plateletContentConvection(carrier, Wp_)", 1)
+        self.assertNotEqual(wp_back, self.src, "nothing was mutated")
+        self.assertFalse(
+            only_Wp_takes_the_selected_weights(wp_back),
+            "the call reverting to Wp_ (S25 R1 transports e_) was not detected")
+        both = self.src.replace(
+            "+ plateletContentConvection(carrier, e_)",
+            "+ plateletContentConvection(carrier, e_)\n              + plateletContentConvection(carrier, Wp_)", 1)
+        self.assertNotEqual(both, self.src, "nothing was mutated")
+        self.assertFalse(
+            only_Wp_takes_the_selected_weights(both),
+            "a second platelet-content call (Wp_ beside e_) was not detected")
 
         # S21: the old anchor, phaseConservativeConvection()'s delegating
         # return, was deleted with that function (S21A b14). The same copy is

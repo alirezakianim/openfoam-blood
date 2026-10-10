@@ -341,6 +341,48 @@ class PlateletSemanticsTests(unittest.TestCase):
                 self.assertTrue(fixture_failures(self.mutant(before, after)), "the mutant was not caught")
         self.assertEqual(fixture_failures(self.mutant("and wp_ok and dry_ok", "and wp_ok and dry_ok")), [], "the no-op control")
 
+    def dry_reason_failures(self, assessor):
+        """OI-64 (verification 14, B3): the printed reason. The dry-face verdict was already tested; the text a failing
+        child shows in the report (`bounds_reason`) was not, so a copy that was lost left the verdict right and the
+        reason empty. Returns the list of disagreements; [] when the assessor copies the dry reason correctly."""
+        bad = []
+        dry_only = assess_fixture(assessor, VERSIONED, " dryFacesConducting=3")
+        want = dry_only.get("platelet_dry_faces_gate_reason")
+        if not want or "dryFacesConducting=3" not in want:
+            bad.append(("the gate's own reason is empty or has no count", want))
+        if dry_only["bounds_reason"] != want:
+            bad.append(("dry-only: bounds_reason is not the dry reason", dry_only["bounds_reason"]))
+        malformed = assess_fixture(assessor, VERSIONED, " dryFacesConducting=oops")
+        if "malformed" not in (malformed["bounds_reason"] or ""):
+            bad.append(("malformed count: bounds_reason lacks 'malformed'", malformed["bounds_reason"]))
+        both = assess_fixture(assessor, {**VERSIONED, "WpRawQDevMax": 0.30}, " dryFacesConducting=3")
+        if both["bounds_reason"] != both["wp_gate_reason"]:
+            bad.append(("both fail: the envelope reason must stay first", both["bounds_reason"]))
+        healthy = assess_fixture(assessor, VERSIONED, DRY0)
+        if healthy["bounds_reason"] or not healthy["admissible"]:
+            bad.append(("healthy fixture: bounds_reason must be empty and the child admissible",
+                        (healthy["bounds_reason"], healthy["admissible"])))
+        return bad
+
+    def test_oi64_dry_reason_reaches_bounds_reason(self):
+        self.assertEqual(self.dry_reason_failures(self.assessor), [])
+        copy = 'result["bounds_reason"] = dry_reason\n'
+        mutants = (
+            ("the copy is deleted (verdict unchanged, reason empty)", "    if not dry_ok and not result[\"bounds_reason\"]:\n        " + copy,
+             "    if not dry_ok and not result[\"bounds_reason\"]:\n        pass\n"),
+            ("another gate's reason is copied in its place", copy, 'result["bounds_reason"] = wp_reason\n'),
+            ("the dry reason overwrites an earlier one", 'if not dry_ok and not result["bounds_reason"]:',
+             "if not dry_ok:"),
+        )
+        for name, before, after in mutants:
+            with self.subTest(mutant=name):
+                self.assertTrue(self.dry_reason_failures(self.mutant(before, after)), "the mutant was not caught")
+        # the first mutant changes no verdict: the older fixture test cannot see it, which is why this test exists
+        verdict_blind = self.mutant("    if not dry_ok and not result[\"bounds_reason\"]:\n        " + copy,
+                                    "    if not dry_ok and not result[\"bounds_reason\"]:\n        pass\n")
+        self.assertEqual(fixture_failures(verdict_blind), [])
+        self.assertEqual(self.dry_reason_failures(self.mutant(copy, copy)), [], "the no-op control")
+
     def fo(self, *suffixes):
         return "".join(
             f"PHASE_CLOT_PLATELET_FO time={1e-6 * (i + 1):g} plateletFo=0.02 plateletFoLimit=2{s}\n"

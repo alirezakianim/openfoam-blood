@@ -254,14 +254,17 @@ def p_others_keep_one_minus_d(t):
             and c.count("tornNetworkCells(") == 7)
 
 
-def _refused(t, tau):
-    """Evaluate the solver's own tau_v floor test (operator and literal from the source)."""
+def _refused(t, tau, s_t=1.0):
+    """Evaluate the solver's own tau_v floor test (operator and literal from the source).
+    S25 F: the floor is `timeScale_*5e-4` (the physical floor 5e-4 s is a physical time, scaled by
+    the dictionary's timeScale); `s_t` plays timeScale_, and a floor with NO timeScale_ factor is
+    evaluated unscaled (so it fails the S_t != 1 cases below)."""
     c = ns(t["C"])
-    lit = re.search(r"constscalars23TauVFloor=([0-9.eE+-]+);", c)
+    lit = re.search(r"constscalars23TauVFloor=(timeScale_\*)?([0-9.eE+-]+);", c)
     op = re.search(r"if\(!\(networkViscosityTau_(>=|>)s23TauVFloor\)\)", c)
     if not (lit and op):
         return None
-    floor = float(lit.group(1))
+    floor = (s_t if lit.group(1) else 1.0) * float(lit.group(2))
     return not (tau >= floor if op.group(1) == ">=" else tau > floor)
 
 
@@ -288,7 +291,11 @@ def p_refusal_tau(t):
     return ('if(networkViscosity_=="kelvinVoigt"&&!s23Marked){if(!phaseClotProperties_.found('
             '"networkViscosityTau")){FatalErrorInFunction' in c
             and _refused(t, float("0.0005")) is False and _refused(t, float("5e-4")) is False
-            and _refused(t, float("4.99e-4")) is True and _refused(t, float("nan")) is True)
+            and _refused(t, float("4.99e-4")) is True and _refused(t, float("nan")) is True
+            # S25 F: the same boundary at timeScale 8.33 (the floor is 8.33*5e-4, a product)
+            and 'constscalars23TauVFloor=timeScale_*5e-4;' in c
+            and _refused(t, 8.33*5e-4, 8.33) is False and _refused(t, 8.33*4.99e-4, 8.33) is True
+            and _refused(t, 5e-4, 8.33) is True and _refused(t, 0.01, 8.33) is False)
 
 
 def p_oi53(t):
@@ -439,6 +446,18 @@ def p_content_outflux_booked(t):
             and "if(contentInlet>=0){bookedFlux+=solvedPatchFlux(thetaCEqn,thetaC_,contentInlet)" in s
             and "if(contentOutlet>=0){bookedFlux+=solvedPatchFlux(thetaCEqn,thetaC_,contentOutlet)" in s
             and "contentBoundaryFlux_=bookedFlux;" in s
+            # OI-64 (predicate 27's last two holes): nothing may SCALE the booked sum, before the
+            # store (`bookedFlux *= 0.5`) or after it (`contentBoundaryFlux_ *= 0.5`, `-=`, `/=`).
+            # The statements from the declaration to the store are pinned whole, and every
+            # appearance of either name in the solver is one of the known ones.
+            and ("scalarbookedFlux=0;if(contentInlet>=0){bookedFlux+=solvedPatchFlux(thetaCEqn,thetaC_,"
+                 "contentInlet)+solvedPatchFlux(thetaHEqn,thetaH_,contentInlet);}if(contentOutlet>=0)"
+                 "{bookedFlux+=solvedPatchFlux(thetaCEqn,thetaC_,contentOutlet)+solvedPatchFlux("
+                 "thetaHEqn,thetaH_,contentOutlet);}contentBoundaryFlux_=bookedFlux;") in s
+            and ns(t["C"]).count("bookedFlux") == 4          # declaration, two +=, the store
+            and ns(t["C"]).count("contentBoundaryFlux_") == 4  # ctor (0), zero, store, balance read
+            and len(re.findall(r"contentBoundaryFlux_[-+*/]=", ns(t["C"]))) == 0
+            and len(re.findall(r"bookedFlux[-*/]=", ns(t["C"]))) == 0
             # the balance books it, and re-reads no patch value of theta
             and "constscalarcontentOuterFlux=contentBoundaryFlux_;" in seg
             and "boundaryField" not in seg and "interpolate" not in seg
@@ -551,7 +570,10 @@ MUTATIONS = (
      '    if (false && s23Marked && networkViscosity_ != "none")', 22),
     ("C", '        << " sensitivityLimit=" << sensitivityLimit_\n', "", 22),
     # the tau_v floor at the boundary: 4.99e-4 admitted; 5e-4 exactly refused; no found()
-    ("C", "    const scalar s23TauVFloor = 5e-4;", "    const scalar s23TauVFloor = 4.99e-4;", 23),
+    ("C", "    const scalar s23TauVFloor = timeScale_*5e-4;", "    const scalar s23TauVFloor = timeScale_*4.99e-4;", 23),
+    # S25 F: the floor lost its timeScale_ factor (a physical time left unscaled)
+    ("C", "    const scalar s23TauVFloor = timeScale_*5e-4;", "    const scalar s23TauVFloor = 5e-4;", 23),
+    ("C", "    const scalar s23TauVFloor = timeScale_*5e-4;", "    const scalar s23TauVFloor = timeScale_/5e-4;", 23),
     ("C", "        if (!(networkViscosityTau_ >= s23TauVFloor))",
      "        if (!(networkViscosityTau_ > s23TauVFloor))", 23),
     ("C", '        if (!phaseClotProperties_.found("networkViscosityTau"))', "        if (false)", 23),
@@ -606,6 +628,18 @@ MUTATIONS = (
     # D9: the outlet guard inverted (the outlet is never booked), and the same at the inlet
     ("C", "        if (contentOutlet >= 0)\n", "        if (contentOutlet < 0)\n", 27),
     ("C", "        if (contentInlet >= 0)\n", "        if (contentInlet < 0)\n", 27),
+    # OI-64 (verification 14 / V-B2b): the two scale holes of predicate 27. The booked sum scaled
+    # after the store, and before it; plus the other compound operators and a rewrite in the sum.
+    ("C", "        contentBoundaryFlux_ = bookedFlux;\n",
+     "        contentBoundaryFlux_ = bookedFlux;\n        contentBoundaryFlux_ *= 0.5;\n", 27),
+    ("C", "        contentBoundaryFlux_ = bookedFlux;\n",
+     "        bookedFlux *= 0.5;\n        contentBoundaryFlux_ = bookedFlux;\n", 27),
+    ("C", "        contentBoundaryFlux_ = bookedFlux;\n",
+     "        contentBoundaryFlux_ = bookedFlux;\n        contentBoundaryFlux_ /= 2;\n", 27),
+    ("C", "        contentBoundaryFlux_ = bookedFlux;\n",
+     "        bookedFlux -= 1e-9;\n        contentBoundaryFlux_ = bookedFlux;\n", 27),
+    ("C", "    const scalar contentOuterFlux = contentBoundaryFlux_;\n",
+     "    const scalar contentOuterFlux = 0.5*contentBoundaryFlux_;\n", 27),
 )
 
 

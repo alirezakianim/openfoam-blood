@@ -36,8 +36,13 @@ inline Increment<Scalar> acceptedIncrement
     Scalar N, Scalar theta, Scalar dt, Scalar lambda, Scalar Y, Scalar thetaMax
 )
 {
+    // S25 G (design 2026-10-10-S25 section 2G; stiffening 08 Q3): theta
+    // above thetaMax is a LEGAL state (compaction past the as-deposited
+    // packing) and is no longer an input error. Such a cell accepts no new
+    // deposit: its capacity below is zero. Bit-identical wherever theta <=
+    // thetaMax.
     if (!parametersValid(Y, thetaMax) || !std::isfinite(N) || N < 0
-        || !std::isfinite(theta) || theta < 0 || theta > thetaMax
+        || !std::isfinite(theta) || theta < 0
         || !std::isfinite(dt) || dt < 0 || !std::isfinite(lambda) || lambda < 0)
     {
         return {Scalar(0), false, false, "invalid transfer input (no state was clipped)"};
@@ -54,7 +59,9 @@ inline Increment<Scalar> acceptedIncrement
     {
         return {Scalar(0), false, false, "nonfinite reaction proposal"};
     }
-    const Scalar capacity = (thetaMax - theta)/Y;
+    // S25 G: the acceptance law, capacity = (cap - theta)_+/Y. It bounds
+    // the SOURCE (new deposit needs open pore space) and never writes theta.
+    const Scalar capacity = std::max(thetaMax - theta, Scalar(0))/Y;
     const bool capped = proposal > capacity;
     return {std::min(proposal, std::min(N, capacity)), capped, proposal > N, nullptr};
 }
@@ -66,11 +73,13 @@ inline Applied<Scalar> applyIncrement
 )
 {
     // Invalid input returns the original values; this function never commits
-    // a partial state. Callers must reject error != nullptr.
+    // a partial state. Callers must reject error != nullptr. S25 G: C + H
+    // above thetaMax is legal; dB <= capacity = (thetaMax - (C + H))_+/Y
+    // stays, so such a cell accepts exactly dB = 0.
     if (!parametersValid(Y, thetaMax) || !std::isfinite(N) || N < 0
         || !std::isfinite(C) || C < 0 || !std::isfinite(H) || H < 0
-        || C + H > thetaMax || !std::isfinite(dB) || dB < 0 || dB > N
-        || dB > (thetaMax - (C + H))/Y)
+        || !std::isfinite(dB) || dB < 0 || dB > N
+        || dB > std::max(thetaMax - (C + H), Scalar(0))/Y)
     {
         return {N, C, H, "invalid accepted transfer or component state"};
     }

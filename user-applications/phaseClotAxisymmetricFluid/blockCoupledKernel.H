@@ -97,6 +97,8 @@ extern "C"
     void MKL_Get_Version_String(char* buffer, int len);
     long long int MKL_Peak_Mem_Usage(int reset);
     int MKL_CBWR_Set(int);
+    int MKL_CBWR_Get(int);
+    int MKL_CBWR_Get_Auto_Branch(void);
 }
 
 namespace blockCoupled
@@ -1246,6 +1248,7 @@ static const char* const mklPinnedVersion = "2026.1";
 //- mkl_types.h and mkl_service.h values (the V22-2 compile asserts them).
 static const int mklCbwrAuto = 2;          // MKL_CBWR_AUTO
 static const int mklCbwrSuccess = 0;       // MKL_CBWR_SUCCESS
+static const int mklCbwrBranch = 1;        // MKL_CBWR_BRANCH (mkl_cbwr_get)
 static const int mklPeakMemEnable = 1;     // MKL_PEAK_MEM_ENABLE
 static const int mklPeakMem = 2;           // MKL_PEAK_MEM
 
@@ -1257,6 +1260,8 @@ typedef decltype(&::MKL_Get_Max_Threads) MklGetMaxThreadsFn;
 typedef decltype(&::MKL_Get_Version_String) MklGetVersionStringFn;
 typedef decltype(&::MKL_Peak_Mem_Usage) MklPeakMemUsageFn;
 typedef decltype(&::MKL_CBWR_Set) MklCbwrSetFn;
+typedef decltype(&::MKL_CBWR_Get) MklCbwrGetFn;
+typedef decltype(&::MKL_CBWR_Get_Auto_Branch) MklCbwrGetAutoBranchFn;
 
 
 //- S22 section 4: true when MKL's version string names the pinned version,
@@ -1296,6 +1301,81 @@ inline bool readSmallFile(const std::string& path, std::string& text)
         text.erase(text.size() - 1);
     }
     return !text.empty();
+}
+
+//- S25 section 12.2: the CPU's model and instruction-set flags, from the
+//  first "model name" and "flags" (x86) or "Features" (arm) lines of path
+//  (/proc/cpuinfo), each as ONE key=value token for PHASE_CLOT_S19_CONFIG:
+//  whitespace runs become '_' in the model and ',' in the flags. "none"
+//  where the file or the line is absent (not Linux). MKL's AUTO branch
+//  follows these flags, so B76-OFF compares two sessions only when they
+//  agree (design section 12.1).
+inline std::string cpuInfoToken(const std::string& v, const char sep)
+{
+    std::string out;
+    bool gap = false;
+    for (const char ch : v)
+    {
+        if (std::isspace(static_cast<unsigned char>(ch)))
+        {
+            gap = true;
+            continue;
+        }
+        if (gap && !out.empty())
+        {
+            out += sep;
+        }
+        gap = false;
+        out += ch;
+    }
+    return out.empty() ? std::string("none") : out;
+}
+
+inline void cpuIdentity
+(
+    std::string& model, std::string& flags,
+    const std::string& path = "/proc/cpuinfo"
+)
+{
+    model = "none";
+    flags = "none";
+    FILE* f = std::fopen(path.c_str(), "r");
+    if (!f)
+    {
+        return;
+    }
+    bool haveModel = false, haveFlags = false;
+    std::string line;
+    int ch = 0;
+    while (!(haveModel && haveFlags))
+    {
+        line.clear();
+        while ((ch = std::fgetc(f)) != EOF && ch != '\n')
+        {
+            line += char(ch);
+        }
+        const std::size_t colon = line.find(':');
+        if (colon != std::string::npos)
+        {
+            const std::string key = cpuInfoToken(line.substr(0, colon), ' ');
+            const std::string value = line.substr(colon + 1);
+            if (!haveModel && key == "model name")
+            {
+                model = cpuInfoToken(value, '_');
+                haveModel = true;
+            }
+            else if (!haveFlags && (key == "flags" || key == "Features"))
+            {
+                flags = cpuInfoToken(value, ',');
+                haveFlags = true;
+            }
+        }
+        if (ch == EOF)
+        {
+            break;
+        }
+    }
+    std::fclose(f);
 }
 
 inline bool parseNonNegative(const std::string& s, long& v)
@@ -1474,9 +1554,13 @@ private:
     MklGetVersionStringFn getVersionString_;
     MklPeakMemUsageFn peakMemUsage_;
     MklCbwrSetFn cbwrSet_;
+    MklCbwrGetFn cbwrGet_;
+    MklCbwrGetAutoBranchFn cbwrGetAutoBranch_;
     std::string path_, library_, version_;
     int threads_;
     int mklMaxThreads_;
+    int cbwrBranch_;
+    int cbwrAutoBranch_;
     void* pt_[64];
     int iparm_[64];
     int iparmIn_[64];
@@ -1541,8 +1625,9 @@ public:
         lib_(nullptr), pardiso_(nullptr), pardisoInit_(nullptr),
         setNumThreads_(nullptr), setDynamic_(nullptr),
         getMaxThreads_(nullptr), getVersionString_(nullptr),
-        peakMemUsage_(nullptr), cbwrSet_(nullptr), threads_(0),
-        mklMaxThreads_(0), live_(false), checked_(false), n_(-1), symbolicCount_(0),
+        peakMemUsage_(nullptr), cbwrSet_(nullptr), cbwrGet_(nullptr),
+        cbwrGetAutoBranch_(nullptr), threads_(0),
+        mklMaxThreads_(0), cbwrBranch_(-1), cbwrAutoBranch_(-1), live_(false), checked_(false), n_(-1), symbolicCount_(0),
         failedPhase_(0), irMax_(-1)
     {
         std::memset(pt_, 0, sizeof pt_);
@@ -1562,7 +1647,7 @@ public:
     }
 
     //- S22 sections 2.3, 2.5, 2.6: dlopen(path, RTLD_NOW | RTLD_LOCAL), the
-    //  eight entry points, CNR mode (mkl_cbwr_set(MKL_CBWR_AUTO), refused
+    //  ten entry points, CNR mode (mkl_cbwr_set(MKL_CBWR_AUTO), refused
     //  unless MKL_CBWR_SUCCESS) before any other MKL call when reproducible, the pinned
     //  version, mkl_set_dynamic(0) and mkl_set_num_threads(threads) once, the
     //  peak-memory counter, then pardisoinit and the benchmarked iparm.
@@ -1601,6 +1686,8 @@ public:
          || !symbol("MKL_Get_Version_String", getVersionString_, err)
          || !symbol("MKL_Peak_Mem_Usage", peakMemUsage_, err)
          || !symbol("MKL_CBWR_Set", cbwrSet_, err)
+         || !symbol("MKL_CBWR_Get", cbwrGet_, err)
+         || !symbol("MKL_CBWR_Get_Auto_Branch", cbwrGetAutoBranch_, err)
         )
         {
             return false;
@@ -1633,6 +1720,13 @@ public:
         setNumThreads_(threads);
         threads_ = threads;
         mklMaxThreads_ = getMaxThreads_();
+        // S25 section 12.2: the CNR setting in force after the set above
+        // (mkl_cbwr_get(MKL_CBWR_BRANCH)) and the code path AUTO selects on
+        // this CPU (mkl_cbwr_get_auto_branch), read once for
+        // PHASE_CLOT_S19_CONFIG: B76-OFF is comparable only between
+        // sessions on the same branch.
+        cbwrBranch_ = cbwrGet_(mklCbwrBranch);
+        cbwrAutoBranch_ = cbwrGetAutoBranch_();
         peakMemUsage_(mklPeakMemEnable);
         Dl_info di;
         library_ =
@@ -1658,6 +1752,8 @@ public:
     long symbolicCount() const { return symbolicCount_; }
     int threads() const { return threads_; }
     int mklMaxThreads() const { return mklMaxThreads_; }
+    int cbwrBranch() const { return cbwrBranch_; }
+    int cbwrAutoBranch() const { return cbwrAutoBranch_; }
     const std::string& version() const { return version_; }
     const std::string& library() const { return library_; }
 

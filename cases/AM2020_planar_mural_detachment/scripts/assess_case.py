@@ -2757,6 +2757,505 @@ def s19b_mesh_cells(case: Path | None) -> int | None:
     return None
 
 
+# S25 build 1 (design 2026-10-10-S25 section 12; solver-engineer report 05): the REPORT-ONLY readers of the
+# four new log lines. Nothing here gates a child, so no verdict, status or admissibility can depend on it; the
+# gates are written when the BATCH 76 pre-registration names their thresholds.
+#   PHASE_CLOT_DT       every step: deltaT, the 7 limits (dtFluidCo dtWave dtKV dtCarrier dtNetDiff dtMax dtGrowth),
+#                       binder=<fluidCo|wave|KV|carrier|netDiff|max|growth|writeAlign>, netDiffForm, threads, netDiff*
+#   PHASE_CLOT_LAMBDA   every step: G, clotCells, lambdaClot, lambdaDom (each `none` when undefined)
+#   PHASE_CLOT_S25_R1   `seed=eRead|eFromW eAbsMax=` once, then `time= eAbsMax= depositBooked=` per step
+#   PHASE_CLOT_FREEPLATELET  contentOverCapCells= contentOverCapMax=  (and depositionContentCap= on the _CONFIG line)
+# A limit the solver prints as `great` (1e+300) is no limit and is skipped in the minima.
+# S25 build 2 (solver-engineer report 07; design sections 3A, 12.1, 12.2) adds three readers, all in s25_report:
+#   PHASE_CLOT_DT dtKVTangent=   the Kelvin-Voigt limit on the TANGENT modulus (logged, never applied: NOT one of the
+#                                7 limits, so it is not in the minima or the binder) -> dt["dt_kv_tangent"]
+#   PHASE_CLOT_S25_F3            time cells stiffNonPositive rMax rCell kc stiffGamma, per step (kc = k_true, stiffGamma = k_used,
+#                                at the worst cell; rMax = max k_true/k_used): GATE F3 (design 3A):
+#                                FAIL if max r > S25_F3_R_MAX or stiffNonPositive > 0 -> out["f3"]["verdict"], out["gates"]["F3"]
+#   PHASE_CLOT_S19_CONFIG        mklCbwrBranch mklCbwrAutoBranch cpuModel cpuFlags -> out["cpu"]; a PAIRED comparison
+#                                is VOID when the two arms' cpu identity differs (design 12.1): s25_pair_status()
+# A gate here is a verdict string on the child's s25 report and is summarised in result.json; it does NOT alter a child's
+# `admissible` (F3 is logged on the shipped path too, and a legacy child must not change its admissibility).
+S25_DT_LIMITS = ("dtFluidCo", "dtWave", "dtKV", "dtCarrier", "dtNetDiff", "dtMax", "dtGrowth")
+S25_GREAT = 1e299
+# F3 (design 3A, numerics 07 finding 6): the BSD pair is neutrally stable while r s/(1 + s) <= 4 with r = k_true/k_used
+# (build 3: k_used is the kEff Gamma_t was built from, k_true mixes the law's true tangent with the same shares; the log's
+# kc= is k_true and stiffGamma= is k_used);
+# FAIL on max r > 4. The solver prints r with Foam's default 6 significant digits, so a true r within 5e-7 relative of 4
+# can print as 4: that is below the instrument's resolution and no gate here can see it.
+S25_F3_R_MAX = 4.0
+S25_CPU_KEYS = ("mklCbwrBranch", "mklCbwrAutoBranch", "cpuModel", "cpuFlags")
+
+
+def s25_f3_report(records: list) -> dict:
+    """GATE F3 from the PHASE_CLOT_S25_F3 records (each a dict of strings). Verdict:
+    FAIL         any rMax above S25_F3_R_MAX, or any rMax that is nan/inf (a non-finite ratio is not below 4), or ANY record
+                 with stiffNonPositive > 0 (CE ruling 2026-10-10 on case-engineer 09a's hand-off: both laws give stiff > 0 by
+                 construction, LT tau-hat' in [2, 49.7] and NH b1 > 0, so a cell with stiff <= 0 is a defect, and excluding it
+                 from rMax would hide the very thing the gate exists to catch; this holds even when rMax is `none`);
+    UNASSESSABLE no FAIL, but a record whose rMax is neither `none` nor a number, or whose stiffNonPositive is missing or not
+                 a finite number (a truncated token: never read as a prefix);
+    PASS         at least one rMax value, all <= S25_F3_R_MAX, every stiffNonPositive 0;
+    None         no record, or every record `rMax=none` with stiffNonPositive 0 (no cell with Gamma_t > 0: the gate does not
+                 apply).
+    population_complete is False when any record counted a cell whose stiff was not > 0 (that cell is in `cells` but cannot
+    be in rMax: the maximum is then over the survivors); the verdict is FAIL in that case, so the flag only says why."""
+    vals, nonfinite, unparseable, none_records = [], 0, 0, 0
+    for r in records:
+        tok = r.get("rMax")
+        if tok is None:
+            unparseable += 1
+        elif tok == "none":
+            none_records += 1
+        else:
+            try:
+                x = float(tok)
+            except ValueError:
+                unparseable += 1
+                continue
+            if math.isfinite(x):
+                vals.append(x)
+            else:
+                nonfinite += 1
+
+    def count(key):
+        out = []
+        for r in records:
+            try:
+                x = float(r.get(key))
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(x):
+                out.append(x)
+        return out
+    cells, bad = count("cells"), count("stiffNonPositive")
+    stiff_unparseable = len(records) - len(bad)
+    r_max = max(vals) if vals else None
+    if nonfinite or (r_max is not None and r_max > S25_F3_R_MAX) or (bad and max(bad) > 0):
+        verdict = "FAIL"
+    elif unparseable or stiff_unparseable:
+        verdict = "UNASSESSABLE"
+    elif vals:
+        verdict = "PASS"
+    else:
+        verdict = None
+    return {
+        "records": len(records), "r_max_threshold": S25_F3_R_MAX, "r_max_max": r_max,
+        "r_max_last": vals[-1] if vals else None, "records_with_r": len(vals), "records_r_none": none_records,
+        "nonfinite_records": nonfinite, "unparseable_records": unparseable + stiff_unparseable,
+        "cells_max": max(cells) if cells else None,
+        "stiff_non_positive_max": max(bad) if bad else None,
+        "population_complete": (max(bad) == 0 if bad else None),
+        "verdict": verdict,
+    }
+
+
+def s25_pair_status(identities: dict) -> dict:
+    """Design 12.1: a paired comparison is bitwise-comparable ONLY if both arms ran on the same CPU model with the same ISA
+    flags (and so the same MKL code path). `identities` maps arm -> the s25 report's `cpu` dict (or None).
+    VOID        two arms with a recorded identity differ in cpuModel, cpuFlags, mklCbwrBranch or mklCbwrAutoBranch: the
+                comparison is void, not failed, and is rerun (design 12.1);
+    UNVERIFIED  no VOID, but an arm has no cpuModel/cpuFlags on record (an old binary, `none`, or no log): sameness is
+                not shown, and absence is not equality;
+    SAME_CPU    every arm has an identity and all four keys agree."""
+    arms = sorted(identities)
+    have = {a: i for a, i in identities.items()
+            if i and all(i.get(k) not in (None, "none") for k in ("cpuModel", "cpuFlags"))}
+    differ = [k for k in S25_CPU_KEYS if len({(i or {}).get(k) for i in have.values()}) > 1]
+    if len(have) >= 2 and differ:
+        status = "VOID"
+    elif len(have) < len(arms):
+        status = "UNVERIFIED"
+    else:
+        status = "SAME_CPU"
+    return {"arms": arms, "status": status, "differing_keys": differ if len(have) >= 2 else [],
+            "arms_without_identity": [a for a in arms if a not in have],
+            "identities": {a: identities[a] for a in arms}}
+
+
+def s25_pair_report(children: dict, controls: dict) -> list:
+    """One entry per pair of the controls' top-level `s25_paired_comparisons` ([{pair_id, arms: [child_id, ..]}]).
+    A pair whose arms are ALL children of this assessment gets its s25_pair_status, read from each arm's s25 report.
+    A pair with an arm that is not a child of this assessment (arms run one per session, so one assessment holds one arm, and
+    an unrelated batch holds none) gets status ARMS_NOT_IN_THIS_RUN with the absent arms listed: it is neither compared nor an
+    error, because the controls file is read by every session and a pair registered for B76 must not stop the assessment of a
+    session that runs other children. The CPU identity of such a pair is then compared across the sessions' own
+    results by whoever compares the arms. That an arm is a child at all is refused at generation (create_cases.py
+    s25_pairs_refusal)."""
+    out = []
+    for entry in controls.get("s25_paired_comparisons", []):
+        arms = entry["arms"]
+        absent = [a for a in arms if a not in children]
+        if absent:
+            out.append({"pair_id": entry["pair_id"], "arms": sorted(arms), "status": "ARMS_NOT_IN_THIS_RUN",
+                        "arms_absent": sorted(absent), "differing_keys": [], "arms_without_identity": [], "identities": {}})
+            continue
+        res = s25_pair_status({a: (children[a].get("s25") or {}).get("cpu") for a in arms})
+        res["pair_id"] = entry["pair_id"]
+        out.append(res)
+    return out
+
+
+# ---------------------------------------------------------------------------------------------------------------------------------
+# S25 B76-RT: RT-1, the restart test (design 2026-10-10-S25-arteriole-bundle rev. 2.2 section 7 B76-RT and 2C; numerics 01 Q1).
+# Two children of ONE session (the controls' top-level `s25_rt1_pairs`): A, a cold start that writes a full directory at every step
+# up to S = N0 + 5, and B, which restarts from A's step N0 and runs to S. Everything is read from the children's directories:
+#   RT-1a  m = max|theta_B - theta_A| at step N0+1 / max|theta_A(N0+1) - theta_A(N0)|, theta = thetaC + thetaH (solver .C L16500);
+#          PASS if m < 1e-4; a denominator below 1e-8 (or not finite) is VOID, never PASS;
+#   RT-1b  the PHASE_CLOT_DT deltaT of steps N0+1..S agree to 1e-12 relative;
+#   RT-1c  every field of A's step-S directory exists in B's and agrees to 1e-8 relative (max|B-A| / max|A| per field; a field with
+#          max|A| = 0 must be exactly 0 in B), INCLUDING the pair's required_fields (thetaPendingB, thetaPendingP for 5a).
+# Preconditions (VOID when unmet): the directories and PHASE_CLOT_DT records the gates read exist; A is a cold start (state=seeded or no
+# restart line) and for a pair with needs_vs_nonzero max|Vs_A(N0)| > 0. B reporting state=seeded is a FAIL (the restart did not restore).
+RT1_M_GATE = 1e-4
+RT1_DENOMINATOR_MIN = 1e-8
+RT1_DT_REL = 1e-12
+RT1_FIELD_REL = 1e-8
+RT1_STEPS = 5
+RT1_DT_MIN_DIGITS = 13   # resolution of a 1e-12 relative gate: one decimal beyond it
+_RT1_NUM = re.compile(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?|[-+]?nan|[-+]?inf", re.I)
+_RT1_COMPONENTS = {"scalar": 1, "label": 1, "vector": 3, "symmTensor": 6, "tensor": 9, "sphericalTensor": 1}
+_RT1_DT = re.compile(r"^PHASE_CLOT_DT step=(\d+) time=\S+ deltaT=(\S+)", re.M)
+
+
+def rt1_read_field(path: Path):
+    """(kind, n, flat floats) of a volField's internalField, or None if the file is not a field. n is None for `uniform`.
+    boundaryField is not read (a derived/boundary value is recomputed from the internal field)."""
+    text = path.read_text(errors="replace")
+    if "FoamFile" not in text[:400] or not re.search(r"class\s+(?:vol|surface|point)\w*Field\s*;", text[:800]):
+        return None
+    m = re.search(r"internalField\s+uniform\s+([^;]*);", text)
+    if m:
+        vals = [float(x) for x in _RT1_NUM.findall(m.group(1))]
+        return ("uniform", None, vals)
+    m = re.search(r"internalField\s+nonuniform\s+List<(\w+)>\s*(\d+)\s*\(", text)
+    if not m or m.group(1) not in _RT1_COMPONENTS:
+        raise ValueError(f"{path.name}: internalField is neither uniform nor a nonuniform List of a known kind")
+    kind, n = m.group(1), int(m.group(2))
+    need = n * _RT1_COMPONENTS[kind]
+    vals = []
+    for tok in _RT1_NUM.finditer(text, m.end()):
+        vals.append(float(tok.group(0)))
+        if len(vals) == need:
+            break
+    if len(vals) != need:
+        raise ValueError(f"{path.name}: internalField holds {len(vals)} numbers, expected {need}")
+    return (kind, n, vals)
+
+
+def rt1_full_dirs(case: Path) -> dict:
+    """{timeIndex: directory} of the case's FULL writes: a directory with a w field and a uniform/time that gives its index."""
+    out = {}
+    if not case.is_dir():
+        return out
+    for d in case.iterdir():
+        if not d.is_dir() or not (d / "w").is_file() or not (d / "uniform" / "time").is_file():
+            continue
+        m = re.search(r"(?m)^\s*index\s+(\d+)\s*;", (d / "uniform" / "time").read_text(errors="replace"))
+        if m:
+            out[int(m.group(1))] = d
+    return out
+
+
+def rt1_dt(log: Path) -> dict:
+    """{step: deltaT as printed} from the PHASE_CLOT_DT records (absolute time index)."""
+    if not log.is_file():
+        return {}
+    return {int(s): d for s, d in _RT1_DT.findall(log.read_text(errors="replace"))}
+
+
+def rt1_restart_state(log: Path):
+    if not log.is_file():
+        return None
+    m = re.search(r"^PHASE_CLOT_S25_RESTART state=(\w+)", log.read_text(errors="replace"), re.M)
+    return m.group(1) if m else None
+
+
+def rt1_max_abs(vals) -> float:
+    return max((abs(v) for v in vals), default=0.0)
+
+
+def rt1_theta(d: Path):
+    c, h = rt1_read_field(d / "thetaC"), rt1_read_field(d / "thetaH")
+    if c is None or h is None:
+        raise ValueError(f"{d.name}: thetaC or thetaH is not a readable field")
+    if len(c[2]) != len(h[2]):
+        raise ValueError(f"{d.name}: thetaC and thetaH differ in size ({len(c[2])} against {len(h[2])})")
+    return [x + y for x, y in zip(c[2], h[2])]
+
+
+def rt1_pair(a: Path, b: Path, entry: dict, a_log: str = "log.phaseClotAxisymmetricFluid") -> dict:
+    n0, steps = int(entry["n0"]), RT1_STEPS
+    s_end = n0 + steps
+    void: list = []
+    fail: list = []
+    res: dict = {"pair_id": entry["pair_id"], "a": entry["a"], "b": entry["b"], "n0": n0, "stop_step": s_end, "gates": {}}
+    da, db = rt1_full_dirs(a), rt1_full_dirs(b)
+    dta, dtb = rt1_dt(a / a_log), rt1_dt(b / a_log)
+    sa, sb = rt1_restart_state(a / a_log), rt1_restart_state(b / a_log)
+    res["restart_state"] = {"A": sa, "B": sb}
+    res["last_step"] = {"A": max(dta) if dta else None, "B": max(dtb) if dtb else None}
+    res["full_write_steps"] = {"A": sorted(da)[:1] + sorted(da)[-1:] if da else [], "B": sorted(db)[:1] + sorted(db)[-1:] if db else []}
+    if sa == "restored":
+        void.append("A reports PHASE_CLOT_S25_RESTART state=restored: it was not a cold start")
+    if sb == "seeded":
+        fail.append("B reports PHASE_CLOT_S25_RESTART state=seeded: the restart did not read uniform/phaseClotState")
+    for what, have, need in (("A", da, (n0, n0 + 1, s_end)), ("B", db, (n0 + 1, s_end))):
+        missing = [i for i in need if i not in have]
+        if missing:
+            void.append(f"{what} has no full write at step(s) {missing} (a late stop may have purged step {n0}; the instrument is void, not passed)")
+    for what, have in (("A", dta), ("B", dtb)):
+        missing = [i for i in range(n0 + 1, s_end + 1) if i not in have]
+        if missing:
+            void.append(f"{what}'s log has no PHASE_CLOT_DT record for step(s) {missing}")
+    # ---- precondition: Vs != 0 at N0 (needs_vs_nonzero)
+    try:
+        vs = rt1_max_abs(rt1_read_field(da[n0] / "Vs")[2]) if n0 in da and (da[n0] / "Vs").is_file() else None
+    except (OSError, ValueError, TypeError) as error:
+        vs = None
+        if entry.get("needs_vs_nonzero"):
+            void.append(f"A's Vs at step {n0} is unreadable ({error})")
+    res["vs_max_abs_at_n0"] = vs
+    if entry.get("needs_vs_nonzero") and vs is not None and not vs > 0.0:
+        void.append(f"max|Vs| of A at step {n0} is 0: the skeleton has not moved, so the test does not exercise the moving-skeleton state")
+    if entry.get("needs_vs_nonzero") and vs is None:
+        void.append(f"A's Vs at step {n0} is absent: the precondition Vs != 0 cannot be checked")
+    # REPORTED, not gated: the pending contents the restart restores are the ones WRITTEN at N0. If they are all 0 there (no fibre is
+    # pending before damage onset) their persistence is satisfied trivially, and the report says so.
+    pend = {}
+    for nm in ("thetaPendingB", "thetaPendingP", "thetaPending"):
+        try:
+            pend[nm] = rt1_max_abs(rt1_read_field(da[n0] / nm)[2]) if n0 in da and (da[n0] / nm).is_file() else None
+        except (OSError, ValueError, TypeError):
+            pend[nm] = None
+    res["pending_max_abs_at_n0"] = pend
+    res["pending_persistence_exercised"] = bool(any(v for v in (pend.get("thetaPendingB"), pend.get("thetaPendingP"))))
+    # ---- RT-1a
+    g = {"threshold": RT1_M_GATE, "denominator_min": RT1_DENOMINATOR_MIN}
+    try:
+        if n0 in da and n0 + 1 in da and n0 + 1 in db:
+            t0, t1, tb = rt1_theta(da[n0]), rt1_theta(da[n0 + 1]), rt1_theta(db[n0 + 1])
+            if not len(t0) == len(t1) == len(tb):
+                raise ValueError("theta sizes differ between A(N0), A(N0+1) and B(N0+1)")
+            den = max(abs(y - x) for x, y in zip(t0, t1))
+            num = max(abs(y - x) for x, y in zip(t1, tb))
+            g.update(numerator=num, denominator=den)
+            if not (math.isfinite(den) and math.isfinite(num)) or not den >= RT1_DENOMINATOR_MIN:
+                g["status"] = "VOID"
+                g["reason"] = f"denominator {den!r} < {RT1_DENOMINATOR_MIN:g} (or not finite): the test cannot discriminate"
+                void.append(f"RT-1a: {g['reason']}")
+            else:
+                g["m"] = num / den
+                g["status"] = "PASS" if g["m"] < RT1_M_GATE else "FAIL"
+        else:
+            g["status"] = "VOID"
+            g["reason"] = "a directory RT-1a reads is missing"
+    except (OSError, ValueError) as error:
+        g["status"] = "VOID"
+        g["reason"] = str(error)
+        void.append(f"RT-1a: {error}")
+    res["gates"]["RT-1a"] = g
+    # ---- RT-1b
+    g = {"threshold_rel": RT1_DT_REL, "worst_rel": None}
+    rel = []
+    for i in range(n0 + 1, s_end + 1):
+        if i in dta and i in dtb:
+            x, y = float(dta[i]), float(dtb[i])
+            rel.append((abs(y - x) / abs(x) if x != 0 and math.isfinite(x) and math.isfinite(y) else math.inf, i))
+    if len(rel) == steps:
+        g["worst_rel"], g["worst_step"] = max(rel)
+        g["status"] = "PASS" if g["worst_rel"] <= RT1_DT_REL else "FAIL"
+        g["digits_printed"] = min(len(re.sub(r"[^0-9]", "", str(dta[i]).lower().split("e")[0]).lstrip("0")) for i in range(n0 + 1, s_end + 1))
+        if g["digits_printed"] < RT1_DT_MIN_DIGITS and g["status"] == "PASS":
+            # a 1e-12 relative gate is resolvable only if the log prints enough digits; a PASS below that is not evidence
+            g["status"] = "VOID"
+            g["reason"] = (f"the log prints {g['digits_printed']} significant digits of deltaT, fewer than {RT1_DT_MIN_DIGITS}: "
+                           f"a {RT1_DT_REL:g} relative difference is below its resolution")
+    else:
+        g["status"] = "VOID"
+        g["reason"] = "fewer than 5 matched PHASE_CLOT_DT records"
+    res["gates"]["RT-1b"] = g
+    # ---- RT-1c
+    g = {"threshold_rel": RT1_FIELD_REL, "fields": 0, "worst": []}
+    if s_end in da and s_end in db:
+        names = sorted(str(p.relative_to(da[s_end])) for p in da[s_end].rglob("*") if p.is_file())
+        problems, worst = [], []
+        required = list(entry.get("required_fields", []))
+        for rq in required:
+            for who, dd in (("A", da[s_end]), ("B", db[s_end])):
+                if not (dd / rq).is_file():
+                    problems.append(f"required field {rq} is absent from {who}'s step {s_end}")
+        for rel_name in names:
+            try:
+                fa = rt1_read_field(da[s_end] / rel_name)
+            except (OSError, ValueError) as error:
+                problems.append(f"{rel_name}: A's file is unreadable ({error})")
+                continue
+            if fa is None:
+                continue                                              # uniform/time, phaseClotState: not a field
+            g["fields"] += 1
+            pb = db[s_end] / rel_name
+            if not pb.is_file():
+                problems.append(f"{rel_name}: dropped (A has it at step {s_end}, B has not)")
+                continue
+            try:
+                fb = rt1_read_field(pb)
+            except (OSError, ValueError) as error:
+                problems.append(f"{rel_name}: B's file is unreadable ({error})")
+                continue
+            if fb is None or fa[0] != fb[0] or fa[1] != fb[1] or len(fa[2]) != len(fb[2]):
+                problems.append(f"{rel_name}: B's internalField is not the same kind and size as A's")
+                continue
+            if not all(math.isfinite(v) for v in fa[2] + fb[2]):
+                problems.append(f"{rel_name}: not finite")
+                continue
+            scale = rt1_max_abs(fa[2])
+            diff = max((abs(y - x) for x, y in zip(fa[2], fb[2])), default=0.0)
+            rel_err = (diff / scale) if scale > 0.0 else (0.0 if diff == 0.0 else math.inf)
+            worst.append((rel_err, rel_name))
+            if rel_err > RT1_FIELD_REL:
+                problems.append(f"{rel_name}: max|B-A|/max|A| = {rel_err:.3g} > {RT1_FIELD_REL:g}")
+        worst.sort(reverse=True)
+        g["worst"] = [{"field": n, "rel": r} for r, n in worst[:5]]
+        g["problems"] = problems[:20]
+        g["n_problems"] = len(problems)
+        g["required_fields"] = required
+        if g["fields"] == 0:
+            g["status"] = "VOID"
+            g["reason"] = f"A's step {s_end} holds no field"
+            void.append(f"RT-1c: {g['reason']}")
+        else:
+            g["status"] = "FAIL" if problems else "PASS"
+    else:
+        g["status"] = "VOID"
+        g["reason"] = f"step {s_end} directory missing in A or B"
+    res["gates"]["RT-1c"] = g
+    res["void_reasons"] = void
+    res["fail_reasons"] = fail
+    gate_status = [v["status"] for v in res["gates"].values()]
+    if void or "VOID" in gate_status:
+        res["status"] = "VOID"
+    elif fail or "FAIL" in gate_status:
+        res["status"] = "FAIL"
+    else:
+        res["status"] = "PASS"
+    return res
+
+
+def s25_rt1_report(runs: Path, children: dict, controls: dict) -> list:
+    """One entry per pair of the controls' `s25_rt1_pairs`. A pair with an arm that is not a child of this assessment gets
+    ARMS_NOT_IN_THIS_RUN (neither compared nor an error: every session reads the same controls)."""
+    out = []
+    for entry in controls.get("s25_rt1_pairs", []):
+        absent = sorted(c for c in (entry["a"], entry["b"]) if c not in children)
+        if absent:
+            out.append({"pair_id": entry["pair_id"], "status": "ARMS_NOT_IN_THIS_RUN", "arms_absent": absent})
+            continue
+        out.append(rt1_pair(runs / entry["a"], runs / entry["b"], entry))
+    return out
+
+
+def s25_report(text: str) -> dict:
+    """Report-only fields from PHASE_CLOT_DT, PHASE_CLOT_LAMBDA, PHASE_CLOT_S25_R1, PHASE_CLOT_S25_CONFIG,
+    PHASE_CLOT_S25_RESTART and contentOverCap* (on PHASE_CLOT_FREEPLATELET). Every field is None (or a zero
+    count) on a log from a binary that predates S25, so the report has the same shape on every child."""
+    def pairs(line: str) -> dict:
+        return dict(re.findall(r"(\w+)=(\S+)", line))
+
+    def num(v):
+        try:
+            x = float(v)
+        except (TypeError, ValueError):
+            return None
+        return x if math.isfinite(x) else None
+
+    def rows(prefix: str) -> list:
+        return [pairs(m) for m in re.findall(rf"^{prefix} (.*)$", text, re.M)]
+
+    out: dict = {}
+    cfg = re.search(r"^PHASE_CLOT_S25_CONFIG (.*)$", text, re.M)
+    out["config"] = pairs(cfg.group(1)) if cfg else None
+    restart = re.search(r"^PHASE_CLOT_S25_RESTART state=(\S+)", text, re.M)
+    out["restart_state"] = restart.group(1) if restart else None
+
+    dt = rows("PHASE_CLOT_DT")
+    binders: dict = {}
+    for r in dt:
+        binders[r.get("binder", "?")] = binders.get(r.get("binder", "?"), 0) + 1
+    minima = {}
+    for key in ("deltaT",) + S25_DT_LIMITS:
+        vals = [num(r.get(key)) for r in dt]
+        vals = [v for v in vals if v is not None and v < S25_GREAT]
+        minima[key] = min(vals) if vals else None
+    threads = sorted({int(t) for t in (num(r.get("threads")) for r in dt) if t is not None})
+    out["dt"] = {
+        "records": len(dt),
+        "binder_counts": binders,
+        "net_diff_forms": sorted({r["netDiffForm"] for r in dt if "netDiffForm" in r}),
+        "threads": threads,
+        "min": minima,
+        "net_diff_binds_steps": binders.get("netDiff", 0),
+    }
+    # dtKVTangent: logged on every step, never applied, not one of the 7 limits (so absent from `min` and the binder).
+    kvt = [(num(r.get("deltaT")), num(r.get("dtKVTangent"))) for r in dt if "dtKVTangent" in r]
+    kvt_live = [v for _d, v in kvt if v is not None and v < S25_GREAT]
+    out["dt"]["dt_kv_tangent"] = {
+        "records": len(kvt),
+        "min": min(kvt_live) if kvt_live else None,
+        # steps whose deltaT exceeded the tangent KV limit (the tangent modulus makes this limit tighter than dtKV on G0)
+        "steps_delta_t_above": sum(1 for d, v in kvt if d is not None and v is not None and v < S25_GREAT and d > v),
+    }
+
+    lam = rows("PHASE_CLOT_LAMBDA")
+    out["lambda"] = {"records": len(lam)}
+    for key, name in (("lambdaClot", "clot"), ("lambdaDom", "dom")):
+        vals = [num(r.get(key)) for r in lam]
+        live = [v for v in vals if v is not None]
+        out["lambda"][f"{name}_none_records"] = sum(1 for r in lam if r.get(key) == "none")
+        out["lambda"][f"{name}_max"] = max(live) if live else None
+        out["lambda"][f"{name}_last"] = live[-1] if live else None
+    out["lambda"]["G_last"] = num(lam[-1].get("G")) if lam else None
+
+    r1 = rows("PHASE_CLOT_S25_R1")
+    seed = [r for r in r1 if "seed" in r]
+    steps = [r for r in r1 if "seed" not in r]
+    e_abs = [num(r.get("eAbsMax")) for r in steps]
+    e_abs = [v for v in e_abs if v is not None]
+    booked = [num(r.get("depositBooked")) for r in steps]
+    booked = [v for v in booked if v is not None]
+    out["r1"] = {
+        "seed": seed[0]["seed"] if seed else None,
+        "seed_e_abs_max": num(seed[0].get("eAbsMax")) if seed else None,
+        "records": len(steps),
+        "e_abs_max_max": max(e_abs) if e_abs else None,
+        "e_abs_max_last": e_abs[-1] if e_abs else None,
+        "deposit_booked_last": booked[-1] if booked else None,
+        "deposit_booked_max": max(booked) if booked else None,
+    }
+
+    fp = [pairs(m) for m in re.findall(r"^PHASE_CLOT_FREEPLATELET (.*)$", text, re.M)
+          if not m.startswith("_") and "contentOverCapCells=" in m]
+    cells = [num(r.get("contentOverCapCells")) for r in fp]
+    cells = [v for v in cells if v is not None]
+    excess = [num(r.get("contentOverCapMax")) for r in fp]
+    excess = [v for v in excess if v is not None]
+    capcfg = re.search(r"^PHASE_CLOT_FREEPLATELET_CONFIG .*?\bdepositionContentCap=(\S+)", text, re.M)
+    out["content_over_cap"] = {
+        "records": len(fp),
+        "deposition_content_cap": num(capcfg.group(1)) if capcfg else None,
+        "cells_max": max(cells) if cells else None,
+        "records_with_cells": sum(1 for v in cells if v > 0),
+        # max over cells of (theta - cap): negative while every cell is below the cap
+        "excess_max": max(excess) if excess else None,
+    }
+    out["f3"] = s25_f3_report(rows("PHASE_CLOT_S25_F3"))
+    out["gates"] = {"F3": out["f3"]["verdict"]}
+    s19cfg = re.search(r"^PHASE_CLOT_S19_CONFIG (.*)$", text, re.M)
+    s19kv = pairs(s19cfg.group(1)) if s19cfg else {}
+    out["cpu"] = {k: s19kv.get(k) for k in S25_CPU_KEYS}
+    return out
+
+
 def s19_report(text: str, spec: dict | None = None, case: Path | None = None) -> dict:
     """S19 sections 7 and 12, read from PHASE_CLOT_S19 (one record per step):
     - G0 engagement: a record with mode=blockCoupled at every step (every
@@ -4829,6 +5328,13 @@ def assess_child(case: Path, spec: dict, controls: dict) -> dict:
         and math.isclose(max(times), spec["end_time_s"], rel_tol=1e-6)
     )
 
+    # S25 B76-RT: an RT-1 child stops by design after step stop_after_step (stopAfterStep, scripts/step_stop_watcher.py), not at its
+    # end_time_s (the backstop). It is complete when it exited 0, the log closed normally and PHASE_CLOT_DT reached that step.
+    if spec.get("stop_after_step") is not None:
+        steps = [int(s) for s in re.findall(r"^PHASE_CLOT_DT step=(\d+) ", text, re.M)]
+        completed = bool(exit_code == 0 and any(k in text for k in COMPLETED) and steps
+                         and max(steps) >= spec["stop_after_step"])
+
     # THE STEP-1 WATCHER (design 2026-10-02-case-free-shell-throat, rev. 3,
     # S7.3b/04 #2). watcher-stop.txt is written by clot_free_watcher.py, NOT
     # by Allrun, so it survives Allrun:155's run-exit-code.txt overwrite and
@@ -5047,6 +5553,8 @@ def assess_child(case: Path, spec: dict, controls: dict) -> dict:
         "s18": s18_report(text, spec) if "s18" in spec else None,
         "s18p": s18p_report(text, spec) if "s18p" in spec else None,
         "s19": s19_report(text, spec, case) if "s19" in spec else None,
+        # S25 build 1: report-only (no gate reads it).
+        "s25": s25_report(text),
         # Only the throat series has a throat. Everything else gets
         # None rather than a zero, so an absent measurement can never
         # be read as a measured absence of blockage.
@@ -6549,6 +7057,11 @@ def main() -> int:
         for c in children.values() if not c["admissible"]
     ]
 
+    # S25 build 2: the F3 gate per child and the paired-comparison identity status (report keys; `admissible` untouched).
+    s25_f3 = {cid: (c.get("s25") or {}).get("gates", {}).get("F3") for cid, c in children.items()}
+    s25_pairs = s25_pair_report(children, controls)
+    s25_rt1 = s25_rt1_report(runs, children, controls)
+
     result = {
         "case": "AM2020_planar_mural_detachment",
         "what_this_is": controls["_what_this_is_and_is_not"],
@@ -6556,6 +7069,10 @@ def main() -> int:
         "children_total": len(children),
         "children_admissible": len(admissible),
         "inadmissible": inadmissible,
+        "s25_f3_gate": s25_f3,
+        "s25_f3_failures": sorted(cid for cid, v in s25_f3.items() if v == "FAIL"),
+        "s25_paired": s25_pairs,
+        "s25_rt1": s25_rt1,
         "growth_vs_flow": growth_table(children, controls),
         "required_strength": required_strength_table(children),
         "deformation": deformation_table(children, controls),
@@ -6591,6 +7108,9 @@ def main() -> int:
     )
     print(json.dumps({
         "children_admissible": f"{len(admissible)}/{len(children)}",
+        "s25_f3_failures": result["s25_f3_failures"],
+        "s25_paired": {p["pair_id"]: p["status"] for p in s25_pairs},
+        "s25_rt1": {p["pair_id"]: p["status"] for p in s25_rt1},
         "growth_exponent": result["growth_vs_flow"]["flow_dependence"]["exponent"],
         "required_strength_rows": len(result["required_strength"]["rows"]),
         "demonstration": [

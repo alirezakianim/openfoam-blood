@@ -487,10 +487,18 @@ S22_KEYS = (
 # inside the child's subshell before foamRun and which prepends that directory to
 # LD_LIBRARY_PATH. It is never a dictionary key. name -> (the environment variable the
 # runner exports, what the library is, the design section that asks for it).
+#   "baseline" (S25 section 7, B76-OFF-A; tag release-e2a57db1 = digest-6758ccf99eb4, the release BEFORE S25): the
+#   do-nothing control binary. Unlike s22 and p2prime it IS the S23 build (R3 required, sensitivity_limit and
+#   volumetric_tear_ratio read), so s23_build_refusal treats it as one; like them it predates S25, so it never reads
+#   timeScale or the LT keys (S25_TIME_SCALE_UNIT_LIBRARIES, S25_LT_UNREAD_LIBRARIES). The dictionaries are the S25 build's,
+#   timeScale included: the baseline source has no read of it and no key-iterating refusal (docket 20261010-0056 report 11).
 SOLVER_LIBRARIES = {
     "p2prime": ("PHASE_CLOT_P2PRIME_LIBBIN", "P2-prime", "S22 section 7, arm A0"),
     "s22": ("PHASE_CLOT_S22_LIBBIN", "S22 reference", "S23 section 7, arm (1')"),
+    "baseline": ("PHASE_CLOT_BASELINE_LIBBIN", "baseline (release-e2a57db1)", "S25 section 7, B76-OFF-A"),
 }
+# The libraries that run the S23 build's physics (the S23 refusals apply to a child pinned to one of these as to an unpinned child).
+S23_BUILD_LIBRARIES = (None, "baseline")
 SOLVER_LIBRARY_FILE = "libphaseClotAxisymmetricFluid.so"
 
 
@@ -632,11 +640,400 @@ S23_SENSITIVITY_VALUES = ("tanDelta0",)
 S23_TAU_V_FLOOR_S = 5e-4
 
 
+# S25 section 2F (research/designs/2026-10-10-S25-arteriole-bundle.md rev. 2, APPROVED by Alireza
+# 2026-10-10; numerics 01 Q4): TIME-UNIT SCALING. time_scale is S_t = t_sim/t_phys and is REQUIRED on
+# every child (no default: a missing key is refused here, and the solver FatalErrors on a missing
+# timeScale where a physical-time consumer is active). tau_v_s and network_release_time_s stay in
+# PHYSICAL seconds in the controls; the dictionary carries S_t times them, and the tau_v floor is the
+# solver's own `timeScale*5e-4`. A legacy child states 1.0 and its numbers do not move (x*1.0 == x).
+# The solver libraries that predate S25 (solver_library s22, p2prime) never read timeScale, so a
+# non-unit value there would be silently inert and is refused.
+S25_TIME_SCALE_UNIT_LIBRARIES = ("s22", "p2prime", "baseline")
+# S25 section 2C (numerics 01 finding 5, Q1(d)): every generated controlDict writes 17 significant
+# digits, the round-trip-exact width of a double. At 12 a restored field carries ~5e-13 relative noise
+# and the first step of a restart starts from that seed. The bytes grow by AT MOST 27.4% (measured on
+# D75's 0.04/: 1,609,206 of 2,254,528 numeric tokens have >= 11 significant digits, +5 characters each,
+# over 29,334,195 bytes; a token that is already short does not grow), so the output budget guard below
+# prices a time directory at that factor.
+S25_WRITE_PRECISION = 17
+S25_WRITE_PRECISION_BYTES_FACTOR = 1.274
+
+
+def restart_contract_refusal(control: Path, child_id: str) -> None:
+    """S25 section 2C on the WRITTEN controlDict, for every child: the generator starts a child with
+    `startFrom startTime` (restart_driver.py edits it to name the last full write) and never with
+    latestTime, which after an unclean stop lands on a frame directory that holds no w (MUST_READ), and
+    every controlDict is at writePrecision S25_WRITE_PRECISION. Read back from the file, not from the
+    constants that wrote it."""
+    text = re.sub(r"//[^\n]*", "", control.read_text())
+    started = re.findall(r"(?m)^\s*startFrom\s+([^;\s]+)\s*;", text)
+    if started != ["startTime"]:
+        raise ValueError(
+            f"{child_id}: controlDict startFrom {started!r}: a child starts from startTime; latestTime would "
+            f"restart from a frame directory that holds no w (S25 section 2C; restart_driver.py names the "
+            f"last full write).")
+    precision = re.findall(r"(?m)^\s*writePrecision\s+([^;\s]+)\s*;", text)
+    if precision != [str(S25_WRITE_PRECISION)]:
+        raise ValueError(
+            f"{child_id}: controlDict writePrecision {precision!r}, not {S25_WRITE_PRECISION} "
+            f"(S25 section 2C).")
+
+
+def time_scale_of(child: dict) -> float:
+    """S_t of a CONTROLS entry, validated. Raises (ValueError) when the key is missing, is not a
+    number, is not finite or is not positive. Every writer and checker of a physical time reads it
+    through here, so there is exactly one reading."""
+    cid = child.get("child_id", "?")
+    if "time_scale" not in child:
+        raise ValueError(
+            f"{cid}: time_scale is missing. Every child states S_t = t_sim/t_phys explicitly "
+            f"(a legacy series states 1.0); there is no default, because the solver's networkReleaseTime "
+            f"and networkViscosityTau are physical seconds that scale with it (S25 section 2F).")
+    _s = child["time_scale"]
+    if isinstance(_s, bool) or not isinstance(_s, (int, float)) or not math.isfinite(_s) or not _s > 0:
+        raise ValueError(
+            f"{cid}: time_scale {_s!r} must be a finite number > 0 (S_t = t_sim/t_phys; S25 section 2F).")
+    return float(_s)
+
+
+def s25_gamma_written(physical_1_s: float, time_scale: float) -> float:
+    """S25 section 12 item 3 (rev. 2.1): gammaLow and gammaHigh are PHYSICAL shear rates (1/s: the Shankar 2022
+    shear-enhancement ramp of adhesionSpeed = k0*enh, read at the solver's gammaLow/gammaHigh sites), so in a
+    dictionary whose time is S_t times physical they are phys/S_t. S_t = 1.0 returns the controls value itself
+    (no division), so every legacy dictionary is unchanged to the byte."""
+    return physical_1_s if time_scale == 1.0 else physical_1_s / time_scale
+
+
+def s25_gamma_refusal(props: Path, child_id: str, growth: dict, time_scale: float) -> None:
+    """S25 section 12 item 3, on the WRITTEN dictionary (read back, not from the expression that wrote it): a
+    child at S_t != 1 whose gammaLow or gammaHigh is the physical value, or any other number than phys/S_t,
+    is refused. They are inert at k0 = 0 and would therefore pass every other check unscaled, then move the
+    enhancement ramp by a factor S_t the day k0 > 0 (the 5a children)."""
+    text = re.sub(r"//[^\n]*", "", props.read_text())
+    for key, controls_key in (("gammaLow", "gammaLow_1_s"), ("gammaHigh", "gammaHigh_1_s")):
+        written = re.findall(rf"(?m)^\s*{key}\s+([^;\s]+)\s*;", text)
+        if len(written) != 1:
+            raise ValueError(f"{child_id}: {key} is written {len(written)} times in phaseClotProperties, not once "
+                             f"(S25 section 12 item 3).")
+        want = s25_gamma_written(float(growth[controls_key]), time_scale)
+        try:
+            got = float(written[0])
+        except ValueError:
+            got = float("nan")
+        if got != want:
+            raise ValueError(
+                f"{child_id}: {key} {written[0]} is not the physical {growth[controls_key]!r} 1/s divided by "
+                f"time_scale {time_scale!r} (= {want!r}): a shear rate is 1/time, so it scales as 1/S_t "
+                f"(S25 section 12 item 3).")
+
+
+def s25_time_scale_refusal(child: dict) -> None:
+    """S25 section 2F on the CONTROLS entry, for EVERY child."""
+    _s = time_scale_of(child)
+    _lib = child.get("solver_library")
+    if _lib in S25_TIME_SCALE_UNIT_LIBRARIES and _s != 1.0:
+        raise ValueError(
+            f"{child['child_id']}: time_scale {_s!r} on solver_library {_lib}: that library predates S25 "
+            f"and never reads timeScale, so the scaling would be silently inert; a child pinned to it "
+            f"states time_scale 1.0 (S25 section 2F).")
+
+
+# S25 build 2 (design 2026-10-10-S25 sections 2A, 3A, 5; solver-engineer report 07): the Valanis-Landel trilinear law (LT)
+# as a per-child OPTION. Child keys (all optional; an absent skeleton_law is the shipped law and nothing is written, so every
+# earlier dictionary is byte-identical):
+#   skeleton_law            "shipped" | "valanisLandelTrilinear"          -> skeletonLaw
+#   skeleton_law_coeffs     {"E1_pa","E2_pa","D1","D2","kappa"}, all five  -> skeletonLawCoeffs {E1 E2 D1 D2 kappa}
+#                           (E1, E2 in Pa; D1, D2, kappa dimensionless). Read ONLY under LT.
+#   elastic_courant_modulus "constant" | "tangent"                        -> elasticCourantModulus
+#                           (the solver's default is tangent under LT; the generator WRITES it under LT so the dictionary
+#                           states the wave-CFL modulus; "tangent" under the shipped law is refused: it would move the wave
+#                           CFL off G0 and break F1)
+# G and networkPressureCoeff are DERIVED from E1 and kappa, each from ONE float: G = 0.5*E1 and networkPressureCoeff = kappa.
+# The solver holds ONE modulus G0 = E1/2 and K0 = kappa*G0 = networkPressureCoeff*gD*G at s'(1), and refuses G != E1/2 and
+# networkPressureCoeff != kappa exactly (.C: "G must be stated and equal E1/2", "networkPressureCoeff must be stated and equal
+# skeletonLawCoeffs kappa"). A child that also states G_pa or network_pressure_coeff is accepted only when it equals the derived
+# value exactly (a second copy of one number); the written value is the derived one either way. Halving is exact in binary, and
+# repr() of a float round-trips, so the solver's `!=` sees the same double.
+S25_LT = "valanisLandelTrilinear"
+S25_SKELETON_LAWS = ("shipped", S25_LT)
+S25_LT_COEFFS = (("E1_pa", "E1"), ("E2_pa", "E2"), ("D1", "D1"), ("D2", "D2"), ("kappa", "kappa"))
+S25_COURANT_MODULI = ("constant", "tangent")
+S25_LT_CHILD_KEYS = ("skeleton_law", "skeleton_law_coeffs", "elastic_courant_modulus")
+# solver_library pins that predate build 2 (they never read these keys)
+S25_LT_UNREAD_LIBRARIES = ("s22", "p2prime", "baseline")
+
+
+def s25_is_lt(child: dict) -> bool:
+    return child.get("skeleton_law", "shipped") == S25_LT
+
+
+def s25_lt_coeffs(child: dict) -> dict:
+    """The five LT numbers of a CONTROLS entry as floats keyed by the dictionary names (E1 E2 D1 D2 kappa)."""
+    c = child["skeleton_law_coeffs"]
+    return {dk: float(c[ck]) for ck, dk in S25_LT_COEFFS}
+
+
+def s25_g_pa(child: dict) -> float:
+    """The G written to phaseClotProperties: 0.5*E1 under LT (ONE float), else the child's G_pa untouched."""
+    return 0.5 * s25_lt_coeffs(child)["E1"] if s25_is_lt(child) else child["G_pa"]
+
+
+def s25_network_pressure_coeff(child: dict) -> float:
+    """The networkPressureCoeff written: kappa under LT (ONE float), else the child's value (default 1.0)."""
+    return s25_lt_coeffs(child)["kappa"] if s25_is_lt(child) else float(child.get("network_pressure_coeff", 1.0))
+
+
+def s25_skeleton_law_refusal(child: dict, spec: dict) -> None:
+    """S25 section 5 / solver-engineer 07 on the CONTROLS entry, for EVERY child. Mirrors the solver's config refusals so a
+    child carrying one fails here and not after a VM boot, plus the three the solver cannot see (an inert coeffs block under the
+    shipped law; the keys on a library that never reads them; a second, disagreeing copy of G or networkPressureCoeff)."""
+    cid = child["child_id"]
+    named = [k for k in S25_LT_CHILD_KEYS if k in child]
+    if "skeleton_law" in child:
+        _l = child["skeleton_law"]
+        if not isinstance(_l, str) or _l not in S25_SKELETON_LAWS:
+            raise ValueError(f"{cid}: skeleton_law {_l!r} is not one of {', '.join(S25_SKELETON_LAWS)} (S25 section 5).")
+    lt = s25_is_lt(child)
+    if named and child.get("solver_library") in S25_LT_UNREAD_LIBRARIES:
+        raise ValueError(
+            f"{cid}: {', '.join(named)} on solver_library {child['solver_library']}: that library predates S25 build 2 and "
+            f"never reads them, so the key would be silently inert (S25 section 5).")
+    if "skeleton_law_coeffs" in child and not lt:
+        raise ValueError(
+            f"{cid}: skeleton_law_coeffs is read only under skeleton_law {S25_LT}; under the shipped law the solver does not "
+            f"read skeletonLawCoeffs, so the block would be silently inert (S25 section 5).")
+    if "elastic_courant_modulus" in child:
+        _m = child["elastic_courant_modulus"]
+        if not isinstance(_m, str) or _m not in S25_COURANT_MODULI:
+            raise ValueError(f"{cid}: elastic_courant_modulus {_m!r} is not one of {', '.join(S25_COURANT_MODULI)} "
+                             f"(S25 section 3A).")
+        if _m == "tangent" and not lt:
+            raise ValueError(
+                f"{cid}: elastic_courant_modulus tangent is refused under the shipped law: the shipped wave CFL reads G0 and "
+                f"moving it would break F1 (S25 section 5). Use constant, or skeleton_law {S25_LT}.")
+    if not lt:
+        return
+    if spec.get("core_shell"):
+        raise ValueError(
+            f"{cid}: skeleton_law {S25_LT} with coreShell is refused: GField is a geometric blend of Gcore and G there, which "
+            f"one E1 cannot match (S25 sections 2A, 5; red team 04 change 10). Series {child['series']!r} has core_shell true.")
+    if "skeleton_law_coeffs" not in child:
+        raise ValueError(f"{cid}: skeleton_law {S25_LT} needs skeleton_law_coeffs {{E1_pa E2_pa D1 D2 kappa}}; it is missing "
+                         f"(S25 section 5: no default for any of them).")
+    c = child["skeleton_law_coeffs"]
+    want = [ck for ck, _dk in S25_LT_COEFFS]
+    if not isinstance(c, dict) or sorted(c) != sorted(want):
+        raise ValueError(
+            f"{cid}: skeleton_law_coeffs must hold exactly {', '.join(want)}; got "
+            f"{sorted(c) if isinstance(c, dict) else type(c).__name__} (a missing key is refused; an extra key would be "
+            f"silently inert).")
+    for ck in want:
+        v = c[ck]
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+            raise ValueError(f"{cid}: skeleton_law_coeffs {ck} {v!r} is not a finite number (S25 section 5).")
+    k = s25_lt_coeffs(child)
+    if not (k["E1"] > 0 and k["E2"] > 0):
+        raise ValueError(f"{cid}: skeleton_law_coeffs E1_pa {k['E1']!r}, E2_pa {k['E2']!r}: both moduli must be > 0 (S25 section 5).")
+    if not k["D1"] < k["D2"]:
+        raise ValueError(f"{cid}: skeleton_law_coeffs D1 {k['D1']!r} >= D2 {k['D2']!r}: D1 < D2 is required (S25 section 5).")
+    if not k["D1"] >= 0:
+        raise ValueError(f"{cid}: skeleton_law_coeffs D1 {k['D1']!r} < 0: the breaks 1 -+ D1 would invert and the tau table be "
+                         f"undefined (S25 section 5; the solver refuses it too).")
+    if not k["kappa"] > 0:
+        raise ValueError(f"{cid}: skeleton_law_coeffs kappa {k['kappa']!r} must be > 0: K0 = kappa*E1/2 is the bulk modulus of "
+                         f"the pole law, and kappa <= 0 removes or inverts it (generator-side; the solver only needs it finite).")
+    phi0 = child.get("skeleton_volume_fraction", 0.01)
+    if isinstance(phi0, bool) or not isinstance(phi0, (int, float)) or not math.isfinite(phi0) or not phi0 < 1:
+        raise ValueError(f"{cid}: skeleton_volume_fraction {phi0!r} must be < 1 under {S25_LT}: the network pole is 1 there and "
+                         f"phi0 >= 1 is refused (S25 section 5).")
+    for key, derived, what in (("G_pa", s25_g_pa(child), "0.5*E1_pa"),
+                               ("network_pressure_coeff", s25_network_pressure_coeff(child), "kappa")):
+        if key in child and child[key] != derived:
+            raise ValueError(
+                f"{cid}: {key} {child[key]!r} disagrees with {what} = {derived!r}: under {S25_LT} the value is derived from ONE "
+                f"float and the solver refuses any other (S25 sections 2A, 5). Omit {key}, or state exactly {derived!r}.")
+
+
+def s25_pairs_refusal(controls: dict) -> None:
+    """S25 section 12.1 on the CONTROLS file: the assessor marks a paired comparison VOID when its arms ran on different CPUs
+    (assess_case.py s25_pair_status); it reads the pairs from the top-level `s25_paired_comparisons`, a list of
+    {pair_id, arms}. Absent = no pairs. Refused here, before a run, so a typo cannot reach the assessment: a non-list, an entry
+    that is not exactly {pair_id, arms}, a repeated pair_id, fewer than two arms, a repeated arm, an arm that is not a child."""
+    if "s25_paired_comparisons" not in controls:
+        return
+    pairs = controls["s25_paired_comparisons"]
+    ids = {c["child_id"] for c in controls["children"]}
+    if not isinstance(pairs, list):
+        raise ValueError("s25_paired_comparisons must be a list of {pair_id, arms} (S25 section 12.1).")
+    seen = set()
+    for i, e in enumerate(pairs):
+        if not isinstance(e, dict) or sorted(e) != ["arms", "pair_id"]:
+            raise ValueError(f"s25_paired_comparisons[{i}] must hold exactly pair_id and arms (S25 section 12.1); "
+                             f"an extra key would be silently inert.")
+        if not isinstance(e["pair_id"], str) or not e["pair_id"] or e["pair_id"] in seen:
+            raise ValueError(f"s25_paired_comparisons[{i}] pair_id {e['pair_id']!r} must be a non-empty string, unique "
+                             f"(S25 section 12.1).")
+        seen.add(e["pair_id"])
+        arms = e["arms"]
+        if not isinstance(arms, list) or len(arms) < 2 or len(set(map(str, arms))) != len(arms):
+            raise ValueError(f"s25_paired_comparisons[{i}] ({e['pair_id']}) arms {arms!r} must be a list of at least two "
+                             f"distinct child_ids (S25 section 12.1).")
+        unknown = [a for a in arms if a not in ids]
+        if unknown:
+            raise ValueError(f"s25_paired_comparisons[{i}] ({e['pair_id']}) names {unknown}, which are not child_ids in "
+                             f"mainCaseControls.json (S25 section 12.1).")
+
+
+def s25_write_skeleton_law(props: Path, child: dict) -> None:
+    """Write skeletonLaw / skeletonLawCoeffs / elasticCourantModulus, ONLY for a child that names one of the three keys
+    (every other dictionary is byte-identical). G and networkPressureCoeff are written elsewhere from s25_g_pa and
+    s25_network_pressure_coeff."""
+    if not any(k in child for k in S25_LT_CHILD_KEYS):
+        return
+    if "skeleton_law" in child:
+        add_or_replace_entry(props, "skeletonLaw", child["skeleton_law"])
+    if s25_is_lt(child):
+        k = s25_lt_coeffs(child)
+        body = "".join(f"    {dk} {k[dk]!r};\n" for _ck, dk in S25_LT_COEFFS)
+        text = props.read_text()
+        props.write_text(text.rstrip("\n") + "\n\nskeletonLawCoeffs\n{\n" + body + "}\n")
+    if s25_is_lt(child) or "elastic_courant_modulus" in child:
+        add_or_replace_entry(props, "elasticCourantModulus", child.get("elastic_courant_modulus", "tangent"))
+
+
+def s25_skeleton_law_readback(props: Path, child: dict) -> None:
+    """On the WRITTEN dictionary (read back, not from the expressions that wrote it): the law keys appear exactly as the
+    child names them and no more, and under LT G == 0.5*E1 and networkPressureCoeff == kappa to the last bit."""
+    cid = child["child_id"]
+    text = re.sub(r"//[^\n]*", "", props.read_text())
+
+    def entries(key: str) -> list:
+        return re.findall(rf"(?m)^\s*{key}\s+([^;{{}}\s]+)\s*;", text)
+    blocks = re.findall(r"(?m)^\s*skeletonLawCoeffs\s*\{([^}]*)\}", text)
+    lt = s25_is_lt(child)
+    want_law = [child["skeleton_law"]] if "skeleton_law" in child else []
+    if entries("skeletonLaw") != want_law:
+        raise ValueError(f"{cid}: skeletonLaw written as {entries('skeletonLaw')!r}, the child names {want_law!r} "
+                         f"(S25 section 5).")
+    want_m = ([child.get("elastic_courant_modulus", "tangent")]
+              if (lt or "elastic_courant_modulus" in child) else [])
+    if entries("elasticCourantModulus") != want_m:
+        raise ValueError(f"{cid}: elasticCourantModulus written as {entries('elasticCourantModulus')!r}, expected {want_m!r} "
+                         f"(S25 section 3A).")
+    if len(blocks) != (1 if lt else 0) or len(re.findall(r"(?m)^\s*skeletonLawCoeffs\b", text)) != (1 if lt else 0):
+        raise ValueError(f"{cid}: skeletonLawCoeffs is written {len(blocks)} times; expected {1 if lt else 0} "
+                         f"(an inert block under the shipped law is refused; S25 section 5).")
+    if not lt:
+        return
+    got = {}
+    for k, v in re.findall(r"(?m)^\s*(\w+)\s+([^;\s]+)\s*;", blocks[0]):
+        got[k] = v
+    k = s25_lt_coeffs(child)
+    for dk in ("E1", "E2", "D1", "D2", "kappa"):
+        if dk not in got or float(got[dk]) != k[dk]:
+            raise ValueError(f"{cid}: skeletonLawCoeffs {dk} written as {got.get(dk)!r}, the child has {k[dk]!r} (S25 section 5).")
+    if sorted(got) != sorted(dk for _ck, dk in S25_LT_COEFFS):
+        raise ValueError(f"{cid}: skeletonLawCoeffs holds {sorted(got)!r}, not exactly E1 E2 D1 D2 kappa.")
+    for key, value, what in (("G", 0.5 * k["E1"], "E1/2"), ("networkPressureCoeff", k["kappa"], "kappa")):
+        w = entries(key)
+        if len(w) != 1 or float(w[0]) != value:
+            raise ValueError(f"{cid}: {key} written as {w!r}; under {S25_LT} it must be exactly {what} = {value!r}, once "
+                             f"(the solver refuses any other; S25 sections 2A, 5).")
+
+
+def s25_5a_refusal(child: dict, series: dict) -> None:
+    """B76-5a (design rev. 2.2 section 7), on the CONTROLS entries.
+    elastic_courant (-> elasticCourant, the wave-CFL coefficient; the solver's lookupOrDefault is 0.5) is read ONLY for the
+    5a series, and there it is required, so the value a run used is in its own dictionary and the dt/2 child differs from
+    its parent by exactly this key. The 5a series is the LT series at the S25 units: a child must name LT, and the series
+    must declare its plasma (rho_kg_m3 and nu_m2_s), which the writer copies into physicalProperties as well."""
+    cid = child["child_id"]
+    in5a = child["series"] in S25_5A_SERIES
+    if "elastic_courant" in child and not in5a:
+        raise ValueError(f"{cid}: elastic_courant is read only for the series {', '.join(S25_5A_SERIES)}; in "
+                         f"'{child['series']}' it would be silently inert.")
+    if not in5a:
+        return
+    if "elastic_courant" not in child:
+        raise ValueError(f"{cid}: a 5a child must state elastic_courant (0.5 tangent, 0.25 the dt/2 arm): the solver's "
+                         f"default must not decide the Richardson pair.")
+    x = child["elastic_courant"]
+    if isinstance(x, bool) or not isinstance(x, (int, float)) or not (math.isfinite(x) and 0.0 < x <= 1.0):
+        raise ValueError(f"{cid}: elastic_courant {x!r} must be a number in (0, 1]: 0 switches the wave CFL off "
+                         f"(.C L13003) and above 1 a shear wave crosses more than a cell per step.")
+    if not s25_is_lt(child):
+        raise ValueError(f"{cid}: series {child['series']!r} is the LT series; the child must name skeleton_law "
+                         f"{S25_LT} with its coefficients (S25 section 7, B76-5a).")
+    if "rho_kg_m3" not in series or "nu_m2_s" not in series:
+        raise ValueError(f"{cid}: series {child['series']!r} must declare rho_kg_m3 and nu_m2_s: the writer copies the "
+                         f"series' nu into constant/physicalProperties, which the momentum equation reads.")
+    wi = child.get("write_interval_s", series["write_interval_s"])
+    end = child.get("end_time_s", series["end_time_s"])
+    if not _is_multiple(end, wi):
+        raise ValueError(f"{cid}: end_time_s {end} is not a whole number of write intervals ({wi}); OpenFOAM-13 would "
+                         f"end the run without a full write.")
+
+
+def s25_5a_write(case: Path, props: Path, child: dict, series: dict) -> None:
+    """The 5a-only entry: elasticCourant in phaseClotProperties. (The plasma's nu in constant/physicalProperties is now
+    written for every series that declares one, by series_plasma_write: OI-76.)"""
+    if child["series"] not in S25_5A_SERIES:
+        return
+    add_or_replace_entry(props, "elasticCourant", repr(float(child["elastic_courant"])))
+
+
+def _scalar_entry(path: Path, key: str, cid: str) -> float:
+    """The one value of `key` in the WRITTEN dictionary `path` (dimensioned or bare; comments stripped)."""
+    got = re.findall(rf"(?m)^\s*{key}\s+(?:\[[^\]]+\]\s+)?([^;\s]+)\s*;", re.sub(r"//[^\n]*", "", path.read_text()))
+    if len(got) != 1:
+        raise ValueError(f"{cid}: {path.name} holds {key} {len(got)} times, expected once.")
+    return float(got[0])
+
+
+def s25_5a_readback(case: Path, props: Path, child: dict, series: dict) -> None:
+    """Read the 5a-only entry back from the WRITTEN file (not from the expression that wrote it)."""
+    if child["series"] not in S25_5A_SERIES:
+        return
+    if _scalar_entry(props, "elasticCourant", child["child_id"]) != float(child["elastic_courant"]):
+        raise ValueError(f"{child['child_id']}: elasticCourant written as {_scalar_entry(props, 'elasticCourant', child['child_id'])!r}, "
+                         f"the child has {child['elastic_courant']!r}.")
+
+
+def series_plasma_write(case: Path, series: dict) -> None:
+    """OI-76 (S25 section 12.8). A series that declares nu_m2_s (the Xu series, the 5a series) runs ITS plasma: the momentum equation
+    reads nu from constant/physicalProperties (the fluid module's viscosity model), while the Darcy drag reads nu and rho from
+    phaseClotProperties, which the props loop above writes. Until 2026-10-10 only phaseClotProperties was written, so every Xu run
+    solved momentum at the template's 3.3333e-6 while its drag used Xu's 3.902e-6 (OI-76: 14.6% low wall shear stress). A series
+    that declares no nu_m2_s is not touched (its physicalProperties stays the template's bytes). rho has NO physicalProperties
+    entry: the viscosity model reads nu only and the solver reads rho from phaseClotProperties (.C L687), so a rho key written
+    there would be silently inert; series_plasma_readback reads the phaseClotProperties rho against the series instead."""
+    if "nu_m2_s" not in series:
+        return
+    replace_entry(case / "constant" / "physicalProperties", "nu", repr(float(series["nu_m2_s"])))
+
+
+def series_plasma_readback(case: Path, props: Path, child: dict, series: dict, fixed: dict) -> None:
+    """OI-76, for EVERY child: nu in physicalProperties, nu in phaseClotProperties and rho in phaseClotProperties are read back from
+    the WRITTEN files and must equal the series' declared plasma (or material_fixed's where the series declares none): the two
+    nu are one number, the number the series says."""
+    cid = child["child_id"]
+    phys = case / "constant" / "physicalProperties"
+    want_nu = float(series.get("nu_m2_s", fixed["nu_m2_s"]))
+    want_rho = float(series.get("rho_kg_m3", fixed["rho_kg_m3"]))
+    nu_phys, nu_props = _scalar_entry(phys, "nu", cid), _scalar_entry(props, "nu", cid)
+    if nu_phys != want_nu or nu_props != want_nu:
+        raise ValueError(f"{cid}: nu is {nu_phys!r} in physicalProperties and {nu_props!r} in phaseClotProperties; the series says "
+                         f"{want_nu!r}. The two must be one number (OI-76: the momentum equation reads physicalProperties, the "
+                         f"drag reads phaseClotProperties).")
+    if _scalar_entry(props, "rho", cid) != want_rho:
+        raise ValueError(f"{cid}: rho is {_scalar_entry(props, 'rho', cid)!r} in phaseClotProperties; the series says {want_rho!r}.")
+
+
 def s23_build_refusal(child: dict) -> None:
     """Design section 13.2 item 4, on the CONTROLS entry, for EVERY child."""
     cid = child["child_id"]
     lib = child.get("solver_library")
-    s23_build = lib is None
+    s23_build = lib in S23_BUILD_LIBRARIES
     nv = str(child.get("network_viscosity", "none"))
     has_marker = "sensitivity_limit" in child
     if has_marker:
@@ -690,11 +1087,16 @@ def s23_build_refusal(child: dict) -> None:
                 f"{cid}: network_viscosity kelvinVoigt on the S23 build needs an explicit tau_v_s "
                 f"(the solver default 2.5e-4 s is below the {S23_TAU_V_FLOOR_S:g} s floor; "
                 f"S23 section 13.2 item 4).")
+        # S25 section 2F: the comparison is the solver's own, on the WRITTEN value: networkViscosityTau
+        # = S_t * tau_v_s against `timeScale * 5e-4`, both formed here exactly as the writer forms them.
+        _s = time_scale_of(child)
         _t = child["tau_v_s"]
-        if not (_t >= S23_TAU_V_FLOOR_S):
+        if not (_s * _t >= _s * S23_TAU_V_FLOOR_S):
             raise ValueError(
                 f"{cid}: tau_v_s {_t!r} is below the {S23_TAU_V_FLOOR_S:g} s floor of the S23 build "
-                f"(physics-assured 5e-4 and 1.5e-3 s; S23 section 13.2 item 4).")
+                f"(physics-assured 5e-4 and 1.5e-3 s; S23 section 13.2 item 4). At time_scale {_s!r} the "
+                f"written networkViscosityTau {_s * _t!r} is below the solver's floor "
+                f"timeScale x {S23_TAU_V_FLOOR_S:g} = {_s * S23_TAU_V_FLOOR_S!r} (S25 section 2F).")
 
 
 def kept_option_refusal(child: dict, core_shell: bool) -> None:
@@ -1064,6 +1466,20 @@ FSF_PARENT_PAIRS = (
     # under a NEW id (D74_refI stays as BATCH 74's record). Only the BUILD differs from BATCH 74's (the rupture
     # transfer and the emptying row); no dictionary key is added, read or refused for it.
     ("D75_refI", "S23v_G4_r3", set(), set()),
+    # B76-OFF (S25 design rev. 2.2 section 7, change 1 ADAPTED): P73_G4_r3_40's case to 30 ms by two binaries. B (the S25 build) differs from
+    # P73_G4_r3_40 in the end time alone; A differs from B in the binary alone (solver_library baseline = release-e2a57db1).
+    ("B76_OFF_B", "P73_G4_r3_40", set(), {"end_time_s"}),
+    ("B76_OFF_A", "B76_OFF_B", {"solver_library"}, set()),
+    # B76-5a (S25 design rev. 2.2 section 7): the Richardson pair differs ONLY in the wave-CFL coefficient.
+    ("S25_5a_tan_half", "S25_5a_tan", {"elastic_courant"}, set()),
+    # B76-RT (case-engineer 09d): the RT-1 restart pairs. A is the parent child with an every-step write and a step stop
+    # (no frames, which would change dt); B is A plus the restart keys, so A and B generate the SAME dictionaries.
+    ("RT_P73_A", "P73_G4_r3_40", set(), {"end_time_s", "wall_budget_h", "frame_interval_s", "frame_fields",
+                                         "write_every_step", "stop_after_step"}),
+    ("RT_P73_B", "RT_P73_A", set(), {"restart_from_child", "restart_index"}),
+    ("RT_5a_A", "S25_5a_tan", set(), {"end_time_s", "wall_budget_h", "frame_interval_s", "frame_fields",
+                                      "write_every_step", "stop_after_step"}),
+    ("RT_5a_B", "RT_5a_A", set(), {"restart_from_child", "restart_index"}),
 )
 
 
@@ -1184,7 +1600,166 @@ def frame_output_refusal(child: dict, series: dict) -> None:
             f"intervals ({wi}); the run would end without a full write.")
 
 
-FREE_SHELL_SERIES = ("throat_free_shell",)
+# S25 B76-RT (case-engineer 09d; design 2026-10-10-S25-arteriole-bundle rev. 2.2 section 7 B76-RT and section 2C; numerics 01 Q1):
+# RT-1, the restart test, as TWO children per pair that run in ONE session, in order (B reads A's output):
+#   A  (write_every_step, stop_after_step S): a cold start that writes a FULL time directory at EVERY step and stops
+#      after step S = N0 + 5;
+#   B  (the same keys, plus restart_from_child A and restart_index N0): restarts from A's directory whose
+#      uniform/time index is N0 and stops after the same step S.
+# THE STOP. dt is adaptive (the point of RT-1b), so the step at which a time-based endTime is reached is not known
+# offline. A step-count stop is a stopAtFile function object (the route the step-1 watcher uses, proven in returned
+# runs: stopWatcher / log "stopAtFile(timeIndex=N)") named `stopAfterStep`, whose watch file scripts/step_stop_watcher.py
+# touches when the solver logs PHASE_CLOT_DT step=S-1: OF-13 then notices it at the start of step S (Time::run executes
+# the function objects, Time.C L898-920) and the writeNow of step S is the last (measured: fs_G4_kxu_v250 logged
+# "stopping now" at timeIndex 7865 and ran step 7866). end_time_s and wall_budget_h are only the BACKSTOP if the watcher
+# never touches the file, and the output guard prices S + S25_RT1_OVERSHOOT writes, not the backstop.
+S25_RT1_KEYS = ("write_every_step", "stop_after_step", "restart_from_child", "restart_index")
+S25_RT1_STEPS = 5               # B runs this many steps after the restart (design s7 B76-RT, "runs 5 steps")
+S25_RT1_OVERSHOOT = 3           # steps beyond S the output guard still prices (a late watcher costs one)
+S25_RT1_WALL_BUDGET_MAX_H = 0.5  # the backstop: 0.5 h is ~530 steps at 3.4 s; larger is refused
+# purgeWrite: OF-13 keeps only the last K written time directories. A writes every step, but only N0..S are read, so
+# K bounds the return (K x ~37 MB, not S x 37 MB). A late watcher makes A run to S + k; N0 = S - STEPS survives while
+# K >= STEPS + 1 + k, so K must cover the overshoot the guard prices.
+S25_RT1_PURGE_WRITE = 10
+assert S25_RT1_PURGE_WRITE >= S25_RT1_STEPS + 1 + S25_RT1_OVERSHOOT + 1
+
+
+def _plain_int(v) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def rt1_refusal(child: dict, series: dict, by_id: dict) -> None:
+    """Every way the RT-1 keys could be silently inert, unbounded, or not a restart of the child they name.
+    Applied to EVERY child: the keys are refused where nothing would read them."""
+    named = [k for k in S25_RT1_KEYS if k in child]
+    if not named:
+        return
+    cid = child["child_id"]
+    if "write_every_step" not in child or "stop_after_step" not in child:
+        raise ValueError(
+            f"{cid}: write_every_step and stop_after_step go together ({', '.join(named)} alone would be silently "
+            f"inert or write every step without a stop); both are required for an RT-1 child.")
+    if child["write_every_step"] is not True:
+        raise ValueError(f"{cid}: write_every_step must be true (got {child['write_every_step']!r}); false would be inert.")
+    stop = child["stop_after_step"]
+    if not _plain_int(stop) or stop < S25_RT1_STEPS + 1:
+        raise ValueError(
+            f"{cid}: stop_after_step {stop!r} must be an integer of at least {S25_RT1_STEPS + 1} (N0 >= 1 plus "
+            f"{S25_RT1_STEPS} steps).")
+    wh = child.get("wall_budget_h")
+    if isinstance(wh, bool) or not isinstance(wh, (int, float)) or not 0 < wh <= S25_RT1_WALL_BUDGET_MAX_H:
+        raise ValueError(
+            f"{cid}: an RT-1 child needs wall_budget_h in (0, {S25_RT1_WALL_BUDGET_MAX_H}] h: it is the backstop that "
+            f"bounds the every-step output if the step watcher never touches its file (got {wh!r}).")
+    if "end_time_s" not in child:
+        raise ValueError(f"{cid}: an RT-1 child names its own end_time_s (the backstop), not the series'.")
+    if "frame_interval_s" in child or "frame_fields" in child:
+        raise ValueError(
+            f"{cid}: frames are written at adjustableRunTime, which shortens dt to hit the frame times; an RT-1 child "
+            f"writes every step and must keep the free dt sequence, so it carries no frame keys.")
+    has_from, has_idx = "restart_from_child" in child, "restart_index" in child
+    if has_from != has_idx:
+        raise ValueError(f"{cid}: restart_from_child and restart_index go together (one alone is silently inert).")
+    if not has_from:
+        return
+    a_id, n0 = child["restart_from_child"], child["restart_index"]
+    if not isinstance(a_id, str) or a_id not in by_id or a_id == cid:
+        raise ValueError(f"{cid}: restart_from_child {a_id!r} must be another child_id of the controls.")
+    a = by_id[a_id]
+    if not _plain_int(n0) or n0 < 1 or stop - n0 != S25_RT1_STEPS:
+        raise ValueError(
+            f"{cid}: restart_index {n0!r} must be an integer >= 1 with stop_after_step {stop} - restart_index == "
+            f"{S25_RT1_STEPS} (RT-1 runs {S25_RT1_STEPS} steps after the restart).")
+    for k in ("write_every_step", "stop_after_step"):
+        if a.get(k) != child[k]:
+            raise ValueError(
+                f"{cid}: its source {a_id} has {k} {a.get(k)!r}, not {child[k]!r}: A writes a full directory at every "
+                f"step up to the same stop step, or there is no N0 directory to restart from.")
+    if "restart_from_child" in a:
+        raise ValueError(f"{cid}: its source {a_id} is itself a restart; RT-1 is one A and one B.")
+    if a.get("series") != child.get("series"):
+        raise ValueError(f"{cid}: its source {a_id} is in series {a.get('series')!r}, not {child.get('series')!r}.")
+    if a.get("solver_library") != child.get("solver_library"):
+        raise ValueError(f"{cid}: its source {a_id} runs another solver library; a restart under another binary is not RT-1.")
+
+
+def rt1_controldict_apply(control: Path, child_id: str, child: dict) -> None:
+    """Write the RT-1 write schedule and read it back from the file. Runs AFTER the adaptive-dt block, which sets
+    writeControl adjustableRunTime for the series. The function object `stopAfterStep` is written by the wall-budget
+    block (the same functions dictionary); here it is only checked."""
+    if "write_every_step" not in child:
+        return
+    replace_entry(control, "writeControl", "timeStep")
+    replace_entry(control, "writeInterval", 1)
+    replace_entry(control, "purgeWrite", S25_RT1_PURGE_WRITE)
+    text = re.sub(r"//[^\n]*", "", control.read_text())
+    top = text.split("functions", 1)[0]
+    got = (re.findall(r"(?m)^\s*writeControl\s+([^;\s]+)\s*;", top), re.findall(r"(?m)^\s*writeInterval\s+([^;\s]+)\s*;", top))
+    purge = re.findall(r"(?m)^\s*purgeWrite\s+([^;\s]+)\s*;", top)
+    if purge != [str(S25_RT1_PURGE_WRITE)]:
+        raise ValueError(f"{child_id}: RT-1 controlDict purgeWrite {purge!r}, not {S25_RT1_PURGE_WRITE}: the last "
+                         f"{S25_RT1_PURGE_WRITE} full writes must survive (N0 .. S plus the overshoot).")
+    if got != (["timeStep"], ["1"]):
+        raise ValueError(f"{child_id}: RT-1 controlDict writes {got!r}, not a full write at every step.")
+    fo = re.search(r"(?s)\n\s*stopAfterStep\s*\{(.*?)\}", text)
+    if fo is None or len(re.findall(r"\bstopAfterStep\b", text)) != 1:
+        raise ValueError(f"{child_id}: RT-1 controlDict must hold exactly one stopAfterStep function object.")
+    if not (re.search(r"\btype\s+stopAtFile\s*;", fo.group(1)) and re.search(r"\baction\s+writeNow\s*;", fo.group(1))):
+        raise ValueError(f"{child_id}: stopAfterStep must be a stopAtFile function object with action writeNow.")
+    if "adjustableRunTime" in text:
+        raise ValueError(f"{child_id}: RT-1 controlDict still carries adjustableRunTime (a frame or the series writer).")
+
+
+# The pairs RT-1 is scored on, read by assess_case.py s25_rt1_report. Top-level `s25_rt1_pairs` of the controls:
+# [{pair_id, a, b, n0, required_fields, needs_vs_nonzero}]. required_fields are the AUTO_WRITE fields that must exist in BOTH
+# directories at step n0 + 5 (red team 04 #10 / change 8: thetaPendingB and thetaPendingP; networkRupture fibreRelease is BUILT IN
+# since S21, so EVERY child writes them: solver .C L1202-1225 and L2917); needs_vs_nonzero makes max|Vs| > 0 at step n0 a precondition (design s7: N0 where Vs != 0).
+S25_RT1_PAIR_KEYS = ("pair_id", "a", "b", "n0", "required_fields", "needs_vs_nonzero")
+S25_RT1_FIELDS_ALLOWED = ("thetaPendingB", "thetaPendingP")
+
+
+def s25_rt1_pairs_refusal(controls: dict) -> None:
+    pairs = controls.get("s25_rt1_pairs")
+    by_id = {c["child_id"]: c for c in controls["children"]}
+    rt_children = sorted(cid for cid, c in by_id.items() if "write_every_step" in c)
+    if pairs is None:
+        if rt_children:
+            raise ValueError(f"RT-1 children {rt_children} exist but the controls hold no s25_rt1_pairs: nothing would score them.")
+        return
+    if not isinstance(pairs, list) or not pairs:
+        raise ValueError("s25_rt1_pairs must be a non-empty list of {pair_id, a, b, n0, required_fields, needs_vs_nonzero}.")
+    seen, used = set(), []
+    for i, e in enumerate(pairs):
+        if not isinstance(e, dict) or set(e) != set(S25_RT1_PAIR_KEYS):
+            raise ValueError(f"s25_rt1_pairs[{i}] must hold exactly {', '.join(S25_RT1_PAIR_KEYS)}; got {sorted(e) if isinstance(e, dict) else e!r}.")
+        pid = e["pair_id"]
+        if not isinstance(pid, str) or not pid or pid in seen:
+            raise ValueError(f"s25_rt1_pairs[{i}] pair_id {pid!r} must be a non-empty string, unique.")
+        seen.add(pid)
+        for k in ("a", "b"):
+            if e[k] not in by_id:
+                raise ValueError(f"s25_rt1_pairs[{i}] ({pid}) {k} {e[k]!r} is not a child_id in the controls.")
+        a, b = by_id[e["a"]], by_id[e["b"]]
+        if b.get("restart_from_child") != e["a"] or "restart_from_child" in a:
+            raise ValueError(f"s25_rt1_pairs[{i}] ({pid}): {e['b']} must restart from {e['a']} (restart_from_child), and {e['a']} must be a cold start.")
+        if not _plain_int(e["n0"]) or e["n0"] != b.get("restart_index"):
+            raise ValueError(f"s25_rt1_pairs[{i}] ({pid}) n0 {e['n0']!r} must equal {e['b']}'s restart_index {b.get('restart_index')!r}.")
+        rf = e["required_fields"]
+        if not isinstance(rf, list) or any(f not in S25_RT1_FIELDS_ALLOWED for f in rf) or len(set(rf)) != len(rf):
+            raise ValueError(f"s25_rt1_pairs[{i}] ({pid}) required_fields {rf!r} must be a list of distinct names from {S25_RT1_FIELDS_ALLOWED}.")
+        if not isinstance(e["needs_vs_nonzero"], bool):
+            raise ValueError(f"s25_rt1_pairs[{i}] ({pid}) needs_vs_nonzero must be true or false.")
+        used += [e["a"], e["b"]]
+    unscored = sorted(set(rt_children) - set(used))
+    if unscored or len(used) != len(set(used)):
+        raise ValueError(f"every RT-1 child is in exactly one s25_rt1_pairs entry; unscored {unscored}, repeated {sorted({u for u in used if used.count(u) > 1})}.")
+
+
+# S25 B76-5a (case-engineer 09b; design 2026-10-10-S25-arteriole-bundle rev. 2.2 section 7): the arteriole series, a free-shell
+# disc in a STRAIGHT planar channel (no throat) at S25's units. It is a free-shell series (every refusal below applies to it)
+# with the extras s25_5a_refusal() adds.
+S25_5A_SERIES = ("s25_5a",)
+FREE_SHELL_SERIES = ("throat_free_shell",) + S25_5A_SERIES
 
 
 def free_shell_series_refusal(child: dict, series: dict) -> None:
@@ -1267,10 +1842,14 @@ def free_shell_series_refusal(child: dict, series: dict) -> None:
             f"{cid}: must declare its own flow_axis (the global one tabulates "
             f"U for a 60 um channel and has no 250 1/s entry)."
         )
-    if child.get("wall_shear_rate_1_s") != 250.0:
+    # The bookkeeping shear rate the series' flow_axis is checked against. throat_free_shell is Alireza's venous 250 1/s
+    # (DECISIONS 2026-10-02); a series that is pressure-driven at another operating point declares its own, and the flow
+    # it actually gets is whatever the inlet pressure gives (the inlet velocity is zeroGradient).
+    _want_gamma = series.get("free_shell_wall_shear_rate_1_s", 250.0)
+    if child.get("wall_shear_rate_1_s") != _want_gamma:
         raise ValueError(
-            f"{cid}: Alireza asked for venous, 250 1/s (DECISIONS "
-            f"2026-10-02)."
+            f"{cid}: wall_shear_rate_1_s must be {_want_gamma} 1/s for series {child['series']!r} "
+            f"(250 for the venous throat series: Alireza, DECISIONS 2026-10-02)."
         )
     if not series.get("step1_watcher"):
         raise ValueError(
@@ -1590,6 +2169,12 @@ def main() -> int:
     cohesive_bound = controls["adhesive_strength"]["upper_bound_pa"]
     for _name, _spec in series_spec.items():
         series_plasma_refusal(_name, _spec)
+    s25_pairs_refusal(controls)
+    # S25 B76-RT: every child's RT-1 keys first (the specific refusals), then the registry that scores them.
+    _children_by_id = {c["child_id"]: c for c in controls["children"]}
+    for _c in controls["children"]:
+        rt1_refusal(_c, series_spec[_c["series"]], _children_by_id)
+    s25_rt1_pairs_refusal(controls)
     for child in controls["children"]:
         spec = series_spec[child["series"]]
         welded = spec["wall_condition"] == "fixedValue"
@@ -1613,6 +2198,9 @@ def main() -> int:
         kept_option_refusal(child, bool(spec.get("core_shell")))
         s22_key_refusal(child)
         s23_key_refusal(child)
+        s25_time_scale_refusal(child)
+        s25_skeleton_law_refusal(child, spec)
+        s25_5a_refusal(child, spec)
         s23_build_refusal(child)
 
         # Only the cohesive-tear series may set its own toughness, and it is
@@ -1621,9 +2209,9 @@ def main() -> int:
         # under a published result -- and in the source-33 child it would be
         # the difference between reproducing a mechanism and manufacturing
         # one.
-        if child.get("Gc_j_m2") is not None and child["series"] != "cohesive_tear":
+        if child.get("Gc_j_m2") is not None and child["series"] not in ("cohesive_tear",) + S25_5A_SERIES:
             raise ValueError(
-                f"{child['child_id']}: only the cohesive_tear series may "
+                f"{child['child_id']}: only the cohesive_tear series and the S25 5a series (Gc in S25's units) may "
                 f"override Gc; this child is in '{child['series']}'. If the "
                 f"intent is to make something fail, that is tuning the answer, "
                 f"not modelling it."
@@ -1950,6 +2538,7 @@ def main() -> int:
         # floors -- lumen gap, buried core, attachment -- refused here on the
         # shape the initialiser draws. Recorded in child.json below.
         dome_margins = None
+        disc_margins = None
         if clot.get("shape") == "halfEllipseDome":
             dome_margins = dome_floors(child_id, g, clot)
 
@@ -2113,6 +2702,30 @@ def main() -> int:
                     f"(max wall slope {math.degrees(math.atan(slope_max)):.1f} "
                     f"deg). Lengthen taper_length_m: skew falls as 1/L."
                 )
+
+        elif clot.get("shape") == "disc":
+            # A FREE DISC IN A STRAIGHT CHANNEL (S25 B76-5a): there is no taper, so none of the throat branch's
+            # placement floors ran. The same 3 interface widths of lumen the throat branch holds are checked here,
+            # on the true gaps of a flat channel: below, above, and the disc inside the channel's length.
+            _eps = g["interface_width_m"]
+            _cx, _cy, _r = clot["centre_x_m"], clot["centre_y_m"], clot["radius_m"]
+            if _cx - _r < 0.0 or _cx + _r > g["channel_length_m"]:
+                raise ValueError(f"{child_id}: the disc spans x = {_cx - _r:.3g}-{_cx + _r:.3g} m, outside the "
+                                 f"{g['channel_length_m']:.3g} m channel")
+            _bot = _cy - _r
+            _top = g["channel_height_m"] - _cy - _r
+            if clot.get("rests_on_wall"):
+                if not math.isclose(_bot, 0.0, abs_tol=1e-9):
+                    raise ValueError(f"{child_id}: rests_on_wall is declared but the disc's bottom gap is {_bot:.3g} m, "
+                                     f"not zero")
+            elif _bot / _eps < 3.0:
+                raise ValueError(f"{child_id}: the disc's bottom gap is {_bot:.3g} m = {_bot / _eps:.2f} interface "
+                                 f"widths, below the 3.0 floor, and rests_on_wall is not declared")
+            if _top / _eps < 3.0:
+                raise ValueError(f"{child_id}: the lumen above the disc is {_top:.3g} m = {_top / _eps:.2f} interface "
+                                 f"widths, below the 3.0 floor")
+            disc_margins = {"bottom_gap_m": _bot, "bottom_gap_interface_widths": _bot / _eps,
+                            "top_gap_m": _top, "top_gap_interface_widths": _top / _eps}
 
         gamma = child["wall_shear_rate_1_s"]
         u_mean = gamma * g["channel_height_m"] / 6.0
@@ -2400,7 +3013,7 @@ def main() -> int:
             # growth weight and is reported rather than buried.
             "gradFloor": 1.0e-3*2.0/g["interface_width_m"],
             "ell": g["ell_m"],
-            "G": child["G_pa"],
+            "G": s25_g_pa(child),
             "poissonRatio": fixed["poissonRatio"],
             "k0p": child["k0p_m2"],
             "etaRes": fixed["etaRes"],
@@ -2839,7 +3452,7 @@ def main() -> int:
         add_or_replace_entry(
             props,
             "networkPressureCoeff",
-            repr(float(child.get("network_pressure_coeff", 1.0))),
+            repr(s25_network_pressure_coeff(child)),
         )
         # Close packing, where p_n diverges. 0.6 is Du & Fogelson
         # Eq. 2.25's theta_b_max, after Wufsus et al. 2013 -- the same
@@ -2915,9 +3528,14 @@ def main() -> int:
             props, "networkCriticalStretch",
             repr(float(child.get("network_critical_stretch", 2.8))),
         )
+        # S25 section 2F: S_t, then the two PHYSICAL times at S_t x their physical value (the
+        # solver's timeScale x 3.3e-4 default and timeScale x 5e-4 floor are the same rule). time_scale
+        # 1.0 leaves every earlier value unchanged: x * 1.0 == x.
+        _time_scale = time_scale_of(child)
+        add_or_replace_entry(props, "timeScale", repr(_time_scale))
         add_or_replace_entry(
             props, "networkReleaseTime",
-            repr(float(child.get("network_release_time_s", 3.3e-4))),
+            repr(float(child.get("network_release_time_s", 3.3e-4)) * _time_scale),
         )
         add_or_replace_entry(
             props, "networkDamageOnsetStretch",
@@ -2957,7 +3575,7 @@ def main() -> int:
             add_or_replace_entry(props, _dict_key, _val)
         if "tau_v_s" in child:
             add_or_replace_entry(props, "networkViscosityTau",
-                                 float(child["tau_v_s"]))
+                                 float(child["tau_v_s"]) * _time_scale)
         # S22 (2026-10-07): the block step's linear solver. Same contract:
         # written only when named, so every earlier dictionary is identical.
         # Validated by s22_key_refusal() (called with the series refusals).
@@ -3002,11 +3620,22 @@ def main() -> int:
         # all. What changes is that the dictionary the PEEL runs with says no.
         advecting = bool(True)
         for key, value in {
-            "gammaLow": growth["gammaLow_1_s"],
-            "gammaHigh": growth["gammaHigh_1_s"],
+            # S25 section 12 item 3: the two shear rates are physical (1/s) in the controls and S_t-scaled
+            # (phys/S_t) in the dictionary; s25_gamma_refusal reads the written values back.
+            "gammaLow": s25_gamma_written(growth["gammaLow_1_s"], _time_scale),
+            "gammaHigh": s25_gamma_written(growth["gammaHigh_1_s"], _time_scale),
             "enhancementMax": growth["enhancementMax"],
         }.items():
             add_or_replace_entry(props, key, value)
+        s25_gamma_refusal(props, child["child_id"], growth, _time_scale)
+        # S25 build 2: the LT keys, then read back from the written dictionary.
+        s25_write_skeleton_law(props, child)
+        s25_skeleton_law_readback(props, child)
+        s25_5a_write(case, props, child, series)
+        s25_5a_readback(case, props, child, series)
+        # OI-76 (S25 section 12.8): the series' plasma into physicalProperties as well, then both files read back.
+        series_plasma_write(case, series)
+        series_plasma_readback(case, props, child, series, fixed)
 
         # PER-CHILD DURATION. A ladder whose rungs finish at wildly different
         # times should not all pay for the slowest: run 20260814-055141 spent
@@ -3036,7 +3665,13 @@ def main() -> int:
         # genuinely wants the full series sets accept_large_output and says why
         # in its own record.
         projected_writes = end_time / write_interval
-        projected_gb = projected_writes * PER_TIME_DIR_GB
+        if child.get("write_every_step"):
+            # S25 B76-RT: a full write at EVERY step up to stop_after_step (+ the overshoot a late watcher costs);
+            # end_time_s is only the backstop and write_interval_s is not what writes.
+            # purgeWrite keeps the last S25_RT1_PURGE_WRITE of them on disk (and so in the return).
+            projected_writes = min(child["stop_after_step"] + S25_RT1_OVERSHOOT, S25_RT1_PURGE_WRITE)
+        projected_gb = (projected_writes * PER_TIME_DIR_GB
+                        * S25_WRITE_PRECISION_BYTES_FACTOR)
         if (
             projected_gb > OUTPUT_BUDGET_GB
             and not child.get("accept_large_output", False)
@@ -3066,8 +3701,11 @@ def main() -> int:
             "endTime": end_time,
             "writeControl": "runTime",
             "writeInterval": write_interval,
+            # S25 section 2C: 17 significant digits in every generated controlDict.
+            "writePrecision": S25_WRITE_PRECISION,
         }.items():
             replace_entry(control, key, value)
+        restart_contract_refusal(control, child_id)
 
         # S16 (design section 6, em63): A WALL BUDGET. OpenFOAM 13's
         # stopAtClockTime function object (libutilityFunctionObjects) sets
@@ -3092,6 +3730,17 @@ def main() -> int:
                 "        action          writeNow;\n"
                 "    }\n"
             )
+            # S25 B76-RT: the step-count stop (see S25_RT1_KEYS). stopAtFile watches <case>/stopAfterStep (its own
+            # name, stopAtFile.C L81), which scripts/step_stop_watcher.py touches at PHASE_CLOT_DT step=S-1. A name
+            # that does not contain the step-1 watcher's, so Allrun's `grep stopWatcher` does not launch that one.
+            if "stop_after_step" in child:
+                functions_body += (
+                    "    stopAfterStep\n    {\n"
+                    "        type            stopAtFile;\n"
+                    "        libs            (\"libutilityFunctionObjects.so\");\n"
+                    "        action          writeNow;\n"
+                    "    }\n"
+                )
             # THE STEP-1 WATCHER (design 2026-10-02-case-free-shell-throat,
             # rev. 3, S7.3b; red team 03 #3, red team 04 #2). Editing
             # controlDict mid-run does nothing under runTimeModifiable false,
@@ -3244,6 +3893,8 @@ def main() -> int:
                 "writeControl": "adjustableRunTime",
             }.items():
                 add_or_replace_entry(control, key, value)
+
+        rt1_controldict_apply(control, child_id, child)
 
         solution = case / "system" / "fvSolution"
 
@@ -3572,7 +4223,7 @@ def main() -> int:
             "role": series["question"],
             "wall_shear_rate_1_s": gamma,
             "mean_velocity_m_s": u_mean,
-            "G_pa": child["G_pa"],
+            "G_pa": s25_g_pa(child),
             "k0p_m2": child["k0p_m2"],
             "wall_condition": series["wall_condition"],
             "adhesive_strength_pa": child["adhesive_strength_pa"],
@@ -3615,6 +4266,8 @@ def main() -> int:
             # believe a two-stage run still happens.
             "adjust_time_step": bool(series.get("adjust_time_step")),
             "max_co": series.get("max_co"),
+            # S25 section 2F: the S_t this child's dictionary was written with.
+            "time_scale": _time_scale,
         }
         # S16: what the solver's PHASE_CLOT_S16_CONFIG line must echo (the
         # config gate), and the two run-control keys -- ONLY for a child that
@@ -3628,7 +4281,7 @@ def main() -> int:
             "networkCriticalStretch": float(
                 child.get("network_critical_stretch", 2.8)),
             "networkReleaseTime": float(
-                child.get("network_release_time_s", 3.3e-4)),
+                child.get("network_release_time_s", 3.3e-4)) * _time_scale,
             "networkDamageOnsetStretch": float(
                 child.get("network_damage_onset_stretch", 2.105)),
             "networkDamageStretchScale": float(
@@ -3662,7 +4315,7 @@ def main() -> int:
                 "momentumPressureCoupling": str(
                     child.get("momentum_pressure_coupling", "segregated")),
                 "networkViscosity": str(child.get("network_viscosity", "none")),
-                "networkViscosityTau": float(child.get("tau_v_s", 2.5e-4)),
+                "networkViscosityTau": float(child.get("tau_v_s", 2.5e-4)) * _time_scale,
             }
         # S22: what the PHASE_CLOT_S19_CONFIG echo must show, and (A0) which
         # library the child runs on -- ONLY for a child that names an S22 key,
@@ -3691,6 +4344,8 @@ def main() -> int:
                           child.get("platelet_number_density_m3", 0.0)))
         if dome_margins is not None:
             spec["dome_floors"] = dome_margins
+        if disc_margins is not None:
+            spec["disc_floors"] = disc_margins
         if "seed_theta_peak" in child:
             # V21-8 (S20 V5): the seeded q < 0 test. 0/thetaC and 0/thetaH are
             # patched after the initialiser and seed_stage2_content.py have run;
@@ -3709,6 +4364,10 @@ def main() -> int:
             (case / "constant" / "seedTheta.json").write_text(
                 json.dumps(_sd, indent=1) + "\n")
             spec["seed_theta_peak"] = _sd
+        # S25 B76-RT: what Allrun, restart_driver.py and step_stop_watcher.py read from child.json (only a child that names them).
+        for _k in S25_RT1_KEYS:
+            if _k in child:
+                spec[_k] = child[_k]
         dictionary_key_refusal(case / "constant" / "phaseClotProperties")
         if child.get("solver_library") in SOLVER_LIBRARIES:
             # S22 section 7 arm A0 / S23 section 7 arm (1'): Allrun sources this before foamRun.
@@ -3718,7 +4377,8 @@ def main() -> int:
 
     order = {'throat_embolus': 21,
     'xu2017_fig5': 22,
-    'throat_free_shell': 23}
+    'throat_free_shell': 23,
+    's25_5a': 24}
     missing = {c["series"] for c in controls["children"]} - set(order)
     if missing:
         raise ValueError(f"no run order declared for series {sorted(missing)}")
@@ -3758,7 +4418,20 @@ def main() -> int:
     # BATCH 74: the one diagnostic child, after the BATCH 73 pair.
     'D74_refI': 60,
     # BATCH 75: the re-run of the diagnostic child on rev. 3.1, after D74_refI.
-    'D75_refI': 61}
+    'D75_refI': 61,
+    # B76-OFF: the baseline arm first, then the S25 arm (the pair is compared B against A).
+    'B76_OFF_A': 62,
+    'B76_OFF_B': 63,
+    # B76-5a: the arteriole smoke pair, tangent CFL first, then dt/2.
+    'S25_5a_tan': 70,
+    'S25_5a_tan_half': 71,
+    # B76-RT: each pair A then B (one session, in order). The runner runs a launch's children in MATRIX order, never in the order BATCHES[76] names them, so this table
+    # IS the order of B76's third session: RT_P73_A, RT_P73_B (throat_free_shell, earlier series), then RT_5a_A, RT_5a_B (47 steps each against the smoke's ~1.4e3, so they run FIRST and
+    # a failed restart gate costs minutes), then S25_5a_tan, S25_5a_tan_half (series s25_5a, within 70 and 71 above). 66 and 67 are below 70 on purpose.
+    'RT_P73_A': 64,
+    'RT_P73_B': 65,
+    'RT_5a_A': 66,
+    'RT_5a_B': 67}
     # S17 (design section 6): the mechanical control check, before anything
     # is ordered for launch. The controls-entry half runs for every pair; the
     # child.json half for the pairs whose control is built in this run

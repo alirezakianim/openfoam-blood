@@ -16,10 +16,12 @@ cases/AM2020_planar_mural_detachment/scripts/clot_free_watcher.py
 cases/AM2020_planar_mural_detachment/scripts/create_cases.py
 cases/AM2020_planar_mural_detachment/scripts/dry_run.py
 cases/AM2020_planar_mural_detachment/scripts/free_shell_timeseries.py
+cases/AM2020_planar_mural_detachment/scripts/restart_driver.py
 cases/AM2020_planar_mural_detachment/scripts/run_main_case_colab.py
 cases/AM2020_planar_mural_detachment/scripts/seed_stage2_content.py
 cases/AM2020_planar_mural_detachment/scripts/seed_theta_peak.py
 cases/AM2020_planar_mural_detachment/scripts/shrink_returned_run_colab.py
+cases/AM2020_planar_mural_detachment/scripts/step_stop_watcher.py
 cases/AM2020_planar_mural_detachment/template/0/Dg
 cases/AM2020_planar_mural_detachment/template/0/H
 cases/AM2020_planar_mural_detachment/template/0/U
@@ -66,7 +68,9 @@ scripts/check_neohookean_algebra.py
 scripts/check_network_pressure_law.py
 scripts/check_notebook_batch_selector.py
 scripts/check_oi62_platelet_ratio.py
+scripts/check_one_core_runner.py
 scripts/check_per_step_state_is_primed.py
+scripts/check_phase_clot_time_scale.py
 scripts/check_phase_indicator_basis.py
 scripts/check_phase_normal_basis.py
 scripts/check_phase_weight_basis_split.py
@@ -75,6 +79,7 @@ scripts/check_platelet_diagnostic_semantics.py
 scripts/check_platelet_fluid_carrier.py
 scripts/check_refused_dictionary_values.py
 scripts/check_registry_lookups_resolve.py
+scripts/check_restart_driver.py
 scripts/check_runner_controls_keys.py
 scripts/check_runner_staging.py
 scripts/check_s12_intrinsic_drag.py
@@ -83,6 +88,8 @@ scripts/check_s15_composition_label_and_damage.py
 scripts/check_s19_block_coupled.py
 scripts/check_s21_config_equivalence.py
 scripts/check_s23_torn_network.py
+scripts/check_s25_5a_table.py
+scripts/check_s25_restart_cap_refusals.py
 scripts/check_scheme_coverage.py
 scripts/check_stage2_case_generation.py
 scripts/check_stage2_content_seeding.py
@@ -96,10 +103,10 @@ scripts/s16_partition_kernel_test.cpp
 scripts/s17_fibre_kernel_test.cpp
 scripts/s17_offline_checks.py
 scripts/s18_fpe_kernel_test.cpp
-scripts/s23_torn_kernel_test.cpp
 scripts/s19_block_kernel_test.cpp
 scripts/s19a_block_kernel_reference.H
 scripts/s19b_e1_score.py
+scripts/s23_torn_kernel_test.cpp
 user-applications/beTransport/beTransport.H
 user-applications/phaseClotAxisymmetricFluid.rc
 user-applications/phaseClotAxisymmetricFluid/Allwmake
@@ -113,6 +120,7 @@ user-applications/phaseClotAxisymmetricFluid/fibreReleaseKernel.H
 user-applications/phaseClotAxisymmetricFluid/networkPressureKernel.H
 user-applications/phaseClotAxisymmetricFluid/phaseClotAxisymmetricFluid.C
 user-applications/phaseClotAxisymmetricFluid/phaseClotAxisymmetricFluid.H
+user-applications/phaseClotAxisymmetricFluid/skeletonLawKernel.H
 user-applications/plateletContent/contentDrag.H
 user-applications/plateletContent/contentDragKernel.H
 user-applications/plateletContent/plateletContent.H

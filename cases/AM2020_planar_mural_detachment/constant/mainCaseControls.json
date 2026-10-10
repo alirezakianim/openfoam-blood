@@ -3,6 +3,7 @@
  "_provenance": "Geometry, mesh, material and growth calibration are IMPORTED from AM2020_mural_geometry_gate, which returned MURAL_READY twice with identical numbers (runs 20260810-075435 and 20260810-192247). Nothing here is re-derived; the gate is the source of truth.",
  "_the_PIs_question": "Dr He Li's redirect was to a straight circular tube, with growth rate defined as a function of flow rate (platelet number), capturing growth, deformation and detachment as 'a competition among three factors: flow rate, clot stiffness and porosity'. The three series below are those three factors, plus the demonstration that the competition ends in an embolus.",
  "_what_this_is_and_is_not": "A qualitative mechanism study. It shows that the model produces the right behaviours and how they trade off, on parameters that are sourced where sources exist and flagged where they do not. It is NOT a validated quantitative prediction: the fluid-structure coupling carries a first-order splitting error measured at 38%, and the skeleton fixed point truncates rather than converges (run 20260810-192247: 5% of sweeps at the corrector cap, residual 1.7e-4). Both are stated, not hidden.",
+ "_why_time_scale": "S25 section 2F (research/designs/2026-10-10-S25-arteriole-bundle.md rev. 2, APPROVED by Alireza 2026-10-10; numerics 01 Q4): time_scale S_t = t_sim/t_phys, REQUIRED on every child (the generator refuses a child without it). tau_v_s and network_release_time_s are PHYSICAL seconds; the generator writes timeScale = S_t and the solver's two hard-coded physical times as S_t x the physical value (networkViscosityTau, networkReleaseTime) and checks the tau_v floor at S_t x 5e-4 (the solver's own timeScale x 5e-4). Every child in this file is a legacy child that runs in physical time, so it states 1.0 explicitly: S_t x x == x exactly in IEEE doubles, so a legacy dictionary changes only by the timeScale line (and writePrecision 17, also S25). end_time_s, delta_t_s and write_interval_s are SIMULATED seconds and are NOT scaled.",
  "adhesive_strength": {
   "_cohesive_route_cannot_fire_here_and_that_is_the_finding": {
    "answer": "No, and not marginally. sigma_c = sqrt(Gc*E/ell) = 15563 Pa against a measured peak clot traction of 2.6456 Pa at 200/s: a factor of 5883. Reaching cohesive failure would need either a shear rate about 5900x higher, or a Gc of 1.6e-07 J/m2 against the physiological 5.547 -- eight orders down, and not a number anyone could defend.",
@@ -304,7 +305,7 @@
    "write_interval_s": 0.00025
   },
   "throat_free_shell": {
-   "children": 25,
+   "children": 29,
    "question": "CAN A DETACHED CLOT BLOCK THE NARROWER VESSEL? Dr Li, 2026-09-01, asked for exactly this and until 2026-09-04 the model could not produce it at any parameter: the Brinkman drag was gated as fvm::Sp(dragCoeff*(1 - released), U), so released material felt ZERO drag and a detached embolus was hydraulically invisible. 'Moves' and 'blocks' were mutually exclusive by construction. The drag is now the relative-velocity pair -(mu/k)(u_f - u_s), which is what the skeleton path already used, so a moving body still resists flow through its pores.",
    "_the_request": "Dr He Li asked whether a detached shell is stiff enough to block the downstream vessel. Alireza (DECISIONS 2026-10-02, verbatim): \"venous, place the clot relatively close to the openning. shear of 250 1/s. also no neet to see it completely passes through. i just want to see the initial to mid time to see of it cloggs (inrease pressure or slows the flow rate) or passes. one clot dense and stiff, other loose and normal permeability\"",
    "_design": "research/designs/2026-10-02-case-free-shell-throat.md, rev. 3 (APPROVED by Alireza 2026-10-02, docket research/investigations/20261002-1219-case-free-shell-throat/, DECISIONS.md; red team 03 STOP (all nine changes applied in rev. 2), red team 04 PROCEED WITH CHANGES (all five changes applied in rev. 3).",
@@ -365,7 +366,78 @@
    },
    "measures": "Outlet volumetric flux Q(t) against Q0 (clot-free, same drive); the pressure drop across the clot Delta p_clot(t) as a share of the imposed Delta p; the clot centroid x(t), y(t) and velocity, leading/trailing edge x; the narrowest clot-free gap at the throat entrance; whether the clot passes the throat; its aspect ratio and the S15-S18 damage logs.",
    "_why_end_time_0p04": "BATCH 69 (design 2026-10-05-case-loose-40ms-r3-pair rev. 4): the series budget rises from 0.03 to 0.04 s so that fsf_G4_kxu_r3_40 and fsf_G4_kxu_nor3_40 may run to 40 ms; every other child sets its own shorter end_time_s, and the generator refuses a child that exceeds the series budget.",
-   "_why_children_25": "9 = fsf_G4_kxu_v250, fsf_G40_klo_v250, fsb_G40_klo_rest, fs_G40_klo_rest_seg, fsb_ctl_r3, fsf_G4_kxu_r3_40, fsf_G4_kxu_nor3_40, fsf_G4_kxu_seedq and fsf_id (the V21-6 identity twin of fsf_G4_kxu_v250, added in S21 pipeline pass 2a: docket 20261005-1621 report 08); plus the eight S22 validation twins of BATCH 71 (S22 section 7): S22v_G40_A0, S22v_G40_A, S22v_G40_E, S22v_G40_B, S22v_G40_C, S22v_G40_D (controls-only twins of fsf_G40_klo_v250 at 0.6 ms, A0 at 0.2 ms) and S22v_G4_A, S22v_G4_C (twins of fsf_G4_kxu_r3_40 at 1.0 ms); plus the four S23 validation twins of BATCH 72 (S23 section 7): S23v_G4_r3 (arm 1, twin of fsf_G4_kxu_r3_40), S23v_G4_r3_S22 (arm 1', S23v_G4_r3 to 30 ms on the S22 library), S23v_G4_nor3 (arm 2, twin of fsf_G4_kxu_nor3_40) and S23v_G40 (arm 3, twin of fsf_G40_klo_v250); plus the two production children of BATCH 73 (P73_G4_r3_40, the loose S23v_G4_r3 under a production id, and P73_G40_40, S23v_G40 extended from 25 to 40 ms; Alireza 2026-10-08: \"both 40 ms. both in one session with 2 concurrency\"); plus the one diagnostic child of BATCH 74 (D74_refI, S23v_G4_r3 byte for byte under a diagnostic id for the build that carries the passive field thetaNetRefIntact; Alireza 2026-10-09: \"Approve; run it alone (Recommended)\"); plus the one re-run child of BATCH 75 (D75_refI, S23v_G4_r3 byte for byte under a NEW diagnostic id, for the rev. 3.1 build of the passive field; D74_refI stays as BATCH 74's record, its measurement voided by G74-1; Alireza 2026-10-09: \"Approve; rebuild and re-run (Recommended)\"); 9 + 8 + 4 + 2 + 1 + 1 = 25 (the text above says 9 because it counts the kept children)"
+   "_why_children_29": "9 = fsf_G4_kxu_v250, fsf_G40_klo_v250, fsb_G40_klo_rest, fs_G40_klo_rest_seg, fsb_ctl_r3, fsf_G4_kxu_r3_40, fsf_G4_kxu_nor3_40, fsf_G4_kxu_seedq and fsf_id (the V21-6 identity twin of fsf_G4_kxu_v250, added in S21 pipeline pass 2a: docket 20261005-1621 report 08); plus the eight S22 validation twins of BATCH 71 (S22 section 7): S22v_G40_A0, S22v_G40_A, S22v_G40_E, S22v_G40_B, S22v_G40_C, S22v_G40_D (controls-only twins of fsf_G40_klo_v250 at 0.6 ms, A0 at 0.2 ms) and S22v_G4_A, S22v_G4_C (twins of fsf_G4_kxu_r3_40 at 1.0 ms); plus the four S23 validation twins of BATCH 72 (S23 section 7): S23v_G4_r3 (arm 1, twin of fsf_G4_kxu_r3_40), S23v_G4_r3_S22 (arm 1', S23v_G4_r3 to 30 ms on the S22 library), S23v_G4_nor3 (arm 2, twin of fsf_G4_kxu_nor3_40) and S23v_G40 (arm 3, twin of fsf_G40_klo_v250); plus the two production children of BATCH 73 (P73_G4_r3_40, the loose S23v_G4_r3 under a production id, and P73_G40_40, S23v_G40 extended from 25 to 40 ms; Alireza 2026-10-08: \"both 40 ms. both in one session with 2 concurrency\"); plus the one diagnostic child of BATCH 74 (D74_refI, S23v_G4_r3 byte for byte under a diagnostic id for the build that carries the passive field thetaNetRefIntact; Alireza 2026-10-09: \"Approve; run it alone (Recommended)\"); plus the one re-run child of BATCH 75 (D75_refI, S23v_G4_r3 byte for byte under a NEW diagnostic id, for the rev. 3.1 build of the passive field; D74_refI stays as BATCH 74's record, its measurement voided by G74-1; Alireza 2026-10-09: \"Approve; rebuild and re-run (Recommended)\"); plus the two B76-OFF children (B76_OFF_A on the baseline binary release-e2a57db1, B76_OFF_B on the S25 build: P73_G4_r3_40 run to 30 ms by both; S25 design rev. 2.2 section 7); 9 + 8 + 4 + 2 + 1 + 1 + 2 = 27 (the text above says 9 because it counts the kept children); plus the two RT-1 children of B76-RT (RT_P73_A and RT_P73_B: P73_G4_r3_40 shortened to 47 steps with an every-step write, then restarted from step 42 in the same session; case-engineer 09d)"
+  },
+  "s25_5a": {
+   "children": 4,
+   "question": "B76-5a, THE SMOKE OF THE ARTERIOLE CASE (S25). Is the LT stiffening law, with the fibre-release network rupture, numerically stable and correct at 5a's units for 2 ms of simulated time, with the tangent wave CFL (elasticCourant 0.5) and at half the time step (0.25)? The Richardson pair sets B77's control band. It is a numerics smoke, not the occlusion case: the flow is PLANAR (physics 09, CE decision 1) and the clot is the free disc of D75.",
+   "_the_request": "Design: research/designs/2026-10-10-S25-arteriole-bundle.md rev. 2.2 (APPROVED by Alireza 2026-10-10: \"Approve; build and release (Recommended)\"), section 7 B76-5a and section 12. Table: research/investigations/20261009-2313-physiological-scaling/09-physics-analyst.md (the 5a table, every key in S25 units S_L 5/3, S_t 25/3, S_P 0.04, S_rho 1). CE decisions: research/investigations/20261009-2313-physiological-scaling/DECISIONS.md, the CE's decisions for BATCH 76 under 'physics 09 returned': (1) PLANAR with the Lambda-matched inlet pressure at 5 cm/s; (2) adhesiveStrength 0.468 Pa sim (sigma_A/G 0.1, UNSOURCED); (3) the clot held as in D75 (bondHoldDilation 4, bondHoldPenalty 1e7, DgDetach 0.95); (4) phi0 0.45.",
+   "_design": "research/designs/2026-10-10-S25-arteriole-bundle.md rev. 2.2 (APPROVED by Alireza 2026-10-10: \"Approve; build and release (Recommended)\"), section 7 B76-5a and section 12",
+   "_docket": "research/investigations/20261010-0056-s25-arteriole-bundle/ (case-engineer 09b, report 10)",
+   "core_shell": false,
+   "growth": false,
+   "adjust_time_step": true,
+   "max_co": 0.5,
+   "delta_t_s": 5e-06,
+   "max_delta_t_s": 5e-05,
+   "end_time_s": 0.002,
+   "write_interval_s": 0.0005,
+   "steps": "adaptive",
+   "wall_condition": "clotWallAdhesion",
+   "wall_bond_free": true,
+   "top_wall_adhesion": true,
+   "step1_watcher": true,
+   "pressure_driven": true,
+   "inlet_pressure_m2_s2": 0.02770371528,
+   "free_shell_wall_shear_rate_1_s": 3200.0,
+   "rho_kg_m3": 1050.0,
+   "nu_m2_s": 6.7636023629e-07,
+   "flow_axis": {
+    "_why": "BOOKKEEPING ONLY. The flow is pressure-driven (the inlet velocity is zeroGradient), so the realised flow is whatever inlet_pressure_m2_s2 gives against the clot. The generator still checks U = gammaDot H / 6 against the series' axis, and child.json records it. The pair below is the open-channel estimate of the planar flow at the Lambda-matched pressure, from 09's own numbers: u = p_in H^2 / (12 nu L) = 0.02770371528 x (50e-6)^2 / (12 x 6.7636023629e-7 x 320e-6) = 0.026667 m/s sim = 8/3 x the 0.01 m/s sim of 5 cm/s physical (09 section 3: the planar velocity is x2.667 at the matched pressure), and gammaDot = 6u/H = 3200 1/s sim. SUSPECTED (an open-channel estimate: the clot lowers it). Nothing reads it as an input.",
+    "wall_shear_rate_1_s": [
+     3200.0
+    ],
+    "mean_velocity_m_s": [
+     0.02666666666666667
+    ]
+   },
+   "geometry_override": {
+    "channel_height_m": 5e-05,
+    "channel_length_m": 0.00032,
+    "depth_m": 1e-06,
+    "diameter_status": "Height 50 um from source 33 (Xu et al. 2017), replacing the 45 um used through 2026-08-14. Length 250 um gives 7.6 clot radii downstream for the wake.",
+    "ell_m": 1.5e-06,
+    "expected_cell_count": 31360,
+    "h_m": 7.142857142857143e-07,
+    "injury_centre_x_m": 7.5e-05,
+    "injury_length_m": 4.69e-05,
+    "interface_width_m": 3e-06,
+    "nx": 448,
+    "ny": 70,
+    "nz": 1,
+    "_straight_channel": "NO THROAT (physics 09 choice C4): D75's 448 x 70 mesh, 320 um x 50 um sim, without the taper, so apply_throat.py is not run and the mesh is the uniform block (h 0.7143 um sim = 0.4286 um physical). 04's Lambda_dom is the drop of a straight tube; D75's throat would add resistance and a 0.286 um cell.",
+    "_units": "EVERY LENGTH IN THIS SERIES IS IN SIM UNITS: S_L = 5/3, so the 50 um channel is the 30 um arteriole (D) and the 320 um channel is 192 um physical. The generator knows only S_t (time_scale); lengths, pressures and permeabilities are written as given."
+   },
+   "clot_override": {
+    "_why": "D75's free disc, held as in D75 (CE decision 3; physics 09 choice C5): diameter 30 um SIM, so L_c/D = 0.6 against the 50 um sim = 30 um physical channel. The physical L_c/D is UNSOURCED (stiffening 01 L98). A clot spanning the lumen would be occlusive, which is not 5a.",
+    "shape": "disc",
+    "centre_x_m": 0.0001294,
+    "centre_y_m": 2.45e-05,
+    "radius_m": 1.5e-05,
+    "rests_on_wall": false,
+    "height_m": 3e-05,
+    "kind": "a free circular shell-only disc (D 30 um sim), centred off both walls at (129.4, 24.5) um sim in a 50 um sim straight channel, leading edge 144.4 um, no core. Gaps: 9.5 um below, 10.5 um above"
+   },
+   "measures": "Per step: PHASE_CLOT_DT (deltaT, the 7 limits, dtKV on G0 and on the tangent), PHASE_CLOT_LAMBDA, PHASE_CLOT_S25_F3 (rMax, stiffNonPositive), the theta-above-cap count, threads. At the full writes (0.5, 1.0, 1.5, 2.0 ms sim): max a, the core's lambda-bar-1 minus 1, the clot centroid, lambdaClot, damage by core and shell.",
+   "_every_number_and_its_source": {
+    "inlet_pressure_m2_s2": "0.02770371528 m2/s2 kinematic = the Lambda-matched inlet pressure at 5 cm/s (Lambda_dom 6.2156): physics 09 section 2 table, quoted by the CE decision. dP = 29.089 Pa sim = 727.22 Pa physical.",
+    "rho_kg_m3 / nu_m2_s": "1050 (D75, UNSOURCED, S_rho = 1) and nu 6.7636023629e-7 m2/s sim = mu/rho with mu 2.1305 mPa s (plasma 1.20 x eta_rel 1.77545, CITED x FIT); nu_phys 2.029081e-6 m2/s x S_L^2 / S_t = /3 (09 section 1 row nu). Written to phaseClotProperties AND constant/physicalProperties (the generator copies the series' nu into both).",
+    "end_time_s / write_interval_s": "0.002 s SIM (the design's '2 ms simulated'; the brief of case-engineer 09b). 09's table lists endTime 0.04 (the production window, 4.8 ms physical); this series is the smoke. write_interval 5e-4 is NOT in 09's table (it lists 5e-3, which is longer than the run, so OpenFOAM-13 would write no full time at all: Time.C L1245-1260): four full writes on a 5e-4 grid at matched times for the Richardson pair.",
+    "delta_t_s / max_delta_t_s / max_co": "5e-6 / 5e-5 / 0.5: 09 table 'controlDict (numerical, kept)', D75's values.",
+    "geometry": "448 x 70 x 1, 320 x 50 x 1 um sim, h 0.7143 um, epsilonC 3e-6, ell 1.5e-6: 09 section 2 ('D75's mesh without the throat'); numerical, kept."
+   },
+   "_why_children_2": "S25_5a_tan (elasticCourant 0.5, tangent) and S25_5a_tan_half (0.25): the B76-5a Richardson pair.",
+   "_why_children_4": "The two B76-5a smoke children (S25_5a_tan, S25_5a_tan_half) plus the RT-1 restart pair RT_5a_A and RT_5a_B (the 5a smoke child restarted from step 42 where Vs != 0; B76-RT, case-engineer 09d). A comment key only: the series question is child.json's `role` and is left unchanged so the older children stay byte-identical."
   }
  },
  "children": [
@@ -408,7 +480,8 @@
    "n_correctors": 6,
    "wall_budget_h": 3.0,
    "solver_library": "s22",
-   "_why_solver_library": "Pinned to the S22 release library (S23 rev. 4.1 section 13.2 item 5, APPROVED by Alireza 2026-10-07): this child runs R3 (network viscosity) OFF, which the S23 build refuses (R3 is required there: S24 physics 02, fibrin tan delta 0.67-4.7). It keeps the physics of its earlier runs and returns to the current build when S24 ships. Any Xu comparison with Xu 2017 needs R3 with a physics-assured tau_v before it goes to Dr He Li (S24 physics 02: R3-off results are not physics). The runner builds the library into a separate libbin (--s22-solver) and runs/<child>/child.env refuses an empty or unset path (97) or a path without the library (98); a session that selects this child without --s22-solver is refused at its start."
+   "_why_solver_library": "Pinned to the S22 release library (S23 rev. 4.1 section 13.2 item 5, APPROVED by Alireza 2026-10-07): this child runs R3 (network viscosity) OFF, which the S23 build refuses (R3 is required there: S24 physics 02, fibrin tan delta 0.67-4.7). It keeps the physics of its earlier runs and returns to the current build when S24 ships. Any Xu comparison with Xu 2017 needs R3 with a physics-assured tau_v before it goes to Dr He Li (S24 physics 02: R3-off results are not physics). The runner builds the library into a separate libbin (--s22-solver) and runs/<child>/child.env refuses an empty or unset path (97) or a path without the library (98); a session that selects this child without --s22-solver is refused at its start.",
+   "time_scale": 1.0
   },
   {
    "G_core_pa": 24.0,
@@ -452,7 +525,8 @@
    "_why_this_child": "Xu 2017 Figure 5 at 250 1/s: Figure 5 (a)/(e). Batch 61; launch order 250 with 500, then 1000 with 2000 (CONCURRENCY 2).",
    "_what_a_failing_run_looks_like": "Design section 4 (verbatim in the expectation). In short: A0 any config mismatch; A1 any |Delta| > 1e-6; A2 frozenPower != 0, projRaised != 0 or the wall split breached; A4 any contentTransferRate != 0 or a PHASE_CLOT_RELEASED line missing; A5 cumulative R > 0.9915 at any write; A7 debondedFaces > 0 or BONDHOLD seeds lost; P0 outletMeanUx/U_mean outside 1 +- 0.005 (the pressure_driven or velocity trap); P4: any bulk-core damage before 10 ms, or max lambda1 at 10 ms outside [1.375, 1.507].",
    "solver_library": "s22",
-   "_why_solver_library": "Pinned to the S22 release library (S23 rev. 4.1 section 13.2 item 5, APPROVED by Alireza 2026-10-07): this child runs R3 (network viscosity) OFF, which the S23 build refuses (R3 is required there: S24 physics 02, fibrin tan delta 0.67-4.7). It keeps the physics of its earlier runs and returns to the current build when S24 ships. Any Xu comparison with Xu 2017 needs R3 with a physics-assured tau_v before it goes to Dr He Li (S24 physics 02: R3-off results are not physics). The runner builds the library into a separate libbin (--s22-solver) and runs/<child>/child.env refuses an empty or unset path (97) or a path without the library (98); a session that selects this child without --s22-solver is refused at its start."
+   "_why_solver_library": "Pinned to the S22 release library (S23 rev. 4.1 section 13.2 item 5, APPROVED by Alireza 2026-10-07): this child runs R3 (network viscosity) OFF, which the S23 build refuses (R3 is required there: S24 physics 02, fibrin tan delta 0.67-4.7). It keeps the physics of its earlier runs and returns to the current build when S24 ships. Any Xu comparison with Xu 2017 needs R3 with a physics-assured tau_v before it goes to Dr He Li (S24 physics 02: R3-off results are not physics). The runner builds the library into a separate libbin (--s22-solver) and runs/<child>/child.env refuses an empty or unset path (97) or a path without the library (98); a session that selects this child without --s22-solver is refused at its start.",
+   "time_scale": 1.0
   },
   {
    "G_core_pa": 24.0,
@@ -496,7 +570,8 @@
    "_why_this_child": "Xu 2017 Figure 5 at 500 1/s: Figure 5 (b)/(f). Batch 61; launch order 250 with 500, then 1000 with 2000 (CONCURRENCY 2).",
    "_what_a_failing_run_looks_like": "Design section 4 (verbatim in the expectation). In short: A0 any config mismatch; A1 any |Delta| > 1e-6; A2 frozenPower != 0, projRaised != 0 or the wall split breached; A4 any contentTransferRate != 0 or a PHASE_CLOT_RELEASED line missing; A5 cumulative R > 0.9915 at any write; A7 debondedFaces > 0 or BONDHOLD seeds lost; P0 outletMeanUx/U_mean outside 1 +- 0.005 (the pressure_driven or velocity trap); P4: any bulk-core damage before 10 ms, or max lambda1 at 6 ms outside [1.643, 1.871].",
    "solver_library": "s22",
-   "_why_solver_library": "Pinned to the S22 release library (S23 rev. 4.1 section 13.2 item 5, APPROVED by Alireza 2026-10-07): this child runs R3 (network viscosity) OFF, which the S23 build refuses (R3 is required there: S24 physics 02, fibrin tan delta 0.67-4.7). It keeps the physics of its earlier runs and returns to the current build when S24 ships. Any Xu comparison with Xu 2017 needs R3 with a physics-assured tau_v before it goes to Dr He Li (S24 physics 02: R3-off results are not physics). The runner builds the library into a separate libbin (--s22-solver) and runs/<child>/child.env refuses an empty or unset path (97) or a path without the library (98); a session that selects this child without --s22-solver is refused at its start."
+   "_why_solver_library": "Pinned to the S22 release library (S23 rev. 4.1 section 13.2 item 5, APPROVED by Alireza 2026-10-07): this child runs R3 (network viscosity) OFF, which the S23 build refuses (R3 is required there: S24 physics 02, fibrin tan delta 0.67-4.7). It keeps the physics of its earlier runs and returns to the current build when S24 ships. Any Xu comparison with Xu 2017 needs R3 with a physics-assured tau_v before it goes to Dr He Li (S24 physics 02: R3-off results are not physics). The runner builds the library into a separate libbin (--s22-solver) and runs/<child>/child.env refuses an empty or unset path (97) or a path without the library (98); a session that selects this child without --s22-solver is refused at its start.",
+   "time_scale": 1.0
   },
   {
    "G_core_pa": 24.0,
@@ -540,7 +615,8 @@
    "_why_this_child": "Xu 2017 Figure 5 at 1000 1/s: Figure 5 (c)/(g). Batch 61; launch order 250 with 500, then 1000 with 2000 (CONCURRENCY 2).",
    "_what_a_failing_run_looks_like": "Design section 4 (verbatim in the expectation). In short: A0 any config mismatch; A1 any |Delta| > 1e-6; A2 frozenPower != 0, projRaised != 0 or the wall split breached; A4 any contentTransferRate != 0 or a PHASE_CLOT_RELEASED line missing; A5 cumulative R > 0.9915 at any write; A7 debondedFaces > 0 or BONDHOLD seeds lost; P0 outletMeanUx/U_mean outside 1 +- 0.005 (the pressure_driven or velocity trap); P4: first bulk-core damage outside [2.2, 3.9] ms.",
    "solver_library": "s22",
-   "_why_solver_library": "Pinned to the S22 release library (S23 rev. 4.1 section 13.2 item 5, APPROVED by Alireza 2026-10-07): this child runs R3 (network viscosity) OFF, which the S23 build refuses (R3 is required there: S24 physics 02, fibrin tan delta 0.67-4.7). It keeps the physics of its earlier runs and returns to the current build when S24 ships. Any Xu comparison with Xu 2017 needs R3 with a physics-assured tau_v before it goes to Dr He Li (S24 physics 02: R3-off results are not physics). The runner builds the library into a separate libbin (--s22-solver) and runs/<child>/child.env refuses an empty or unset path (97) or a path without the library (98); a session that selects this child without --s22-solver is refused at its start."
+   "_why_solver_library": "Pinned to the S22 release library (S23 rev. 4.1 section 13.2 item 5, APPROVED by Alireza 2026-10-07): this child runs R3 (network viscosity) OFF, which the S23 build refuses (R3 is required there: S24 physics 02, fibrin tan delta 0.67-4.7). It keeps the physics of its earlier runs and returns to the current build when S24 ships. Any Xu comparison with Xu 2017 needs R3 with a physics-assured tau_v before it goes to Dr He Li (S24 physics 02: R3-off results are not physics). The runner builds the library into a separate libbin (--s22-solver) and runs/<child>/child.env refuses an empty or unset path (97) or a path without the library (98); a session that selects this child without --s22-solver is refused at its start.",
+   "time_scale": 1.0
   },
   {
    "G_core_pa": 24.0,
@@ -584,7 +660,8 @@
    "_why_this_child": "Xu 2017 Figure 5 at 2000 1/s: an OI-44 probe: its core damage is reported, not read as Xu-comparable. Batch 61; launch order 250 with 500, then 1000 with 2000 (CONCURRENCY 2).",
    "_what_a_failing_run_looks_like": "Design section 4 (verbatim in the expectation). In short: A0 any config mismatch; A1 any |Delta| > 1e-6; A2 frozenPower != 0, projRaised != 0 or the wall split breached; A4 any contentTransferRate != 0 or a PHASE_CLOT_RELEASED line missing; A5 cumulative R > 0.9915 at any write; A7 debondedFaces > 0 or BONDHOLD seeds lost; P0 outletMeanUx/U_mean outside 1 +- 0.005 (the pressure_driven or velocity trap); P4: first bulk-core damage outside [0.77, 1.37] ms.",
    "solver_library": "s22",
-   "_why_solver_library": "Pinned to the S22 release library (S23 rev. 4.1 section 13.2 item 5, APPROVED by Alireza 2026-10-07): this child runs R3 (network viscosity) OFF, which the S23 build refuses (R3 is required there: S24 physics 02, fibrin tan delta 0.67-4.7). It keeps the physics of its earlier runs and returns to the current build when S24 ships. Any Xu comparison with Xu 2017 needs R3 with a physics-assured tau_v before it goes to Dr He Li (S24 physics 02: R3-off results are not physics). The runner builds the library into a separate libbin (--s22-solver) and runs/<child>/child.env refuses an empty or unset path (97) or a path without the library (98); a session that selects this child without --s22-solver is refused at its start."
+   "_why_solver_library": "Pinned to the S22 release library (S23 rev. 4.1 section 13.2 item 5, APPROVED by Alireza 2026-10-07): this child runs R3 (network viscosity) OFF, which the S23 build refuses (R3 is required there: S24 physics 02, fibrin tan delta 0.67-4.7). It keeps the physics of its earlier runs and returns to the current build when S24 ships. Any Xu comparison with Xu 2017 needs R3 with a physics-assured tau_v before it goes to Dr He Li (S24 physics 02: R3-off results are not physics). The runner builds the library into a separate libbin (--s22-solver) and runs/<child>/child.env refuses an empty or unset path (97) or a path without the library (98); a session that selects this child without --s22-solver is refused at its start.",
+   "time_scale": 1.0
   },
   {
    "G_core_pa": 4.0,
@@ -626,7 +703,8 @@
    "wall_budget_h": 3.0,
    "proj_site_log": "yes",
    "solver_library": "s22",
-   "_why_solver_library": "Pinned to the S22 release library (S23 rev. 4.1 section 13.2 item 5, APPROVED by Alireza 2026-10-07): this child runs R3 (network viscosity) OFF, which the S23 build refuses (R3 is required there: S24 physics 02, fibrin tan delta 0.67-4.7). It keeps the physics of its earlier runs and returns to the current build when S24 ships. Any Xu comparison with Xu 2017 needs R3 with a physics-assured tau_v before it goes to Dr He Li (S24 physics 02: R3-off results are not physics). The runner builds the library into a separate libbin (--s22-solver) and runs/<child>/child.env refuses an empty or unset path (97) or a path without the library (98); a session that selects this child without --s22-solver is refused at its start."
+   "_why_solver_library": "Pinned to the S22 release library (S23 rev. 4.1 section 13.2 item 5, APPROVED by Alireza 2026-10-07): this child runs R3 (network viscosity) OFF, which the S23 build refuses (R3 is required there: S24 physics 02, fibrin tan delta 0.67-4.7). It keeps the physics of its earlier runs and returns to the current build when S24 ships. Any Xu comparison with Xu 2017 needs R3 with a physics-assured tau_v before it goes to Dr He Li (S24 physics 02: R3-off results are not physics). The runner builds the library into a separate libbin (--s22-solver) and runs/<child>/child.env refuses an empty or unset path (97) or a path without the library (98); a session that selects this child without --s22-solver is refused at its start.",
+   "time_scale": 1.0
   },
   {
    "G_core_pa": 4.0,
@@ -668,7 +746,8 @@
    "wall_budget_h": 3.0,
    "proj_site_log": "yes",
    "solver_library": "s22",
-   "_why_solver_library": "Pinned to the S22 release library (S23 rev. 4.1 section 13.2 item 5, APPROVED by Alireza 2026-10-07): this child runs R3 (network viscosity) OFF, which the S23 build refuses (R3 is required there: S24 physics 02, fibrin tan delta 0.67-4.7). It keeps the physics of its earlier runs and returns to the current build when S24 ships. Any Xu comparison with Xu 2017 needs R3 with a physics-assured tau_v before it goes to Dr He Li (S24 physics 02: R3-off results are not physics). The runner builds the library into a separate libbin (--s22-solver) and runs/<child>/child.env refuses an empty or unset path (97) or a path without the library (98); a session that selects this child without --s22-solver is refused at its start."
+   "_why_solver_library": "Pinned to the S22 release library (S23 rev. 4.1 section 13.2 item 5, APPROVED by Alireza 2026-10-07): this child runs R3 (network viscosity) OFF, which the S23 build refuses (R3 is required there: S24 physics 02, fibrin tan delta 0.67-4.7). It keeps the physics of its earlier runs and returns to the current build when S24 ships. Any Xu comparison with Xu 2017 needs R3 with a physics-assured tau_v before it goes to Dr He Li (S24 physics 02: R3-off results are not physics). The runner builds the library into a separate libbin (--s22-solver) and runs/<child>/child.env refuses an empty or unset path (97) or a path without the library (98); a session that selects this child without --s22-solver is refused at its start.",
+   "time_scale": 1.0
   },
   {
    "adhesive_strength_pa": 0.4,
@@ -719,7 +798,8 @@
    "momentum_pressure_coupling": "blockCoupled",
    "network_viscosity": "kelvinVoigt",
    "solver_library": "s22",
-   "_why_solver_library": "Pinned to the S22 release library (CASE ENGINEER, report 25; NOT in the design's list of 12): fsb_ctl_r3 is R3 kelvinVoigt with NO tau_v_s, so it ran at the solver default 2.5e-4 s, which is below the 5e-4 s floor the S23 build refuses (section 13.2 item 4). Pinning keeps the physics of its BATCH 65 run exactly; the alternative is an explicit tau_v_s >= 5e-4, which changes it. Ratification by the CE is requested (report 25, Hand-offs)."
+   "_why_solver_library": "Pinned to the S22 release library (CASE ENGINEER, report 25; NOT in the design's list of 12): fsb_ctl_r3 is R3 kelvinVoigt with NO tau_v_s, so it ran at the solver default 2.5e-4 s, which is below the 5e-4 s floor the S23 build refuses (section 13.2 item 4). Pinning keeps the physics of its BATCH 65 run exactly; the alternative is an explicit tau_v_s >= 5e-4, which changes it. Ratification by the CE is requested (report 25, Hand-offs).",
+   "time_scale": 1.0
   },
   {
    "adhesive_strength_pa": 0.4,
@@ -794,7 +874,8 @@
     "Gfield",
     "Us"
    ],
-   "_what_a_failing_run_looks_like": "Validity (design section 4): V0 any config-echo mismatch (incl. momentumPressureCoupling blockCoupled, blockCoupledLumen eliminate, endTime 0.025); V1 any non-zero bond/injury/support/seed key at any step (the watcher stops the run, writeNow); F0 either initial wall gap < 9.0 um by the q < 0.5 indicator on 0/; V2 logged inlet - outlet p != 0.0737066 or Q non-finite/non-positive; V3 trailing-edge advance < 1.87 um between the 0.4 and 2.0 ms frames; V4 larger content drift; V5 the budget ends with no decided outcome (INCONCLUSIVE; possible for the dense child); S19 any step failing G0, G4, G6, G7, G9 memory, D1, G8r. Output O1: field data per child-ms > 34 MB or the download zip > 2.75 GB. A run that ends on a frame-only directory (no full final write) is a build defect, refused offline by frame_output_refusal."
+   "_what_a_failing_run_looks_like": "Validity (design section 4): V0 any config-echo mismatch (incl. momentumPressureCoupling blockCoupled, blockCoupledLumen eliminate, endTime 0.025); V1 any non-zero bond/injury/support/seed key at any step (the watcher stops the run, writeNow); F0 either initial wall gap < 9.0 um by the q < 0.5 indicator on 0/; V2 logged inlet - outlet p != 0.0737066 or Q non-finite/non-positive; V3 trailing-edge advance < 1.87 um between the 0.4 and 2.0 ms frames; V4 larger content drift; V5 the budget ends with no decided outcome (INCONCLUSIVE; possible for the dense child); S19 any step failing G0, G4, G6, G7, G9 memory, D1, G8r. Output O1: field data per child-ms > 34 MB or the download zip > 2.75 GB. A run that ends on a frame-only directory (no full final write) is a build defect, refused offline by frame_output_refusal.",
+   "time_scale": 1.0
   },
   {
    "adhesive_strength_pa": 0.4,
@@ -869,7 +950,8 @@
     "Gfield",
     "Us"
    ],
-   "_what_a_failing_run_looks_like": "Validity (design section 4): V0 any config-echo mismatch (incl. momentumPressureCoupling blockCoupled, blockCoupledLumen eliminate, endTime 0.025); V1 any non-zero bond/injury/support/seed key at any step (the watcher stops the run, writeNow); F0 either initial wall gap < 9.0 um by the q < 0.5 indicator on 0/; V2 logged inlet - outlet p != 0.0737066 or Q non-finite/non-positive; V3 trailing-edge advance < 1.87 um between the 0.4 and 2.0 ms frames; V4 larger content drift; V5 the budget ends with no decided outcome (INCONCLUSIVE; possible for the dense child); S19 any step failing G0, G4, G6, G7, G9 memory, D1, G8r. Output O1: field data per child-ms > 34 MB or the download zip > 2.75 GB. A run that ends on a frame-only directory (no full final write) is a build defect, refused offline by frame_output_refusal."
+   "_what_a_failing_run_looks_like": "Validity (design section 4): V0 any config-echo mismatch (incl. momentumPressureCoupling blockCoupled, blockCoupledLumen eliminate, endTime 0.025); V1 any non-zero bond/injury/support/seed key at any step (the watcher stops the run, writeNow); F0 either initial wall gap < 9.0 um by the q < 0.5 indicator on 0/; V2 logged inlet - outlet p != 0.0737066 or Q non-finite/non-positive; V3 trailing-edge advance < 1.87 um between the 0.4 and 2.0 ms frames; V4 larger content drift; V5 the budget ends with no decided outcome (INCONCLUSIVE; possible for the dense child); S19 any step failing G0, G4, G6, G7, G9 memory, D1, G8r. Output O1: field data per child-ms > 34 MB or the download zip > 2.75 GB. A run that ends on a frame-only directory (no full final write) is a build defect, refused offline by frame_output_refusal.",
+   "time_scale": 1.0
   },
   {
    "adhesive_strength_pa": 0.4,
@@ -934,7 +1016,8 @@
     "Us"
    ],
    "solver_library": "s22",
-   "_why_solver_library": "Pinned to the S22 release library (S23 rev. 4.1 section 13.2 item 5, APPROVED by Alireza 2026-10-07): this child runs R3 (network viscosity) OFF, which the S23 build refuses (R3 is required there: S24 physics 02, fibrin tan delta 0.67-4.7). It keeps the physics of its earlier runs and returns to the current build when S24 ships. Any Xu comparison with Xu 2017 needs R3 with a physics-assured tau_v before it goes to Dr He Li (S24 physics 02: R3-off results are not physics). The runner builds the library into a separate libbin (--s22-solver) and runs/<child>/child.env refuses an empty or unset path (97) or a path without the library (98); a session that selects this child without --s22-solver is refused at its start."
+   "_why_solver_library": "Pinned to the S22 release library (S23 rev. 4.1 section 13.2 item 5, APPROVED by Alireza 2026-10-07): this child runs R3 (network viscosity) OFF, which the S23 build refuses (R3 is required there: S24 physics 02, fibrin tan delta 0.67-4.7). It keeps the physics of its earlier runs and returns to the current build when S24 ships. Any Xu comparison with Xu 2017 needs R3 with a physics-assured tau_v before it goes to Dr He Li (S24 physics 02: R3-off results are not physics). The runner builds the library into a separate libbin (--s22-solver) and runs/<child>/child.env refuses an empty or unset path (97) or a path without the library (98); a session that selects this child without --s22-solver is refused at its start.",
+   "time_scale": 1.0
   },
   {
    "adhesive_strength_pa": 0.4,
@@ -997,7 +1080,8 @@
     "Us"
    ],
    "solver_library": "s22",
-   "_why_solver_library": "Pinned to the S22 release library (S23 rev. 4.1 section 13.2 item 5, APPROVED by Alireza 2026-10-07): this child runs R3 (network viscosity) OFF, which the S23 build refuses (R3 is required there: S24 physics 02, fibrin tan delta 0.67-4.7). It keeps the physics of its earlier runs and returns to the current build when S24 ships. Any Xu comparison with Xu 2017 needs R3 with a physics-assured tau_v before it goes to Dr He Li (S24 physics 02: R3-off results are not physics). The runner builds the library into a separate libbin (--s22-solver) and runs/<child>/child.env refuses an empty or unset path (97) or a path without the library (98); a session that selects this child without --s22-solver is refused at its start."
+   "_why_solver_library": "Pinned to the S22 release library (S23 rev. 4.1 section 13.2 item 5, APPROVED by Alireza 2026-10-07): this child runs R3 (network viscosity) OFF, which the S23 build refuses (R3 is required there: S24 physics 02, fibrin tan delta 0.67-4.7). It keeps the physics of its earlier runs and returns to the current build when S24 ships. Any Xu comparison with Xu 2017 needs R3 with a physics-assured tau_v before it goes to Dr He Li (S24 physics 02: R3-off results are not physics). The runner builds the library into a separate libbin (--s22-solver) and runs/<child>/child.env refuses an empty or unset path (97) or a path without the library (98); a session that selects this child without --s22-solver is refused at its start.",
+   "time_scale": 1.0
   },
   {
    "G_core_pa": 4.0,
@@ -1045,7 +1129,8 @@
    "proj_site_log": "yes",
    "_what_a_failing_run_looks_like": "Any difference between R0 and P1 in an end field, in a field-name set, or in any per-step PHASE_CLOT_* line other than *_CONFIG, ClockTime and ExecutionTime (S21 V21-7); the child must pass its network_release_time_s of 0.33 ms inside the window or the release path is not covered.",
    "solver_library": "s22",
-   "_why_solver_library": "Pinned to the S22 release library (S23 rev. 4.1 section 13.2 item 5, APPROVED by Alireza 2026-10-07): this child runs R3 (network viscosity) OFF, which the S23 build refuses (R3 is required there: S24 physics 02, fibrin tan delta 0.67-4.7). It keeps the physics of its earlier runs and returns to the current build when S24 ships. Any Xu comparison with Xu 2017 needs R3 with a physics-assured tau_v before it goes to Dr He Li (S24 physics 02: R3-off results are not physics). The runner builds the library into a separate libbin (--s22-solver) and runs/<child>/child.env refuses an empty or unset path (97) or a path without the library (98); a session that selects this child without --s22-solver is refused at its start."
+   "_why_solver_library": "Pinned to the S22 release library (S23 rev. 4.1 section 13.2 item 5, APPROVED by Alireza 2026-10-07): this child runs R3 (network viscosity) OFF, which the S23 build refuses (R3 is required there: S24 physics 02, fibrin tan delta 0.67-4.7). It keeps the physics of its earlier runs and returns to the current build when S24 ships. Any Xu comparison with Xu 2017 needs R3 with a physics-assured tau_v before it goes to Dr He Li (S24 physics 02: R3-off results are not physics). The runner builds the library into a separate libbin (--s22-solver) and runs/<child>/child.env refuses an empty or unset path (97) or a path without the library (98); a session that selects this child without --s22-solver is refused at its start.",
+   "time_scale": 1.0
   },
   {
    "G_core_pa": 24.0,
@@ -1094,7 +1179,8 @@
    "_why_this_child": "Xu 2017 Figure 5 at 250 1/s: Figure 5 (a)/(e). Batch 61; launch order 250 with 500, then 1000 with 2000 (CONCURRENCY 2).",
    "_what_a_failing_run_looks_like": "Any difference between R0 and P1 in an end field, in a field-name set, or in any per-step PHASE_CLOT_* line other than *_CONFIG, ClockTime and ExecutionTime (S21 V21-7); the child must pass its network_release_time_s of 0.33 ms inside the window or the release path is not covered.",
    "solver_library": "s22",
-   "_why_solver_library": "Pinned to the S22 release library (S23 rev. 4.1 section 13.2 item 5, APPROVED by Alireza 2026-10-07): this child runs R3 (network viscosity) OFF, which the S23 build refuses (R3 is required there: S24 physics 02, fibrin tan delta 0.67-4.7). It keeps the physics of its earlier runs and returns to the current build when S24 ships. Any Xu comparison with Xu 2017 needs R3 with a physics-assured tau_v before it goes to Dr He Li (S24 physics 02: R3-off results are not physics). The runner builds the library into a separate libbin (--s22-solver) and runs/<child>/child.env refuses an empty or unset path (97) or a path without the library (98); a session that selects this child without --s22-solver is refused at its start."
+   "_why_solver_library": "Pinned to the S22 release library (S23 rev. 4.1 section 13.2 item 5, APPROVED by Alireza 2026-10-07): this child runs R3 (network viscosity) OFF, which the S23 build refuses (R3 is required there: S24 physics 02, fibrin tan delta 0.67-4.7). It keeps the physics of its earlier runs and returns to the current build when S24 ships. Any Xu comparison with Xu 2017 needs R3 with a physics-assured tau_v before it goes to Dr He Li (S24 physics 02: R3-off results are not physics). The runner builds the library into a separate libbin (--s22-solver) and runs/<child>/child.env refuses an empty or unset path (97) or a path without the library (98); a session that selects this child without --s22-solver is refused at its start.",
+   "time_scale": 1.0
   },
   {
    "adhesive_strength_pa": 0.4,
@@ -1161,7 +1247,8 @@
     "Us"
    ],
    "_what_a_failing_run_looks_like": "Any difference between P1's 0.2 ms frame and batch 68's in a field value or in the set of field names (S21 V21-6). A frame directory other than 0.0002 at the end (the window is not what V21-6 compares).",
-   "not_scheduled_because": "S21 validation child (V21-6/V21-8). It runs as BATCH 70 on P1 (release-c53a61a6, digest-f874e5ff9947) against the R0 reference; not scheduled on later releases, kept for re-validation."
+   "not_scheduled_because": "S21 validation child (V21-6/V21-8). It runs as BATCH 70 on P1 (release-c53a61a6, digest-f874e5ff9947) against the R0 reference; not scheduled on later releases, kept for re-validation.",
+   "time_scale": 1.0
   },
   {
    "adhesive_strength_pa": 0.4,
@@ -1229,7 +1316,8 @@
     "Gfield",
     "Us"
    ],
-   "_what_a_failing_run_looks_like": "Per design rev. 4 section 4.1: width >= 4.3 um at 5 ms, or min q >= 0.1 at 25 ms (the correction is not doing what the replay says; the outcome is not interpreted); anything not PASS is FAIL. A crash, a refusal or the 5 ms watcher stops the child and is reported as such."
+   "_what_a_failing_run_looks_like": "Per design rev. 4 section 4.1: width >= 4.3 um at 5 ms, or min q >= 0.1 at 25 ms (the correction is not doing what the replay says; the outcome is not interpreted); anything not PASS is FAIL. A crash, a refusal or the 5 ms watcher stops the child and is reported as such.",
+   "time_scale": 1.0
   },
   {
    "adhesive_strength_pa": 0.4,
@@ -1299,7 +1387,8 @@
    ],
    "_what_a_failing_run_looks_like": "As fsf_G4_kxu_r3_40, except that on this child the 5 ms width is REPORTED and not a stop (design rev. 4 section 2: the 4.0 um price comes from the R3-on carrier); lambda, negAfter, the refusal and the sum clause still stop it. The log must show no R3 line.",
    "solver_library": "s22",
-   "_why_solver_library": "Pinned to the S22 release library (S23 rev. 4.1 section 13.2 item 5, APPROVED by Alireza 2026-10-07): this child runs R3 (network viscosity) OFF, which the S23 build refuses (R3 is required there: S24 physics 02, fibrin tan delta 0.67-4.7). It keeps the physics of its earlier runs and returns to the current build when S24 ships. Any Xu comparison with Xu 2017 needs R3 with a physics-assured tau_v before it goes to Dr He Li (S24 physics 02: R3-off results are not physics). The runner builds the library into a separate libbin (--s22-solver) and runs/<child>/child.env refuses an empty or unset path (97) or a path without the library (98); a session that selects this child without --s22-solver is refused at its start."
+   "_why_solver_library": "Pinned to the S22 release library (S23 rev. 4.1 section 13.2 item 5, APPROVED by Alireza 2026-10-07): this child runs R3 (network viscosity) OFF, which the S23 build refuses (R3 is required there: S24 physics 02, fibrin tan delta 0.67-4.7). It keeps the physics of its earlier runs and returns to the current build when S24 ships. Any Xu comparison with Xu 2017 needs R3 with a physics-assured tau_v before it goes to Dr He Li (S24 physics 02: R3-off results are not physics). The runner builds the library into a separate libbin (--s22-solver) and runs/<child>/child.env refuses an empty or unset path (97) or a path without the library (98); a session that selects this child without --s22-solver is refused at its start.",
+   "time_scale": 1.0
   },
   {
    "adhesive_strength_pa": 0.4,
@@ -1361,7 +1450,8 @@
     "theta": 0.4725,
     "cells": 50
    },
-   "not_scheduled_because": "S21 validation child (V21-6/V21-8). It runs as BATCH 70 on P1 (release-c53a61a6, digest-f874e5ff9947) against the R0 reference; not scheduled on later releases, kept for re-validation."
+   "not_scheduled_because": "S21 validation child (V21-6/V21-8). It runs as BATCH 70 on P1 (release-c53a61a6, digest-f874e5ff9947) against the R0 reference; not scheduled on later releases, kept for re-validation.",
+   "time_scale": 1.0
   },
   {
    "adhesive_strength_pa": 0.4,
@@ -1430,7 +1520,8 @@
     "Us"
    ],
    "_what_a_failing_run_looks_like": "G22-0: any byte differs: S22's UMFPACK path is not P2\u2032's, and every gate below is void G22-1: d(C, A) = 3e-8 at 0.4 ms against F = 1e-10: a wiring or accuracy defect, not round-off G22-3: C/A = 0.9 (threads not applied); or rest(C) = 1.3 \u00d7 rest(A) (spin-wait) G22-5: any breach A itself also fails if its config echo does not read blockLinearSolver=umfpack, or if it runs fewer or more than 399 steps.",
-   "block_linear_solver": "umfpack"
+   "block_linear_solver": "umfpack",
+   "time_scale": 1.0
   },
   {
    "adhesive_strength_pa": 0.4,
@@ -1496,7 +1587,8 @@
    ],
    "_what_a_failing_run_looks_like": "E is the control that sets the noise floor, so it has no pass line of its own except G6/G22-5/config: it fails if solverThreads is not 1 in the config echo (the OpenBLAS call was not applied), if its step count differs from A's, or if d(E, A) exceeds 1e-6 (not round-off: a wiring defect, and every gate below would be void). G22-5: any breach",
    "block_linear_solver": "umfpack",
-   "block_solver_threads": 1
+   "block_solver_threads": 1,
+   "time_scale": 1.0
   },
   {
    "adhesive_strength_pa": 0.4,
@@ -1563,7 +1655,8 @@
    ],
    "_what_a_failing_run_looks_like": "G22-4: any step > 1e-10, or a refusal G22-5: any breach B also fails if the config echo does not read blockLinearSolver=pardiso with solverThreads=1.",
    "block_linear_solver": "pardiso",
-   "block_solver_threads": 1
+   "block_solver_threads": 1,
+   "time_scale": 1.0
   },
   {
    "adhesive_strength_pa": 0.4,
@@ -1628,7 +1721,8 @@
     "Us"
    ],
    "_what_a_failing_run_looks_like": "G22-1: d(C, A) = 3e-8 at 0.4 ms against F = 1e-10: a wiring or accuracy defect, not round-off G22-2: `true` and any byte differs; `false` and d(C, D) > F G22-3: C/A = 0.9 (threads not applied); or rest(C) = 1.3 \u00d7 rest(A) (spin-wait) G22-4: any step > 1e-10, or a refusal G22-5: any breach C also fails if the config echo does not read blockLinearSolver=pardiso.",
-   "block_linear_solver": "pardiso"
+   "block_linear_solver": "pardiso",
+   "time_scale": 1.0
   },
   {
    "adhesive_strength_pa": 0.4,
@@ -1692,7 +1786,8 @@
     "Us"
    ],
    "_what_a_failing_run_looks_like": "G22-2: `true` and any byte differs; `false` and d(C, D) > F G22-4: any step > 1e-10, or a refusal G22-5: any breach",
-   "block_linear_solver": "pardiso"
+   "block_linear_solver": "pardiso",
+   "time_scale": 1.0
   },
   {
    "adhesive_strength_pa": 0.4,
@@ -1763,7 +1858,8 @@
    ],
    "_what_a_failing_run_looks_like": "G22-0: any byte differs: S22's UMFPACK path is not P2\u2032's, and every gate below is void A0 also fails if its log carries any S22 echo key (blockLinearSolver, solverThreads, mklVersion) on the PHASE_CLOT_S19_CONFIG line, or if child.env refused (run-exit-code 97: PHASE_CLOT_P2PRIME_LIBBIN empty).",
    "block_linear_solver": "umfpack",
-   "solver_library": "p2prime"
+   "solver_library": "p2prime",
+   "time_scale": 1.0
   },
   {
    "adhesive_strength_pa": 0.4,
@@ -1832,7 +1928,8 @@
     "Us"
    ],
    "_what_a_failing_run_looks_like": "G22-1: d(C, A) = 3e-8 at 0.4 ms against F = 1e-10: a wiring or accuracy defect, not round-off G22-3: C/A = 0.9 (threads not applied); or rest(C) = 1.3 \u00d7 rest(A) (spin-wait) G22-5: any breach",
-   "block_linear_solver": "umfpack"
+   "block_linear_solver": "umfpack",
+   "time_scale": 1.0
   },
   {
    "adhesive_strength_pa": 0.4,
@@ -1897,7 +1994,8 @@
     "Us"
    ],
    "_what_a_failing_run_looks_like": "G22-1: d(C, A) = 3e-8 at 0.4 ms against F = 1e-10: a wiring or accuracy defect, not round-off G22-3: C/A = 0.9 (threads not applied); or rest(C) = 1.3 \u00d7 rest(A) (spin-wait) G22-4: any step > 1e-10, or a refusal G22-5: any breach",
-   "block_linear_solver": "pardiso"
+   "block_linear_solver": "pardiso",
+   "time_scale": 1.0
   },
   {
    "adhesive_strength_pa": 0.4,
@@ -1966,7 +2064,8 @@
     "Gfield",
     "Us"
    ],
-   "_what_a_failing_run_looks_like": "Any of section 13.4's gates at any step it is read or any full write up to 40 ms: G23-1'(a) over Pi (predicted: about 21.3 ms, cell 31160), G23-7 (30-35 ms if dt follows S22's), G23-3' (35 ms, cell 31194), F1', F3, the |T|/|Pi| cross-check, G23-2 (a crash, a clock stop before 40 ms), G23-0, G23-6. The predicted batch verdict is S23 FAIL (section 13.4). The OI-55 line is separate and never quoted for the S23 verdict."
+   "_what_a_failing_run_looks_like": "Any of section 13.4's gates at any step it is read or any full write up to 40 ms: G23-1'(a) over Pi (predicted: about 21.3 ms, cell 31160), G23-7 (30-35 ms if dt follows S22's), G23-3' (35 ms, cell 31194), F1', F3, the |T|/|Pi| cross-check, G23-2 (a crash, a clock stop before 40 ms), G23-0, G23-6. The predicted batch verdict is S23 FAIL (section 13.4). The OI-55 line is separate and never quoted for the S23 verdict.",
+   "time_scale": 1.0
   },
   {
    "adhesive_strength_pa": 0.4,
@@ -2034,7 +2133,8 @@
     "Us"
    ],
    "_what_a_failing_run_looks_like": "As a reference it fails only G23-0 (a byte differs before the first tear), or if its log carries a PHASE_CLOT_S23_CONFIG line (the S23 library ran, so G23-0 compares S23 with itself), if its PHASE_CLOT_S19_CONFIG lacks blockLinearSolver=pardiso, or if child.env refused (run-exit-code 97: PHASE_CLOT_S22_LIBBIN empty or unset; 98: it holds no library). As the negative arm it is EXPECTED to fail G23-1'(a) and G23-3' on its written fields at 30 ms; if it passes both, the instrument did not discriminate on the known-bad arm and the comparator says so.",
-   "solver_library": "s22"
+   "solver_library": "s22",
+   "time_scale": 1.0
   },
   {
    "adhesive_strength_pa": 0.4,
@@ -2105,7 +2205,8 @@
    ],
    "_what_a_failing_run_looks_like": "A ratio >= 8.9 at any write or step <= 35 ms is FAIL; a stop before 35 ms is FAIL if any logged ratio is >= 8.9, otherwise UNDETERMINED, never PASS; a sustained value in (1.02, 8.9) outside the recoil windows is reported as 'R3 partly masks the edge defect', not PASS ('sustained' is defined in the comparator: an unexcused excursion lasting >= 1 ms = 3 tau, or >= 5 consecutive 0.2 ms frames). Prediction: the no-R3-on-E proxy gives 8.94 at L1 25, 0.4% above the threshold; the real R3-off frame (L2 10) held at 1.000.",
    "sensitivity_limit": "tanDelta0",
-   "_why_sensitivity_limit": "The explicit marker (S23 rev. 4.1 section 13.2 item 4, red team 21 change 11): this is the labelled tan delta -> 0 sensitivity arm, S24 numerics 01's discriminator, and the ONLY child that may run network_viscosity none on the S23 build. The solver writes `sensitivityLimit tanDelta0;` and echoes it in PHASE_CLOT_S23_CONFIG (sensitivityLimit=tanDelta0); it refuses the marker together with kelvinVoigt and any other value. The generator refuses the marker on any other child."
+   "_why_sensitivity_limit": "The explicit marker (S23 rev. 4.1 section 13.2 item 4, red team 21 change 11): this is the labelled tan delta -> 0 sensitivity arm, S24 numerics 01's discriminator, and the ONLY child that may run network_viscosity none on the S23 build. The solver writes `sensitivityLimit tanDelta0;` and echoes it in PHASE_CLOT_S23_CONFIG (sensitivityLimit=tanDelta0); it refuses the marker together with kelvinVoigt and any other value. The generator refuses the marker on any other child.",
+   "time_scale": 1.0
   },
   {
    "adhesive_strength_pa": 0.4,
@@ -2174,7 +2275,8 @@
     "Gfield",
     "Us"
    ],
-   "_what_a_failing_run_looks_like": "G23-4 (any volumetric event, any volumetric torn cell, or maxVs/maxU > 1.02 at any step) and section 13.4's gates on this arm up to 25 ms (predicted: all pass at 20 ms; there is no 25 ms frame beyond the write at 25 ms)."
+   "_what_a_failing_run_looks_like": "G23-4 (any volumetric event, any volumetric torn cell, or maxVs/maxU > 1.02 at any step) and section 13.4's gates on this arm up to 25 ms (predicted: all pass at 20 ms; there is no 25 ms frame beyond the write at 25 ms).",
+   "time_scale": 1.0
   },
   {
    "adhesive_strength_pa": 0.4,
@@ -2244,7 +2346,8 @@
     "Gfield",
     "Us"
    ],
-   "_what_a_failing_run_looks_like": "A production run that does not do what BATCH 72's identical dictionary did, any of: (1) a stop before 40 ms (a crash or the 11 h clock stop at 39600 s); (2) a step count outside 10,589 +-1% or a wall time outside 16,400 s +-15%, which means the maintenance build moved the trajectory (OI-59 was meant to change logging only); (3) a PHASE_CLOT_S23 content residual above 1e-6 (OI-59's diagnosis incomplete); (4) a whole-field max abs(Vs)/max abs(U) above 2.4 at any matched time (BATCH 72's maximum is 2.369), which the minority-torn class does not explain; (5) a dt below 1.07e-6 s (BATCH 72's minimum) or a collapse as in S22; (6) WpRawQDevMax above 1e-10 at ANY PHASE_CLOT_PLATELET record, for example the band seed (BATCH 72: 1.08e-9 at the 830th record) or the q < 0 dipole (BATCH 72: about 2.6e-3 per step from 28.4 ms, 0.328 at 37.3 ms); (7) dryFacesConducting above 0 on any PHASE_CLOT_PLATELET_FO line, or no such field on the line; (8) plateletFo that departs from BATCH 72's before the 830th record, falls below 0.80 times BATCH 72's at a matched step after it, exceeds 1.00 times it, or is 0 while the diffusivity is above 0; (9) a non-platelet step log that departs from S23v_G4_r3's at the first dry face (isolation failed; a departure at step 1 is session reproducibility and is not this). NOT a failure: about 2 times maxU on class-M cells from about 23.6 ms (a known limit), and rawQMin and the q < 0 cell count equalling BATCH 72's (predicted; reported, not gated). An assessor INADMISSIBLE on the platelet screen is now a failure (item 6 would have fired long before it)."
+   "_what_a_failing_run_looks_like": "A production run that does not do what BATCH 72's identical dictionary did, any of: (1) a stop before 40 ms (a crash or the 11 h clock stop at 39600 s); (2) a step count outside 10,589 +-1% or a wall time outside 16,400 s +-15%, which means the maintenance build moved the trajectory (OI-59 was meant to change logging only); (3) a PHASE_CLOT_S23 content residual above 1e-6 (OI-59's diagnosis incomplete); (4) a whole-field max abs(Vs)/max abs(U) above 2.4 at any matched time (BATCH 72's maximum is 2.369), which the minority-torn class does not explain; (5) a dt below 1.07e-6 s (BATCH 72's minimum) or a collapse as in S22; (6) WpRawQDevMax above 1e-10 at ANY PHASE_CLOT_PLATELET record, for example the band seed (BATCH 72: 1.08e-9 at the 830th record) or the q < 0 dipole (BATCH 72: about 2.6e-3 per step from 28.4 ms, 0.328 at 37.3 ms); (7) dryFacesConducting above 0 on any PHASE_CLOT_PLATELET_FO line, or no such field on the line; (8) plateletFo that departs from BATCH 72's before the 830th record, falls below 0.80 times BATCH 72's at a matched step after it, exceeds 1.00 times it, or is 0 while the diffusivity is above 0; (9) a non-platelet step log that departs from S23v_G4_r3's at the first dry face (isolation failed; a departure at step 1 is session reproducibility and is not this). NOT a failure: about 2 times maxU on class-M cells from about 23.6 ms (a known limit), and rawQMin and the q < 0 cell count equalling BATCH 72's (predicted; reported, not gated). An assessor INADMISSIBLE on the platelet screen is now a failure (item 6 would have fired long before it).",
+   "time_scale": 1.0
   },
   {
    "adhesive_strength_pa": 0.4,
@@ -2314,7 +2417,8 @@
     "Gfield",
     "Us"
    ],
-   "_what_a_failing_run_looks_like": "To 25 ms, any departure from BATCH 72's identical dictionary: dt not constant at 1.5038e-6 s, a step count other than 16,625 +-1%, a whole-field ratio above 1.1, a content residual above 1e-6, WpRawQDevMax above 1e-10 at any record, dryFacesConducting above 0 on any PHASE_CLOT_PLATELET_FO line (or no such field), plateletFo that departs from BATCH 72's logged value or is 0 while the diffusivity is above 0, an assessor INADMISSIBLE. Past 25 ms (unmeasured, so there is no prediction of the clot, only of the cost): a stop before 40 ms (a crash or the 18 h clock stop at 64800 s); a wall time above 14.2 h (the dt-halves figure); a dt that leaves 1.5038e-6 s (record when, and which limiter binds); WpRawQDevMax above 1e-10 at any record, or dryFacesConducting above 0, at any time to 40 ms."
+   "_what_a_failing_run_looks_like": "To 25 ms, any departure from BATCH 72's identical dictionary: dt not constant at 1.5038e-6 s, a step count other than 16,625 +-1%, a whole-field ratio above 1.1, a content residual above 1e-6, WpRawQDevMax above 1e-10 at any record, dryFacesConducting above 0 on any PHASE_CLOT_PLATELET_FO line (or no such field), plateletFo that departs from BATCH 72's logged value or is 0 while the diffusivity is above 0, an assessor INADMISSIBLE. Past 25 ms (unmeasured, so there is no prediction of the clot, only of the cost): a stop before 40 ms (a crash or the 18 h clock stop at 64800 s); a wall time above 14.2 h (the dt-halves figure); a dt that leaves 1.5038e-6 s (record when, and which limiter binds); WpRawQDevMax above 1e-10 at any record, or dryFacesConducting above 0, at any time to 40 ms.",
+   "time_scale": 1.0
   },
   {
    "adhesive_strength_pa": 0.4,
@@ -2384,7 +2488,8 @@
     "Gfield",
     "Us"
    ],
-   "_what_a_failing_run_looks_like": "THE INSTRUMENT FAILS, not the physics. Any of: (1) G74-1 (GATED, absolute, 1e-12 times max ref): ref_I < 0 or ref_I > ref anywhere, or ref_I > 0 where P1 = 0 and S > 0, at any step the PHASE_CLOT_REFI invariant residuals are read or at any full write (5, 10, ..., 40 ms). A G74-1 FAIL VOIDS the measurement: no TP-1 outcome is quoted from any write at or after the first violation, and the failure is handed to the solver engineer (the kernel, not the S24 candidate, is wrong); (2) G74-2: a stop before 40 ms (a crash, a FOAM fatal error, or the 11 h clock stop at 39600 s). A stop VOIDS the writes after it; the earlier full writes stay valid and are priced as they are, so a stop at 27 ms leaves the 20 and 25 ms R3 writes, and 3 of the 5 R3 writes are missing; (3) a ref_I file that is absent at a full write, or a harness input whose ref_I and theta come from different case directories (the pricing refuses it: no pricing on mixed states); (4) a PHASE_CLOT_REFI line absent at a step, so the p99, max, p01 and min of a_I^proxy - a_I cannot be read for the magnitudes (the sqrt(N) regime 3e-4 to 1.9e-3 against the N regime 0.010 to 0.087). NOT a failure of the run, and never counted as one: the REPORTED quantities (ref_I = ref on the d* = 0 cells, with the count and the max relative deviation; the label balance), a TP-1 outcome of FAIL or UNDECIDED (those are findings about the S24 candidate on rev. 4.1's states, not about the instrument), and a deviation outside both pre-registered ranges. G74-0 is not a gate here (no control runs); a first-departure difference against P73_G4_r3_40 is reported, not failed."
+   "_what_a_failing_run_looks_like": "THE INSTRUMENT FAILS, not the physics. Any of: (1) G74-1 (GATED, absolute, 1e-12 times max ref): ref_I < 0 or ref_I > ref anywhere, or ref_I > 0 where P1 = 0 and S > 0, at any step the PHASE_CLOT_REFI invariant residuals are read or at any full write (5, 10, ..., 40 ms). A G74-1 FAIL VOIDS the measurement: no TP-1 outcome is quoted from any write at or after the first violation, and the failure is handed to the solver engineer (the kernel, not the S24 candidate, is wrong); (2) G74-2: a stop before 40 ms (a crash, a FOAM fatal error, or the 11 h clock stop at 39600 s). A stop VOIDS the writes after it; the earlier full writes stay valid and are priced as they are, so a stop at 27 ms leaves the 20 and 25 ms R3 writes, and 3 of the 5 R3 writes are missing; (3) a ref_I file that is absent at a full write, or a harness input whose ref_I and theta come from different case directories (the pricing refuses it: no pricing on mixed states); (4) a PHASE_CLOT_REFI line absent at a step, so the p99, max, p01 and min of a_I^proxy - a_I cannot be read for the magnitudes (the sqrt(N) regime 3e-4 to 1.9e-3 against the N regime 0.010 to 0.087). NOT a failure of the run, and never counted as one: the REPORTED quantities (ref_I = ref on the d* = 0 cells, with the count and the max relative deviation; the label balance), a TP-1 outcome of FAIL or UNDECIDED (those are findings about the S24 candidate on rev. 4.1's states, not about the instrument), and a deviation outside both pre-registered ranges. G74-0 is not a gate here (no control runs); a first-departure difference against P73_G4_r3_40 is reported, not failed.",
+   "time_scale": 1.0
   },
   {
    "adhesive_strength_pa": 0.4,
@@ -2454,7 +2559,616 @@
     "Gfield",
     "Us"
    ],
-   "_what_a_failing_run_looks_like": "THE INSTRUMENT FAILS, not the physics. The gates, QUOTED VERBATIM from design rev. 3.1 section 4:\n- **G74-1, invariants** (change 4):\n  - **Gated, at 1e-12\u00b7max ref, absolute:**\n    - 0 \u2264 ref_I \u2264 ref everywhere;\n    - (rev. 3/3.1: \"ref_I = 0 where P1 = 0 \u2227 S > 0\" moved to REPORTED; see below.)\n    - Shares are evaluated with fibreReleaseKernel::shares on S > 0 only; S = 0 \u2227 ref > 0 cells are counted separately.\n- **G74-2:** D74_refI reaches 40 ms. A stop VOIDS the writes after it, and the earlier writes stay valid.\n\nA run FAILS if any of: (1) G74-1 as quoted (GATED, absolute, 1e-12 times max ref): ref_I < 0 or ref_I > ref anywhere, at any step the PHASE_CLOT_REFI invariant residuals are read or at any full write (5, 10, ..., 40 ms). A G74-1 FAIL VOIDS the measurement: no TP-1 outcome is quoted from any write at or after the first violation, and the failure is handed to the solver engineer (the kernel, not the S24 candidate, is wrong). BATCH 74 failed in exactly this form (excess from step 3075, 14.64 ms, up to 1.06e41 relative to max ref), so a repeat means rev. 3.1's transfer or its emptying row is wrong; (2) G74-2 as quoted: a stop before 40 ms (a crash, a FOAM fatal error, or the 11 h clock stop at 39600 s). A stop VOIDS the writes after it; the earlier full writes stay valid and are priced as they are, so a stop at 27 ms leaves the 20 and 25 ms R3 writes, and 3 of the 5 R3 writes are missing; (3) a ref_I file that is absent at a full write, or a harness input whose ref_I and theta come from different case directories (the pricing refuses it: no pricing on mixed states); (4) a PHASE_CLOT_REFI line absent at a step, so the p99, max, p01 and min of a_I^proxy - a_I cannot be read for the magnitudes (the sqrt(N) regime 3e-4 to 1.9e-3 against the N regime 0.010 to 0.087), or the p1Zero count and maximum cannot be read for the reading below.\n\nNOT a failure of the run, and never counted as one. (a) ref_I where P1 = 0 and S > 0 (p1Zero) at ANY size: it is REPORTED, not gated. STATED PLAINLY, as in the design: this is a gated invariant REMOVED AFTER IT FAILED (BATCH 74), on a SUSPECTED premise (numerics 01's H3, refined). Its pre-registered reading, quoted verbatim from section 4:\n      - **The reading, pre-registered:** BATCH 75's max \u2264 2e-7 means BATCH 74's larger values were inflated by the ratchet; \u2265 1e-6 means a structural transport mismatch. In between, it is reported as such.\n(b) the other REPORTED quantities (ref_I = ref on the d* = 0 cells, with the count and the max relative deviation; the label balance); (c) a TP-1 outcome of FAIL or UNDECIDED, including UNDECIDED because the two pricings differ (those are findings about the S24 candidate on rev. 4.1's states, not about the instrument). The decision rule, quoted verbatim:\n- **The decision rule for TP-1 on D74's 5 R3 writes, with three outcomes.** (rev. 3.1) It is priced TWICE: with TP-1's E6 as written, and with E6 only where pI > 0. **If the two outcomes differ, the result is UNDECIDED.**\n(d) a deviation outside both pre-registered ranges. G74-0 is not a gate here (no control runs); a first-departure difference against P73_G4_r3_40 is reported, not failed."
+   "_what_a_failing_run_looks_like": "THE INSTRUMENT FAILS, not the physics. The gates, QUOTED VERBATIM from design rev. 3.1 section 4:\n- **G74-1, invariants** (change 4):\n  - **Gated, at 1e-12\u00b7max ref, absolute:**\n    - 0 \u2264 ref_I \u2264 ref everywhere;\n    - (rev. 3/3.1: \"ref_I = 0 where P1 = 0 \u2227 S > 0\" moved to REPORTED; see below.)\n    - Shares are evaluated with fibreReleaseKernel::shares on S > 0 only; S = 0 \u2227 ref > 0 cells are counted separately.\n- **G74-2:** D74_refI reaches 40 ms. A stop VOIDS the writes after it, and the earlier writes stay valid.\n\nA run FAILS if any of: (1) G74-1 as quoted (GATED, absolute, 1e-12 times max ref): ref_I < 0 or ref_I > ref anywhere, at any step the PHASE_CLOT_REFI invariant residuals are read or at any full write (5, 10, ..., 40 ms). A G74-1 FAIL VOIDS the measurement: no TP-1 outcome is quoted from any write at or after the first violation, and the failure is handed to the solver engineer (the kernel, not the S24 candidate, is wrong). BATCH 74 failed in exactly this form (excess from step 3075, 14.64 ms, up to 1.06e41 relative to max ref), so a repeat means rev. 3.1's transfer or its emptying row is wrong; (2) G74-2 as quoted: a stop before 40 ms (a crash, a FOAM fatal error, or the 11 h clock stop at 39600 s). A stop VOIDS the writes after it; the earlier full writes stay valid and are priced as they are, so a stop at 27 ms leaves the 20 and 25 ms R3 writes, and 3 of the 5 R3 writes are missing; (3) a ref_I file that is absent at a full write, or a harness input whose ref_I and theta come from different case directories (the pricing refuses it: no pricing on mixed states); (4) a PHASE_CLOT_REFI line absent at a step, so the p99, max, p01 and min of a_I^proxy - a_I cannot be read for the magnitudes (the sqrt(N) regime 3e-4 to 1.9e-3 against the N regime 0.010 to 0.087), or the p1Zero count and maximum cannot be read for the reading below.\n\nNOT a failure of the run, and never counted as one. (a) ref_I where P1 = 0 and S > 0 (p1Zero) at ANY size: it is REPORTED, not gated. STATED PLAINLY, as in the design: this is a gated invariant REMOVED AFTER IT FAILED (BATCH 74), on a SUSPECTED premise (numerics 01's H3, refined). Its pre-registered reading, quoted verbatim from section 4:\n      - **The reading, pre-registered:** BATCH 75's max \u2264 2e-7 means BATCH 74's larger values were inflated by the ratchet; \u2265 1e-6 means a structural transport mismatch. In between, it is reported as such.\n(b) the other REPORTED quantities (ref_I = ref on the d* = 0 cells, with the count and the max relative deviation; the label balance); (c) a TP-1 outcome of FAIL or UNDECIDED, including UNDECIDED because the two pricings differ (those are findings about the S24 candidate on rev. 4.1's states, not about the instrument). The decision rule, quoted verbatim:\n- **The decision rule for TP-1 on D74's 5 R3 writes, with three outcomes.** (rev. 3.1) It is priced TWICE: with TP-1's E6 as written, and with E6 only where pI > 0. **If the two outcomes differ, the result is UNDECIDED.**\n(d) a deviation outside both pre-registered ranges. G74-0 is not a gate here (no control runs); a first-departure difference against P73_G4_r3_40 is reported, not failed.",
+   "time_scale": 1.0
+  },
+  {
+   "adhesive_strength_pa": 0.4,
+   "be_div_scheme": "Gauss upwind",
+   "bond_hold_dilation": 4,
+   "bond_hold_penalty": 10000000.0,
+   "clot_erosion_rate": 0.0,
+   "platelet_bind_rate": 42.0,
+   "platelet_diffusivity": 0.0,
+   "platelet_inlet_density_m3": 0.0,
+   "platelet_number_density_m3": 250000000000000.0,
+   "platelet_yield_m3": 1e-17,
+   "release_support_limit": 0.5,
+   "residual_chi": 0.0002222,
+   "skeleton_dilute_drag_rate": 0.0,
+   "skeleton_volume_fraction": 0.45,
+   "platelet_adhesion_speed": 0.006045,
+   "network_pressure_weight": "networkPresence",
+   "network_damage_onset_stretch": 2.105,
+   "network_damage_stretch_scale": 1.0,
+   "network_critical_stretch": 2.8,
+   "network_release_time_s": 0.00033,
+   "final_relaxation_unity": true,
+   "n_correctors": 6,
+   "proj_site_log": "yes",
+   "series": "throat_free_shell",
+   "wall_shear_rate_1_s": 250.0,
+   "mean_velocity_m_s": 0.0020833333333333333,
+   "end_time_s": 0.03,
+   "write_interval_s": 0.005,
+   "wall_budget_h": 11.0,
+   "platelet_transport_only": true,
+   "material_label_basis": "transportedLabel",
+   "_every_number_and_its_source": {
+    "wall_budget_h": "11.0 h (stopAtClockTime 39600 s), inherited from P73_G4_r3_40 and so from S23v_G4_r3, as the pair check requires (the only key B differs in is end_time_s). Expected: B about 7.5 h = 7.9e3 steps x 3.4 s (design 2026-10-10-S25 section 7, B76-OFF 'Cost'; the 3.4 s is numerics 04's 3.37 s/step from D75's CPU time at 6 threads); A about 5.9 h = 6,697 steps x 3.19 CPU-s/step, both MEASURED on D75_refI's log to 30 ms (preflight/20261009-171539-am2020-main-case/case-after-run-AM2020_planar_mural_detachment/runs/D75_refI/log.phaseClotAxisymmetricFluid: 'Time =' lines up to 0.03 s, and ExecutionTime 21,357.96 s at the last of them). A runs the baseline release-e2a57db1, which IS D75's build, so its step count is D75's to 30 ms if the trajectory holds; B may take more steps after 25 ms (design section 4: R3-on children MAY lose dt x3-9 in void cells after 25 ms). The cap is 1.47 times the design's 7.5 h and 1.9 times A's 5.9 h. CPU time at 6 threads is the only 1-thread price on record: the first 1-core run MEASURES the real rate (design section 4).",
+    "end_time_s": "0.03 s (design section 7, B76-OFF: 'run to 30 ms by BOTH binaries'); 6 whole writeIntervals of 5 ms, which frame_output_refusal requires. The parent P73_G4_r3_40 runs to 0.04; B76_OFF_B differs from it in this key alone.",
+    "write_interval_s": "5e-3 s, inherited: full writes at 5, 10, ..., 30 ms.",
+    "frame_interval_s": "2e-4 s and the 8 frame fields, inherited: the frames are the bitwise comparison's per-step-window evidence (design gate 1 is on every step; the log carries every step).",
+    "everything_else": "P73_G4_r3_40's dictionary byte for byte (loose 4 Pa, k0p 4.07e-13, centred free shell-only disc D 30 um, S19b block-coupled, R3 kelvinVoigt tau_v 1.5 ms, blockLinearSolver the solver's default pardiso, shipped skeleton law, time_scale 1.0). The generator's parent check names ONLY end_time_s for B and, for A against B, solver_library.",
+    "solver_library": "A only: baseline = release-e2a57db1 (= tag digest-6758ccf99eb4, the release before S25, which is D75's build). The runner builds that tag's solver into its own FOAM_USER_LIBBIN (--baseline-solver) and runs/B76_OFF_A/child.env prepends it to LD_LIBRARY_PATH (exit 97 if the variable is empty, 98 if the path holds no library). B has no solver_library: it runs the package's own S25 build.",
+    "time_scale": "1.0, required on every child. A is on a library that predates S25, which never reads timeScale: the generator refuses any other value there. The dictionary carries 'timeScale 1.0;' for BOTH arms (the arms' dictionaries are identical), because the baseline source has no read of timeScale and no key-iterating refusal (case-engineer report 11, probes/ce11_baseline_accepts.py).",
+    "writePrecision": "17 in both arms' controlDict (S25_WRITE_PRECISION, written for every child): gate 1 is bitwise at 17 digits.",
+    "threads_and_cpu": "ONE solver thread (the 1-core runtime) and NO MKL conditional-numerical-reproducibility pin: the solver itself calls mkl_cbwr_set(MKL_CBWR_AUTO) before any other MKL call (blockCoupledKernel.H L1610 in release-e2a57db1, L1697 in the S25 build; design section 12.1 cites L1565-1566), which overrides an environment pin, and the baseline binary cannot be changed (design section 12.1). The comparison is therefore bitwise ONLY if both sessions land on the same CPU model, ISA flags and MKL code path. Each session's environment.json records s22.cpu_model, s22.cpu_flags (the sorted /proc/cpuinfo flags), s22.mkl_cbwr.auto_branch (the branch this session's libmkl_rt lands on, measured in a fresh process), s22.mkl_threads_pinned (1) and s22.mkl_num_threads; B's log also prints them in PHASE_CLOT_S19_CONFIG. A's log (release-e2a57db1's PHASE_CLOT_S19_CONFIG, phaseClotAxisymmetricFluid.C L2382ff, has no cpuModel or mklCbwrBranch key: grep of the tag's source) prints none, so the assessor's pair status reads UNVERIFIED for this pair; the comparator applies the VOID rule from the two environment.json files.",
+    "pair": "registered in the controls' top-level s25_paired_comparisons as pair_id 'B76-OFF', arms [B76_OFF_A, B76_OFF_B]. The arms run in two sessions, so one assessment holds one arm and the pair is reported ARMS_NOT_IN_THIS_RUN there (assess_case.s25_pair_report): the identity comparison is the comparator's.",
+    "session": "ONE Colab session per arm, CONCURRENCY 1 (1-core runtime, one solver thread), no launch split. Session = 0.7 h set-up + the child: 0.7 + 7.5 h = 8.2 h expected, 0.7 + 11.0 h = 11.7 h at the cap, inside the 24 h by 12.3 h. B's set-up is the package's own build; A's adds a second solver compile (the baseline), whose time is NOT priced (no returned run times it) and fits the margin.",
+    "output": "The generator's projection (end/write x 19.5 MB, full writes only, x1.274 for writePrecision 17) is 6 x 19.5 MB x 1.274 = 0.15 GB, far under OUTPUT_BUDGET_GB 8.0. The measured return is larger because of the 0.2 ms frames and the log: BATCH 72 S23v_G4_r3 returned 1445 MB at 40 ms (201 time directories, log 216 MB). Scaled to 30 ms (about 156 time directories) and x1.274: about 1.4 GB per arm (SUSPECTED; it assumes the frame share scales as the full-write share).",
+    "volumetric_tear_ratio": "not named: the solver default 21.95 (S23 section 2.1), as in S23v_G4_r3"
+   },
+   "child_id": "B76_OFF_A",
+   "G_pa": 4.0,
+   "k0p_m2": 4.07e-13,
+   "expectation": "PRE-REGISTRATION, B76-OFF (ARM A, the BASELINE binary release-e2a57db1). Design research/designs/2026-10-10-S25-arteriole-bundle.md rev. 2.2 section 7, APPROVED by Alireza 2026-10-10 ('Approve; build and release (Recommended)'); sections 11 (change 1, ADAPTED) and 12.1 (the validity precondition). THIS IS A DO-NOTHING CONTROL: P73_G4_r3_40's case (shipped law, R3 on) run to 30 ms by BOTH binaries, on the same 1-core runtime, at one solver thread, writing 17 digits. A is B76_OFF_A (solver_library baseline); B is B76_OFF_B (the package's S25 build); they differ in the binary and nothing else. The gates are B against A, bitwise at 17 digits, with the timer keys excluded as G74-0 did. NO CNR pin is requested (section 12.1): the pair is comparable only on the same CPU model, flags and MKL code path, recorded in each session's environment.json; if they differ the comparison is VOID, not failed, and is rerun. The block below is the design's text VERBATIM (section 7, B76-OFF-A and B76-OFF-B); the secondary comparison to D75 is REPORT-ONLY and is not a gate.\n\n**B76-OFF-A and B76-OFF-B, the attributable control** (changes 1-4, change 1 ADAPTED, \u00a711):\n- **The runs:** P73_G4_r3_40 (shipped law, R3 on), run to **30 ms** by BOTH binaries:\n  - A is the baseline, release-e2a57db1;\n  - B is S25.\n- **Settings:** both on the same 1-core runtime, at 1 solver thread, with the SAME pinned MKL CNR branch, and both write 17 digits. The thread count and the CNR branch are recorded in each child's environment.json.\n- **Cost:** about 7.9e3 steps at about 3.4 s each, about 7.5 h per arm, one session each.\n- **Gates (B against A, bitwise at 17 digits; the comparator excludes the timer keys, as G74-0 did):**\n  1. **dt and every clot field are identical to A on every step before the first step where dtNetDiff binds.**\n  2. **\u00a7D:** dtNetDiff binds on **0 steps to 20 ms**, and max dt/dtNetDiff \u2264 **0.70** before 25 ms (03). **A bind before 25 ms is a FAIL, not \"by design\".** After 25 ms, binds are reported with the argmax cell's iA_S, r3AsB, w and a. \u00d73-9 losses in void cells are possible (\u00a74).\n  3. **R1 at k0 = 0:** WpRawQDevMax **== 0** and e \u2261 0 **bitwise on every step**.\n     - **The negative:** A must FAIL this gate. Today's code reads 2.48e-14 by 2 ms and 7.8e-7 by 40 ms on B73.\n  4. **G:** cells with \u03b8 > cap = 0 on every step.\n- **Secondary, reported and NOT gated:** B against D75's 12-digit log, parsed and re-printed at %.12g (no double rounding). This crosses 1 against 6 threads (red team 04 #2), so a departure there is not attributable.\n",
+   "momentum_pressure_coupling": "blockCoupled",
+   "network_viscosity": "kelvinVoigt",
+   "tau_v_s": 0.0015,
+   "clot_override": {
+    "_why": "design 2026-10-05-case-free-shell-centred-s19b rev. 3 section 2.1: centred, off both walls (Alireza 2026-10-05).",
+    "centre_x_m": 0.0001294,
+    "centre_y_m": 2.45e-05,
+    "rests_on_wall": false,
+    "kind": "a free circular shell-only disc (D 30 um), centred off both walls at (129.4, 24.5) um, leading edge 144.4 um, no core"
+   },
+   "frame_interval_s": 0.0002,
+   "frame_fields": [
+    "q",
+    "p",
+    "U",
+    "Vs",
+    "clotDrag",
+    "poroPerm",
+    "Gfield",
+    "Us"
+   ],
+   "_what_a_failing_run_looks_like": "THE INSTRUMENT FAILS, not the physics, if any of:\n- **VOID, not failed:** the two sessions' environment.json differ in s22.cpu_model, s22.cpu_flags or s22.mkl_cbwr.auto_branch (design section 12.1). The comparison is void and is rerun, in ONE session if two sessions keep landing on different CPUs. Do not read gates 1-4 across a void pair.\n- **Gate 3's negative does not discriminate:** A (the baseline) reads WpRawQDevMax == 0 and e == 0 bitwise on every step. The design says today's code reads 2.48e-14 by 2 ms and 7.8e-7 by 40 ms on B73; if A reads exactly 0, gate 3 cannot fail on this instrument and passing B means nothing.\n- **A or B stops before 30 ms** (a crash, the 11 h clock stop at 39600 s, or a construction refusal; a refusal of timeScale or any other S25 key by A means the baseline does NOT ignore it: generate A without the new keys and record why).\n- **A is not the baseline:** its log carries any of PHASE_CLOT_S25_CONFIG, PHASE_CLOT_DT or PHASE_CLOT_S19_CONFIG's cpuModel/mklCbwrBranch keys, none of which the baseline source prints (the library did not load, B76_OFF_A ran the package's S25 build; child.env exits 97/98 should have stopped it).\n- **B fails a gate** (this IS the physics-and-build result, not the instrument): gate 1 (a field or dt differs from A on a step before the first dtNetDiff bind), gate 2 (dtNetDiff binds on any step to 20 ms, or max dt/dtNetDiff > 0.70 before 25 ms, or any bind before 25 ms), gate 3 (WpRawQDevMax != 0 or e != 0 on any step), gate 4 (a cell with theta above the cap on any step).\nNOT a failure: B against D75's 12-digit log departing (the secondary comparison is report-only; it crosses 1 against 6 threads, so a departure is not attributable); binds after 25 ms (reported with the argmax cell's iA_S, r3AsB, w and a).",
+   "time_scale": 1.0,
+   "solver_library": "baseline",
+   "_tau_v_s_status": "SET 2026-10-05 from physics 02 (docket 20261005-0010 report 02; DECISIONS 'R3 tau_v per case set by physics assurance'), replacing the case engineer's placeholder."
+  },
+  {
+   "adhesive_strength_pa": 0.4,
+   "be_div_scheme": "Gauss upwind",
+   "bond_hold_dilation": 4,
+   "bond_hold_penalty": 10000000.0,
+   "clot_erosion_rate": 0.0,
+   "platelet_bind_rate": 42.0,
+   "platelet_diffusivity": 0.0,
+   "platelet_inlet_density_m3": 0.0,
+   "platelet_number_density_m3": 250000000000000.0,
+   "platelet_yield_m3": 1e-17,
+   "release_support_limit": 0.5,
+   "residual_chi": 0.0002222,
+   "skeleton_dilute_drag_rate": 0.0,
+   "skeleton_volume_fraction": 0.45,
+   "platelet_adhesion_speed": 0.006045,
+   "network_pressure_weight": "networkPresence",
+   "network_damage_onset_stretch": 2.105,
+   "network_damage_stretch_scale": 1.0,
+   "network_critical_stretch": 2.8,
+   "network_release_time_s": 0.00033,
+   "final_relaxation_unity": true,
+   "n_correctors": 6,
+   "proj_site_log": "yes",
+   "series": "throat_free_shell",
+   "wall_shear_rate_1_s": 250.0,
+   "mean_velocity_m_s": 0.0020833333333333333,
+   "end_time_s": 0.03,
+   "write_interval_s": 0.005,
+   "wall_budget_h": 11.0,
+   "platelet_transport_only": true,
+   "material_label_basis": "transportedLabel",
+   "_every_number_and_its_source": {
+    "wall_budget_h": "11.0 h (stopAtClockTime 39600 s), inherited from P73_G4_r3_40 and so from S23v_G4_r3, as the pair check requires (the only key B differs in is end_time_s). Expected: B about 7.5 h = 7.9e3 steps x 3.4 s (design 2026-10-10-S25 section 7, B76-OFF 'Cost'; the 3.4 s is numerics 04's 3.37 s/step from D75's CPU time at 6 threads); A about 5.9 h = 6,697 steps x 3.19 CPU-s/step, both MEASURED on D75_refI's log to 30 ms (preflight/20261009-171539-am2020-main-case/case-after-run-AM2020_planar_mural_detachment/runs/D75_refI/log.phaseClotAxisymmetricFluid: 'Time =' lines up to 0.03 s, and ExecutionTime 21,357.96 s at the last of them). A runs the baseline release-e2a57db1, which IS D75's build, so its step count is D75's to 30 ms if the trajectory holds; B may take more steps after 25 ms (design section 4: R3-on children MAY lose dt x3-9 in void cells after 25 ms). The cap is 1.47 times the design's 7.5 h and 1.9 times A's 5.9 h. CPU time at 6 threads is the only 1-thread price on record: the first 1-core run MEASURES the real rate (design section 4).",
+    "end_time_s": "0.03 s (design section 7, B76-OFF: 'run to 30 ms by BOTH binaries'); 6 whole writeIntervals of 5 ms, which frame_output_refusal requires. The parent P73_G4_r3_40 runs to 0.04; B76_OFF_B differs from it in this key alone.",
+    "write_interval_s": "5e-3 s, inherited: full writes at 5, 10, ..., 30 ms.",
+    "frame_interval_s": "2e-4 s and the 8 frame fields, inherited: the frames are the bitwise comparison's per-step-window evidence (design gate 1 is on every step; the log carries every step).",
+    "everything_else": "P73_G4_r3_40's dictionary byte for byte (loose 4 Pa, k0p 4.07e-13, centred free shell-only disc D 30 um, S19b block-coupled, R3 kelvinVoigt tau_v 1.5 ms, blockLinearSolver the solver's default pardiso, shipped skeleton law, time_scale 1.0). The generator's parent check names ONLY end_time_s for B and, for A against B, solver_library.",
+    "solver_library": "A only: baseline = release-e2a57db1 (= tag digest-6758ccf99eb4, the release before S25, which is D75's build). The runner builds that tag's solver into its own FOAM_USER_LIBBIN (--baseline-solver) and runs/B76_OFF_A/child.env prepends it to LD_LIBRARY_PATH (exit 97 if the variable is empty, 98 if the path holds no library). B has no solver_library: it runs the package's own S25 build.",
+    "time_scale": "1.0, required on every child. A is on a library that predates S25, which never reads timeScale: the generator refuses any other value there. The dictionary carries 'timeScale 1.0;' for BOTH arms (the arms' dictionaries are identical), because the baseline source has no read of timeScale and no key-iterating refusal (case-engineer report 11, probes/ce11_baseline_accepts.py).",
+    "writePrecision": "17 in both arms' controlDict (S25_WRITE_PRECISION, written for every child): gate 1 is bitwise at 17 digits.",
+    "threads_and_cpu": "ONE solver thread (the 1-core runtime) and NO MKL conditional-numerical-reproducibility pin: the solver itself calls mkl_cbwr_set(MKL_CBWR_AUTO) before any other MKL call (blockCoupledKernel.H L1610 in release-e2a57db1, L1697 in the S25 build; design section 12.1 cites L1565-1566), which overrides an environment pin, and the baseline binary cannot be changed (design section 12.1). The comparison is therefore bitwise ONLY if both sessions land on the same CPU model, ISA flags and MKL code path. Each session's environment.json records s22.cpu_model, s22.cpu_flags (the sorted /proc/cpuinfo flags), s22.mkl_cbwr.auto_branch (the branch this session's libmkl_rt lands on, measured in a fresh process), s22.mkl_threads_pinned (1) and s22.mkl_num_threads; B's log also prints them in PHASE_CLOT_S19_CONFIG. A's log (release-e2a57db1's PHASE_CLOT_S19_CONFIG, phaseClotAxisymmetricFluid.C L2382ff, has no cpuModel or mklCbwrBranch key: grep of the tag's source) prints none, so the assessor's pair status reads UNVERIFIED for this pair; the comparator applies the VOID rule from the two environment.json files.",
+    "pair": "registered in the controls' top-level s25_paired_comparisons as pair_id 'B76-OFF', arms [B76_OFF_A, B76_OFF_B]. The arms run in two sessions, so one assessment holds one arm and the pair is reported ARMS_NOT_IN_THIS_RUN there (assess_case.s25_pair_report): the identity comparison is the comparator's.",
+    "session": "ONE Colab session per arm, CONCURRENCY 1 (1-core runtime, one solver thread), no launch split. Session = 0.7 h set-up + the child: 0.7 + 7.5 h = 8.2 h expected, 0.7 + 11.0 h = 11.7 h at the cap, inside the 24 h by 12.3 h. B's set-up is the package's own build; A's adds a second solver compile (the baseline), whose time is NOT priced (no returned run times it) and fits the margin.",
+    "output": "The generator's projection (end/write x 19.5 MB, full writes only, x1.274 for writePrecision 17) is 6 x 19.5 MB x 1.274 = 0.15 GB, far under OUTPUT_BUDGET_GB 8.0. The measured return is larger because of the 0.2 ms frames and the log: BATCH 72 S23v_G4_r3 returned 1445 MB at 40 ms (201 time directories, log 216 MB). Scaled to 30 ms (about 156 time directories) and x1.274: about 1.4 GB per arm (SUSPECTED; it assumes the frame share scales as the full-write share).",
+    "volumetric_tear_ratio": "not named: the solver default 21.95 (S23 section 2.1), as in S23v_G4_r3"
+   },
+   "child_id": "B76_OFF_B",
+   "G_pa": 4.0,
+   "k0p_m2": 4.07e-13,
+   "expectation": "PRE-REGISTRATION, B76-OFF (ARM B, the S25 build). Design research/designs/2026-10-10-S25-arteriole-bundle.md rev. 2.2 section 7, APPROVED by Alireza 2026-10-10 ('Approve; build and release (Recommended)'); sections 11 (change 1, ADAPTED) and 12.1 (the validity precondition). THIS IS A DO-NOTHING CONTROL: P73_G4_r3_40's case (shipped law, R3 on) run to 30 ms by BOTH binaries, on the same 1-core runtime, at one solver thread, writing 17 digits. A is B76_OFF_A (solver_library baseline); B is B76_OFF_B (the package's S25 build); they differ in the binary and nothing else. The gates are B against A, bitwise at 17 digits, with the timer keys excluded as G74-0 did. NO CNR pin is requested (section 12.1): the pair is comparable only on the same CPU model, flags and MKL code path, recorded in each session's environment.json; if they differ the comparison is VOID, not failed, and is rerun. The block below is the design's text VERBATIM (section 7, B76-OFF-A and B76-OFF-B); the secondary comparison to D75 is REPORT-ONLY and is not a gate.\n\n**B76-OFF-A and B76-OFF-B, the attributable control** (changes 1-4, change 1 ADAPTED, \u00a711):\n- **The runs:** P73_G4_r3_40 (shipped law, R3 on), run to **30 ms** by BOTH binaries:\n  - A is the baseline, release-e2a57db1;\n  - B is S25.\n- **Settings:** both on the same 1-core runtime, at 1 solver thread, with the SAME pinned MKL CNR branch, and both write 17 digits. The thread count and the CNR branch are recorded in each child's environment.json.\n- **Cost:** about 7.9e3 steps at about 3.4 s each, about 7.5 h per arm, one session each.\n- **Gates (B against A, bitwise at 17 digits; the comparator excludes the timer keys, as G74-0 did):**\n  1. **dt and every clot field are identical to A on every step before the first step where dtNetDiff binds.**\n  2. **\u00a7D:** dtNetDiff binds on **0 steps to 20 ms**, and max dt/dtNetDiff \u2264 **0.70** before 25 ms (03). **A bind before 25 ms is a FAIL, not \"by design\".** After 25 ms, binds are reported with the argmax cell's iA_S, r3AsB, w and a. \u00d73-9 losses in void cells are possible (\u00a74).\n  3. **R1 at k0 = 0:** WpRawQDevMax **== 0** and e \u2261 0 **bitwise on every step**.\n     - **The negative:** A must FAIL this gate. Today's code reads 2.48e-14 by 2 ms and 7.8e-7 by 40 ms on B73.\n  4. **G:** cells with \u03b8 > cap = 0 on every step.\n- **Secondary, reported and NOT gated:** B against D75's 12-digit log, parsed and re-printed at %.12g (no double rounding). This crosses 1 against 6 threads (red team 04 #2), so a departure there is not attributable.\n",
+   "momentum_pressure_coupling": "blockCoupled",
+   "network_viscosity": "kelvinVoigt",
+   "tau_v_s": 0.0015,
+   "clot_override": {
+    "_why": "design 2026-10-05-case-free-shell-centred-s19b rev. 3 section 2.1: centred, off both walls (Alireza 2026-10-05).",
+    "centre_x_m": 0.0001294,
+    "centre_y_m": 2.45e-05,
+    "rests_on_wall": false,
+    "kind": "a free circular shell-only disc (D 30 um), centred off both walls at (129.4, 24.5) um, leading edge 144.4 um, no core"
+   },
+   "frame_interval_s": 0.0002,
+   "frame_fields": [
+    "q",
+    "p",
+    "U",
+    "Vs",
+    "clotDrag",
+    "poroPerm",
+    "Gfield",
+    "Us"
+   ],
+   "_what_a_failing_run_looks_like": "THE INSTRUMENT FAILS, not the physics, if any of:\n- **VOID, not failed:** the two sessions' environment.json differ in s22.cpu_model, s22.cpu_flags or s22.mkl_cbwr.auto_branch (design section 12.1). The comparison is void and is rerun, in ONE session if two sessions keep landing on different CPUs. Do not read gates 1-4 across a void pair.\n- **Gate 3's negative does not discriminate:** A (the baseline) reads WpRawQDevMax == 0 and e == 0 bitwise on every step. The design says today's code reads 2.48e-14 by 2 ms and 7.8e-7 by 40 ms on B73; if A reads exactly 0, gate 3 cannot fail on this instrument and passing B means nothing.\n- **A or B stops before 30 ms** (a crash, the 11 h clock stop at 39600 s, or a construction refusal; a refusal of timeScale or any other S25 key by A means the baseline does NOT ignore it: generate A without the new keys and record why).\n- **A is not the baseline:** its log carries any of PHASE_CLOT_S25_CONFIG, PHASE_CLOT_DT or PHASE_CLOT_S19_CONFIG's cpuModel/mklCbwrBranch keys, none of which the baseline source prints (the library did not load, B76_OFF_A ran the package's S25 build; child.env exits 97/98 should have stopped it).\n- **B fails a gate** (this IS the physics-and-build result, not the instrument): gate 1 (a field or dt differs from A on a step before the first dtNetDiff bind), gate 2 (dtNetDiff binds on any step to 20 ms, or max dt/dtNetDiff > 0.70 before 25 ms, or any bind before 25 ms), gate 3 (WpRawQDevMax != 0 or e != 0 on any step), gate 4 (a cell with theta above the cap on any step).\nNOT a failure: B against D75's 12-digit log departing (the secondary comparison is report-only; it crosses 1 against 6 threads, so a departure is not attributable); binds after 25 ms (reported with the argmax cell's iA_S, r3AsB, w and a).",
+   "time_scale": 1.0,
+   "_tau_v_s_status": "SET 2026-10-05 from physics 02 (docket 20261005-0010 report 02; DECISIONS 'R3 tau_v per case set by physics assurance'), replacing the case engineer's placeholder."
+  },
+  {
+   "adhesive_strength_pa": 0.4,
+   "be_div_scheme": "Gauss upwind",
+   "bond_hold_dilation": 4,
+   "bond_hold_penalty": 10000000.0,
+   "clot_erosion_rate": 0.0,
+   "platelet_bind_rate": 42.0,
+   "platelet_diffusivity": 0.0,
+   "platelet_inlet_density_m3": 0.0,
+   "platelet_number_density_m3": 250000000000000.0,
+   "platelet_yield_m3": 1e-17,
+   "release_support_limit": 0.5,
+   "residual_chi": 0.0002222,
+   "skeleton_dilute_drag_rate": 0.0,
+   "skeleton_volume_fraction": 0.45,
+   "platelet_adhesion_speed": 0.006045,
+   "network_pressure_weight": "networkPresence",
+   "network_damage_onset_stretch": 2.105,
+   "network_damage_stretch_scale": 1.0,
+   "network_critical_stretch": 2.8,
+   "network_release_time_s": 0.00033,
+   "final_relaxation_unity": true,
+   "n_correctors": 6,
+   "proj_site_log": "yes",
+   "series": "throat_free_shell",
+   "wall_shear_rate_1_s": 250.0,
+   "mean_velocity_m_s": 0.0020833333333333333,
+   "end_time_s": 0.0005,
+   "write_interval_s": 0.005,
+   "wall_budget_h": 0.25,
+   "platelet_transport_only": true,
+   "material_label_basis": "transportedLabel",
+   "_every_number_and_its_source": {
+    "parent": "P73_G4_r3_40 (short copy of P73_G4_r3_40); the generator's pair check (FSF_PARENT_PAIRS) names exactly the keys below as the difference.",
+    "write_every_step / stop_after_step / N0": "true / 47 / 42: see 'How the instrument is built' in the expectation (N0 = 42 = D75's first frame interval; S = N0 + 5 by design s7 'runs 5 steps').",
+    "end_time_s": "5e-4 s: the BACKSTOP only (about 105 steps at dt 4.76e-6 for the P73 copy; the 5a copy's steps are shorter). Never reached when the watcher works.",
+    "wall_budget_h": "0.25 h = 900 s (stopAtClockTime): the backstop. At 3.4 s/step it is about 265 steps, far past step 47; the generator refuses more than 0.5 h so that a watcher that never touches its file cannot fill the disk (purgeWrite 10 bounds the kept output anyway).",
+    "frame_interval_s / frame_fields": "REMOVED: frames are written at adjustableRunTime, which shortens dt to hit the frame times and would make the RT-1b dt sequence a writer artefact.",
+    "purgeWrite": "10, written by the generator for every write_every_step child (S25_RT1_PURGE_WRITE), with the read-back in rt1_controldict_apply.",
+    "everything_else": "inherited from P73_G4_r3_40 unchanged: material, geometry, flow, bond, physics switches, time_scale, solver_library (none), writePrecision 17."
+   },
+   "child_id": "RT_P73_A",
+   "G_pa": 4.0,
+   "k0p_m2": 4.07e-13,
+   "expectation": "PRE-REGISTRATION, B76-RT, RT-1 ((i) a short copy of P73_G4_r3_40), the cold-start arm A (writes every step to step 47). Design research/designs/2026-10-10-S25-arteriole-bundle.md rev. 2.2 (APPROVED by Alireza 2026-10-10: \"Approve; build and release (Recommended)\"), section 7 B76-RT and section 2C; docket research/investigations/20261010-0056-s25-arteriole-bundle/ (numerics 01 Q1, case-engineer 12). The block below is copied from the design file by markers, not retyped.\n\n## B76-RT, verbatim from the design\n\n**B76-RT, RT-1 (S25 01; change 8)** on two children:\n- (i) a short copy of P73_G4_r3_40;\n- (ii) the 5a smoke child (LT on, networkRupture fibreRelease on), with N0 chosen where Vs \u2260 0.\n\nThe gates:\n- **RT-1a:** m = max\\|\u03b8_B \u2212 \u03b8_A\\| / max\\|\u03b8_A(N0+1) \u2212 \u03b8_A(N0)\\| < 1e-4.\n  - Its denominator must be \u2265 1e-8; otherwise the test is void, not passed.\n  - Today's code reads \u2248 1.\n- **RT-1b:** the dt sequences agree to 1e-12 relative over 5 steps.\n- **RT-1c:** every AUTO_WRITE field at N0+5 agrees to 1e-8 relative. That INCLUDES thetaPendingB_/P_, now persisted (\u00a72C).\n\nThe copy: P73_G4_r3_40 (shipped law, R3 on, S19b block-coupled, centred free disc, throat) with the frames removed and the run shortened. required_fields = thetaPendingB, thetaPendingP (red team 04 #10, change 8): networkRupture fibreRelease is BUILT IN since S21, so every child writes them (solver .C L1202-1225), P73 included. REPORTED, not gated: whether they are nonzero at N0 (pending_persistence_exercised); before damage onset they may be 0, and then their persistence is satisfied trivially.\n\n## How the instrument is built (case-engineer 09d, not in the approved text; all of it checkable offline)\n- **Two children, ONE session, in order.** A is a cold start. It writes a FULL time directory at EVERY step (writeControl timeStep, writeInterval 1, writePrecision 17) and stops after step S = 47 = N0 + 5. B restarts from A's directory whose uniform/time index is N0 = 42 (restart_driver.py --index, not \"the latest\": A's latest is step 47) and stops after the same step 47. B's dictionaries are A's (the generator's pair check names only restart_from_child and restart_index), and Allrun refuses the restart if they differ.\n- **The stop.** dt is adaptive, so the step a time-based endTime reaches is unknown offline. A stopAtFile function object `stopAfterStep` (writeNow) is touched by scripts/step_stop_watcher.py when the log shows PHASE_CLOT_DT step=46; OF-13 notices it at the start of step 47, runs it and writes it (measured on fs_G4_kxu_v250: \"stopping now\" at timeIndex 7865, step 7866 ran and was written). end_time_s and wall_budget_h are the BACKSTOP only. A late watcher costs one more step, which every gate tolerates (gates read steps by index). purgeWrite 10 keeps the last 10 full writes (N0 survives an overshoot of up to 4 steps).\n- **N0 = 42.** The number of steps in D75's first frame interval (2e-4 s at dt 4.7619047619e-06, D75 log: deltaT unchanged for its first 3287 steps). MEASURED on D75's returned tarball (preflight/20261009-171539, members 0.0002/Vs, 0.0002/q, 0.0004/q): max|Vs| = 7.689e-3 at step 42, and max|dq| over the next 42 steps = 0.1022, i.e. 2.4e-3 per step, so theta = thetaC + thetaH (theta_ref 0.45) moves about 1e-3 per step: the RT-1a denominator is predicted at 1e-3 (1e-4 to 1e-2), five orders above its 1e-8 floor. D75 is S23v_G4_r3 under a diagnostic id and P73_G4_r3_40 is S23v_G4_r3 under a production id (SUSPECTED same trajectory). For the 5a child no run has returned: 42 is carried over, and the assessor makes max|Vs_A(N0)| > 0 a PRECONDITION (void, not passed, if Vs is 0 at N0).\n- **The gates as the assessor computes them** (assess_case.py s25_rt1_report; all on runs/A and runs/B of the same session):\n  - theta is thetaC + thetaH read from the written fields (solver .C L16500: theta = thetaC_ + thetaH_), at 17 digits.\n  - RT-1a: m = max|theta_B(N0+1) - theta_A(N0+1)| / max|theta_A(N0+1) - theta_A(N0)|; PASS if m < 1e-4. If the denominator is < 1e-8 (or not finite) the verdict is VOID, never PASS.\n  - RT-1b: for steps N0+1 .. N0+5, |dt_B - dt_A| <= 1e-12 |dt_A| on the PHASE_CLOT_DT deltaT of each log (17 digits).\n  - RT-1c: every field file of A's step-47 directory (all of them AUTO_WRITE) must exist in B's, with max|B - A| / max|A| <= 1e-8 per field (a field with max|A| = 0 must have max|B| = 0 exactly); required_fields (the s25_rt1_pairs entry) must exist in both; a field B lacks FAILS.\n  - Preconditions (VOID if unmet): A's log reports PHASE_CLOT_S25_RESTART state=seeded and B's state=restored; the directories of steps N0, N0+1 and 47 exist in A and 47 in B; both logs have the PHASE_CLOT_DT records of steps N0+1 .. 47.\n- **Each gate was seen to fail** (dry_run section `rt1`): a synthetic restart that drops thetaPendingP, one that restarts with a zero carrier (m about 1), one with dt off by 1e-10, one with a field off by 1e-6, one with a void denominator.\n- **Cost.** 47 steps at about 3.4 s (design s7 B76-OFF, 1 thread; D75 measured 3.19 CPU-s with 6 threads) = about 160 s after the set-up; B 5 steps. Output: one time directory is 29.33 MB at writePrecision 12 on D75 (50 fields, 0.04/), x 1.274 = 37.4 MB at 17 digits; A keeps 10 (purgeWrite) = about 0.37 GB, B 6 = about 0.22 GB. Backstop: wall_budget_h 0.25 (900 s, about 265 steps) bounds A at 10 kept directories whatever the watcher does.\n",
+   "momentum_pressure_coupling": "blockCoupled",
+   "network_viscosity": "kelvinVoigt",
+   "tau_v_s": 0.0015,
+   "_tau_v_s_status": "SET 2026-10-05 from physics 02 (docket 20261005-0010 report 02; DECISIONS 'R3 tau_v per case set by physics assurance'), replacing the case engineer's placeholder.",
+   "clot_override": {
+    "_why": "design 2026-10-05-case-free-shell-centred-s19b rev. 3 section 2.1: centred, off both walls (Alireza 2026-10-05).",
+    "centre_x_m": 0.0001294,
+    "centre_y_m": 2.45e-05,
+    "rests_on_wall": false,
+    "kind": "a free circular shell-only disc (D 30 um), centred off both walls at (129.4, 24.5) um, leading edge 144.4 um, no core"
+   },
+   "_what_a_failing_run_looks_like": "THE INSTRUMENT FAILS, not the physics, if any of:\n- **VOID, not failed:** RT-1a's denominator max|theta_A(N0+1) - theta_A(N0)| < 1e-8 (the test cannot discriminate); for the 5a pair max|Vs_A(N0)| = 0 (N0 is before the skeleton moves: choose a later N0); A's log says state=restored (it was not a cold start) or B's says state=seeded (the restart did not read the state: that is the restart FAILING, report it as RT-1 FAIL as well as void); a directory the gates need is missing.\n- **A or B stops early** (a crash, a construction refusal, the 0.25 h backstop before step 47). Read run-exit-code.txt, log.restartDriver (exit 2 no full write, 3 dictionaries differ, 4 bad input or A did not finish) and log.stepWatcher.\n- **A runs past step 47 by more than 4 steps** (the watcher failed or was late): N0 may have been purged. The assessor reports the last step of each log.\n- **The sibling restart did not happen** (restart.json absent in B, or its chosen index is not 42).\nNOT a failure of the instrument: RT-1a/b/c FAIL on a binary that lacks the S25 restart fix (that is the point of the test: numerics 01 predicts m about 1 on today's code, SUSPECTED, never run).",
+   "time_scale": 1.0,
+   "write_every_step": true,
+   "stop_after_step": 47
+  },
+  {
+   "adhesive_strength_pa": 0.4,
+   "be_div_scheme": "Gauss upwind",
+   "bond_hold_dilation": 4,
+   "bond_hold_penalty": 10000000.0,
+   "clot_erosion_rate": 0.0,
+   "platelet_bind_rate": 42.0,
+   "platelet_diffusivity": 0.0,
+   "platelet_inlet_density_m3": 0.0,
+   "platelet_number_density_m3": 250000000000000.0,
+   "platelet_yield_m3": 1e-17,
+   "release_support_limit": 0.5,
+   "residual_chi": 0.0002222,
+   "skeleton_dilute_drag_rate": 0.0,
+   "skeleton_volume_fraction": 0.45,
+   "platelet_adhesion_speed": 0.006045,
+   "network_pressure_weight": "networkPresence",
+   "network_damage_onset_stretch": 2.105,
+   "network_damage_stretch_scale": 1.0,
+   "network_critical_stretch": 2.8,
+   "network_release_time_s": 0.00033,
+   "final_relaxation_unity": true,
+   "n_correctors": 6,
+   "proj_site_log": "yes",
+   "series": "throat_free_shell",
+   "wall_shear_rate_1_s": 250.0,
+   "mean_velocity_m_s": 0.0020833333333333333,
+   "end_time_s": 0.0005,
+   "write_interval_s": 0.005,
+   "wall_budget_h": 0.25,
+   "platelet_transport_only": true,
+   "material_label_basis": "transportedLabel",
+   "_every_number_and_its_source": {
+    "parent": "P73_G4_r3_40 (short copy of P73_G4_r3_40); the generator's pair check (FSF_PARENT_PAIRS) names exactly the keys below as the difference.",
+    "write_every_step / stop_after_step / N0": "true / 47 / 42: see 'How the instrument is built' in the expectation (N0 = 42 = D75's first frame interval; S = N0 + 5 by design s7 'runs 5 steps').",
+    "end_time_s": "5e-4 s: the BACKSTOP only (about 105 steps at dt 4.76e-6 for the P73 copy; the 5a copy's steps are shorter). Never reached when the watcher works.",
+    "wall_budget_h": "0.25 h = 900 s (stopAtClockTime): the backstop. At 3.4 s/step it is about 265 steps, far past step 47; the generator refuses more than 0.5 h so that a watcher that never touches its file cannot fill the disk (purgeWrite 10 bounds the kept output anyway).",
+    "frame_interval_s / frame_fields": "REMOVED: frames are written at adjustableRunTime, which shortens dt to hit the frame times and would make the RT-1b dt sequence a writer artefact.",
+    "purgeWrite": "10, written by the generator for every write_every_step child (S25_RT1_PURGE_WRITE), with the read-back in rt1_controldict_apply.",
+    "everything_else": "inherited from P73_G4_r3_40 unchanged: material, geometry, flow, bond, physics switches, time_scale, solver_library (none), writePrecision 17.",
+    "restart_from_child / restart_index": "RT_P73_A / 42: restart_driver.py --index 42 on RT_P73_A's case directory; Allrun refuses the restart if RT_P73_A has not exited 0 or its dictionaries differ."
+   },
+   "child_id": "RT_P73_B",
+   "G_pa": 4.0,
+   "k0p_m2": 4.07e-13,
+   "expectation": "PRE-REGISTRATION, B76-RT, RT-1 ((i) a short copy of P73_G4_r3_40), the restart arm B (restarts from A's step 42, runs 5 steps). Design research/designs/2026-10-10-S25-arteriole-bundle.md rev. 2.2 (APPROVED by Alireza 2026-10-10: \"Approve; build and release (Recommended)\"), section 7 B76-RT and section 2C; docket research/investigations/20261010-0056-s25-arteriole-bundle/ (numerics 01 Q1, case-engineer 12). The block below is copied from the design file by markers, not retyped.\n\n## B76-RT, verbatim from the design\n\n**B76-RT, RT-1 (S25 01; change 8)** on two children:\n- (i) a short copy of P73_G4_r3_40;\n- (ii) the 5a smoke child (LT on, networkRupture fibreRelease on), with N0 chosen where Vs \u2260 0.\n\nThe gates:\n- **RT-1a:** m = max\\|\u03b8_B \u2212 \u03b8_A\\| / max\\|\u03b8_A(N0+1) \u2212 \u03b8_A(N0)\\| < 1e-4.\n  - Its denominator must be \u2265 1e-8; otherwise the test is void, not passed.\n  - Today's code reads \u2248 1.\n- **RT-1b:** the dt sequences agree to 1e-12 relative over 5 steps.\n- **RT-1c:** every AUTO_WRITE field at N0+5 agrees to 1e-8 relative. That INCLUDES thetaPendingB_/P_, now persisted (\u00a72C).\n\nThe copy: P73_G4_r3_40 (shipped law, R3 on, S19b block-coupled, centred free disc, throat) with the frames removed and the run shortened. required_fields = thetaPendingB, thetaPendingP (red team 04 #10, change 8): networkRupture fibreRelease is BUILT IN since S21, so every child writes them (solver .C L1202-1225), P73 included. REPORTED, not gated: whether they are nonzero at N0 (pending_persistence_exercised); before damage onset they may be 0, and then their persistence is satisfied trivially.\n\n## How the instrument is built (case-engineer 09d, not in the approved text; all of it checkable offline)\n- **Two children, ONE session, in order.** A is a cold start. It writes a FULL time directory at EVERY step (writeControl timeStep, writeInterval 1, writePrecision 17) and stops after step S = 47 = N0 + 5. B restarts from A's directory whose uniform/time index is N0 = 42 (restart_driver.py --index, not \"the latest\": A's latest is step 47) and stops after the same step 47. B's dictionaries are A's (the generator's pair check names only restart_from_child and restart_index), and Allrun refuses the restart if they differ.\n- **The stop.** dt is adaptive, so the step a time-based endTime reaches is unknown offline. A stopAtFile function object `stopAfterStep` (writeNow) is touched by scripts/step_stop_watcher.py when the log shows PHASE_CLOT_DT step=46; OF-13 notices it at the start of step 47, runs it and writes it (measured on fs_G4_kxu_v250: \"stopping now\" at timeIndex 7865, step 7866 ran and was written). end_time_s and wall_budget_h are the BACKSTOP only. A late watcher costs one more step, which every gate tolerates (gates read steps by index). purgeWrite 10 keeps the last 10 full writes (N0 survives an overshoot of up to 4 steps).\n- **N0 = 42.** The number of steps in D75's first frame interval (2e-4 s at dt 4.7619047619e-06, D75 log: deltaT unchanged for its first 3287 steps). MEASURED on D75's returned tarball (preflight/20261009-171539, members 0.0002/Vs, 0.0002/q, 0.0004/q): max|Vs| = 7.689e-3 at step 42, and max|dq| over the next 42 steps = 0.1022, i.e. 2.4e-3 per step, so theta = thetaC + thetaH (theta_ref 0.45) moves about 1e-3 per step: the RT-1a denominator is predicted at 1e-3 (1e-4 to 1e-2), five orders above its 1e-8 floor. D75 is S23v_G4_r3 under a diagnostic id and P73_G4_r3_40 is S23v_G4_r3 under a production id (SUSPECTED same trajectory). For the 5a child no run has returned: 42 is carried over, and the assessor makes max|Vs_A(N0)| > 0 a PRECONDITION (void, not passed, if Vs is 0 at N0).\n- **The gates as the assessor computes them** (assess_case.py s25_rt1_report; all on runs/A and runs/B of the same session):\n  - theta is thetaC + thetaH read from the written fields (solver .C L16500: theta = thetaC_ + thetaH_), at 17 digits.\n  - RT-1a: m = max|theta_B(N0+1) - theta_A(N0+1)| / max|theta_A(N0+1) - theta_A(N0)|; PASS if m < 1e-4. If the denominator is < 1e-8 (or not finite) the verdict is VOID, never PASS.\n  - RT-1b: for steps N0+1 .. N0+5, |dt_B - dt_A| <= 1e-12 |dt_A| on the PHASE_CLOT_DT deltaT of each log (17 digits).\n  - RT-1c: every field file of A's step-47 directory (all of them AUTO_WRITE) must exist in B's, with max|B - A| / max|A| <= 1e-8 per field (a field with max|A| = 0 must have max|B| = 0 exactly); required_fields (the s25_rt1_pairs entry) must exist in both; a field B lacks FAILS.\n  - Preconditions (VOID if unmet): A's log reports PHASE_CLOT_S25_RESTART state=seeded and B's state=restored; the directories of steps N0, N0+1 and 47 exist in A and 47 in B; both logs have the PHASE_CLOT_DT records of steps N0+1 .. 47.\n- **Each gate was seen to fail** (dry_run section `rt1`): a synthetic restart that drops thetaPendingP, one that restarts with a zero carrier (m about 1), one with dt off by 1e-10, one with a field off by 1e-6, one with a void denominator.\n- **Cost.** 47 steps at about 3.4 s (design s7 B76-OFF, 1 thread; D75 measured 3.19 CPU-s with 6 threads) = about 160 s after the set-up; B 5 steps. Output: one time directory is 29.33 MB at writePrecision 12 on D75 (50 fields, 0.04/), x 1.274 = 37.4 MB at 17 digits; A keeps 10 (purgeWrite) = about 0.37 GB, B 6 = about 0.22 GB. Backstop: wall_budget_h 0.25 (900 s, about 265 steps) bounds A at 10 kept directories whatever the watcher does.\n",
+   "momentum_pressure_coupling": "blockCoupled",
+   "network_viscosity": "kelvinVoigt",
+   "tau_v_s": 0.0015,
+   "_tau_v_s_status": "SET 2026-10-05 from physics 02 (docket 20261005-0010 report 02; DECISIONS 'R3 tau_v per case set by physics assurance'), replacing the case engineer's placeholder.",
+   "clot_override": {
+    "_why": "design 2026-10-05-case-free-shell-centred-s19b rev. 3 section 2.1: centred, off both walls (Alireza 2026-10-05).",
+    "centre_x_m": 0.0001294,
+    "centre_y_m": 2.45e-05,
+    "rests_on_wall": false,
+    "kind": "a free circular shell-only disc (D 30 um), centred off both walls at (129.4, 24.5) um, leading edge 144.4 um, no core"
+   },
+   "_what_a_failing_run_looks_like": "THE INSTRUMENT FAILS, not the physics, if any of:\n- **VOID, not failed:** RT-1a's denominator max|theta_A(N0+1) - theta_A(N0)| < 1e-8 (the test cannot discriminate); for the 5a pair max|Vs_A(N0)| = 0 (N0 is before the skeleton moves: choose a later N0); A's log says state=restored (it was not a cold start) or B's says state=seeded (the restart did not read the state: that is the restart FAILING, report it as RT-1 FAIL as well as void); a directory the gates need is missing.\n- **A or B stops early** (a crash, a construction refusal, the 0.25 h backstop before step 47). Read run-exit-code.txt, log.restartDriver (exit 2 no full write, 3 dictionaries differ, 4 bad input or A did not finish) and log.stepWatcher.\n- **A runs past step 47 by more than 4 steps** (the watcher failed or was late): N0 may have been purged. The assessor reports the last step of each log.\n- **The sibling restart did not happen** (restart.json absent in B, or its chosen index is not 42).\nNOT a failure of the instrument: RT-1a/b/c FAIL on a binary that lacks the S25 restart fix (that is the point of the test: numerics 01 predicts m about 1 on today's code, SUSPECTED, never run).",
+   "time_scale": 1.0,
+   "write_every_step": true,
+   "stop_after_step": 47,
+   "restart_from_child": "RT_P73_A",
+   "restart_index": 42
+  },
+  {
+   "adhesive_strength_pa": 0.468,
+   "be_div_scheme": "Gauss upwind",
+   "bond_hold_dilation": 4,
+   "bond_hold_penalty": 10000000.0,
+   "clot_erosion_rate": 0.0,
+   "platelet_bind_rate": 5.04,
+   "platelet_diffusivity": 0.0,
+   "platelet_inlet_density_m3": 0.0,
+   "platelet_number_density_m3": 250000000000000.0,
+   "platelet_yield_m3": 4.6296e-17,
+   "release_support_limit": 0.5,
+   "residual_chi": 0.00022222,
+   "skeleton_dilute_drag_rate": 0.0,
+   "skeleton_volume_fraction": 0.45,
+   "platelet_adhesion_speed": 0.001209,
+   "network_pressure_weight": "networkPresence",
+   "network_damage_onset_stretch": 2.105,
+   "network_damage_stretch_scale": 1.0,
+   "network_critical_stretch": 2.8,
+   "network_release_time_s": 0.00033,
+   "final_relaxation_unity": true,
+   "n_correctors": 6,
+   "proj_site_log": "yes",
+   "series": "s25_5a",
+   "wall_shear_rate_1_s": 3200.0,
+   "mean_velocity_m_s": 0.02666666666666667,
+   "end_time_s": 0.002,
+   "write_interval_s": 0.0005,
+   "wall_budget_h": 6.0,
+   "platelet_transport_only": true,
+   "material_label_basis": "transportedLabel",
+   "k0p_m2": 9.7222222e-14,
+   "momentum_pressure_coupling": "blockCoupled",
+   "network_viscosity": "kelvinVoigt",
+   "tau_v_s": 0.001474,
+   "time_scale": 8.333333333333334,
+   "frame_interval_s": 0.0001,
+   "frame_fields": [
+    "q",
+    "p",
+    "U",
+    "Vs",
+    "clotDrag",
+    "poroPerm",
+    "Gfield",
+    "Us"
+   ],
+   "Gc_j_m2": 0.3698,
+   "v_p_m3": 4.6296e-17,
+   "clot_erosion_tau_pa": 0.12,
+   "skeleton_law": "valanisLandelTrilinear",
+   "skeleton_law_coeffs": {
+    "E1_pa": 9.36,
+    "E2_pa": 232.8,
+    "D1": 0.107,
+    "D2": 0.574,
+    "kappa": 0.98
+   },
+   "elastic_courant_modulus": "tangent",
+   "elastic_courant": 0.5,
+   "child_id": "S25_5a_tan",
+   "_every_number_and_its_source": {
+    "units": "S_L 5/3, S_t 25/3, S_P 0.04, S_rho = S_P S_t^2 / S_L^2 = 1 exactly (09 section 0, row U). Every key below that is 'sim' is 09's table value; the generator scales only the TIMES (time_scale) and the shear rates (phys/S_t).",
+    "time_scale": "8.333333333333334 = 25/3 = S_t: 09 section 1 (timeScale, the unit ratio, not physics).",
+    "skeleton_law_coeffs": "E1_pa 9.36, E2_pa 232.8 (sim; physical 234 and 5820 Pa FIT to 62 Fig 2a, SUSPECTED), D1 0.107, D2 0.574 (FIT), kappa 0.98 (= networkPressureCoeff; kappa = 2(1+nu)/(3(1-2nu)) = 0.982 at nu 0.12, source 23 p.6): 09 section 1. G = 0.5 E1 = 4.68 Pa sim is DERIVED by the generator from the same float (physical 117 Pa), not stated; the solver requires equality (.C L1694).",
+    "k0p_m2": "9.7222222e-14 sim = 3.5e-14 m2 x S_L^2: source 23 p.5, MEASURED (indentation, human WB); 09 section 1.",
+    "Gc_j_m2": "0.3698 J/m2 sim = 5.547 x S_L x S_P (S_L^1, S_P^1). The physical 5.547 is source 24 per mainCaseControls, NO verified note: UNVERIFIED; source 28 pp.1, 4 give 7.6 +- 0.45 MEASURED and 4.44-6.54 FE. 09 section 1.",
+    "tau_v_s": "1.474e-3 s PHYSICAL (source 98 Table II, 40% Hct, MEASURED; the note warns tau = eta/mu is a band average of a mis-specified Voigt fit). The generator writes networkViscosityTau = S_t x 1.474e-3 = 1.2283333e-2 (09 section 1; floor timeScale x 5e-4 = 4.1667e-3, x2.95 clear).",
+    "network_release_time_s": "3.3e-4 s PHYSICAL (source 63 p.2673, tau1 0.33 +- 0.02 ms, MEASURED). Written as S_t x 3.3e-4 = 2.75e-3 = 09's networkReleaseTime.",
+    "adhesive_strength_pa": "0.468 Pa sim = 0.1 x G (4.68): D75's sigma_A/G 0.1 KEPT, UNSOURCED (CE decision 2; 09 offers 0.016 Pa if D75's 0.4 Pa is physical). It acts only on wall contact; the disc is free. A literature request goes before B77.",
+    "residual_chi / skeleton_volume_fraction": "2.2222e-4 = residualPhiS 1e-4 / phi0 0.45 (09 section 0, C9, INFERRED from D75's relation, not read in code; numerical) and phi0 0.45 (CE decision 4; the 0.68 arm is B77).",
+    "platelet keys": "platelet_bind_rate 5.04, platelet_adhesion_speed 1.209e-3, platelet_yield_m3 = v_p_m3 4.6296e-17, clot_erosion_tau_pa 0.12: 09 section 1 sim values, every one INERT (growth off, plateletTransportOnly yes, clotErosionRate 0).",
+    "elastic_courant / elastic_courant_modulus": "0.5 (the tangent child) or 0.25 (the dt/2 child); tangent: design 7 B76-5a and 09 section 1. The wave-CFL coefficient; the new generator key elastic_courant writes elasticCourant.",
+    "wall_budget_h": "6.0 h (stopAtClockTime 21600 s). NOT in 09's table (a run control). Price: design section 4, numerics 04 from D75's CPU time: ~3.37 s/step on 1 core (SUSPECTED; the first 1-core run measures it); steps 2.82e4 per 40 ms on the tangent (SUSPECTED) = 1.41e3 for 2 ms at 0.5 and 2.82e3 at 0.25 (dt/2). So 1.32 h and 2.64 h at 3.37 s/step, and 1.96 h and 3.92 h at the 5.0 s/step FAIL line. 6.0 h is 1.5 x the FAIL line of the longer child, so a run that is too slow ends in a FAIL verdict and not a clock stop.",
+    "frame_interval_s / frame_fields": "1e-4 s and the 8 production frame fields. NOT in 09's table. They give the odd-even gate its data: the solver logs no zigzag amplitude (grep of the .C: none), so the gate is evaluated offline from the frames' Vs, about 70 steps apart at 1.4e-6 s (1000 steps = 14 frames). 5e-4 / 1e-4 = 5 frames per full write.",
+    "kept from D75 (09: numerical, exponents 0)": "bond_hold_dilation 4, bond_hold_penalty 1e7, release_support_limit 0.5, network_damage_onset_stretch 2.105, network_critical_stretch 2.8, network_damage_stretch_scale 1.0, n_correctors 6, be_div_scheme, momentum_pressure_coupling blockCoupled, network_viscosity kelvinVoigt, material_label_basis transportedLabel, platelet_transport_only, platelet_inlet_density_m3 0 (nP inlet 0).",
+    "NOT IN THE TABLE (reported to the CE)": "(a) platelet_number_density_m3 2.5e14 is D75's, UNCONVERTED (the S_L^-3 image is 5.4e13); it is the interior nP, inert with plateletTransportOnly. (b) the growth diffusivity D stays 1e-10 (the table lists 3.3333e-11, INERT); the generator has no per-child D. (c) write_interval_s, frames and wall_budget_h above."
+   },
+   "expectation": "PRE-REGISTRATION. THE GATES ARE QUOTED VERBATIM from research/designs/2026-10-10-S25-arteriole-bundle.md rev. 2.2 (APPROVED by Alireza 2026-10-10: \"Approve; build and release (Recommended)\"), section 7 B76-5a and section 12 (the block below is copied from the file, not retyped). THE CHILD: S25's 5a at 5a's units: LT-WB (E1 9.36, E2 232.8, D1 0.107, D2 0.574, kappa 0.98 sim), time_scale 25/3, networkRupture fibreRelease (built in), k0 0 (passive platelets), phi0 0.45, PLANAR with the Lambda-matched inlet pressure 0.02770371528, adhesiveStrength 0.468 Pa sim (sigma_A/G 0.1, UNSOURCED), the clot held as in D75, to 2 ms of SIMULATED time. elasticCourant 0.5, elasticCourantModulus tangent. This is the tangent CFL arm of the Richardson pair; S25_5a_tan_half is the same dictionary at elasticCourant 0.25.\n\n## B76-5a, verbatim from the design\n\n**B76-5a, the smoke and its Richardson pair** (changes 5 and 11): 5a, LT-WB, with networkRupture fibreRelease, to 2 ms simulated. Two children:\n- the tangent CFL at elasticCourant 0.5;\n- the same child at 0.25 (dt/2).\n\nThe gates, on each child:\n- **F2 (runtime part):** a < 1 in every cell at every step. The construction clauses moved to V25-12.\n- **F3:** max r \u2264 4 at every step, with r dividing by the stiff value \u0393_t used.\n- **F7, physics 08's clauses verbatim:**\n  - **FAIL** on any new rupture (d* > 0) in bulk cells (ind > 0.95) more than 2 cells from the bonded edge. Onset at the bond-edge corner is located and reported, and does not count as a FAIL.\n  - **FAIL** if maxDg > 3e-3, or Hinterface > 10\u00d7 Hbulk (the L8339 bins).\n  - **FAIL** if \\|\u0394Dg\\| > 1e-4 between LT's driver and NH's driver at matched time. This is measured by a host replay of NH's driver on the child's written fields (the verification engineer, after the run).\n  - **Reported:** damage by core and shell, and the core's \u03bb\u03041 \u2212 1 (\u2248 0.24 predicted), for the PI comparison. Compared, not enforced.\n- **Stability:** the cell-to-cell odd-even amplitude of Vs, from a zigzag detector that scores zero on a tanh (memory: an odd-even detector must ignore steep profiles), logged every step. **FAIL** if its per-step growth exceeds 1 + 1e-5 over any 1000 steps.\n- **Logs:** PHASE_CLOT_DT and PHASE_CLOT_LAMBDA on every step, with dtKV on both G0 and the tangent; the \u03b8 > cap count; threads = 1.\n- **Cost:** s/step is MEASURED. **FAIL if > 5.0 s/step,** because 5a would then exceed 3 sessions.\n- **The Richardson pair** (the tangent child against dt/2) gives the dt-accuracy difference that sets B77's control band (below).\n\n## CE ruling on F3\n\nCE RULING (2026-10-10, on case-engineer 09a's hand-off), added to F3 and NOT in the approved design text: F3 also FAILS if stiffNonPositive > 0 at any step. Both laws give stiff > 0 by construction (LT: tau-hat' in [2, 49.7]; NH: b1 > 0), so a cell with stiff <= 0 is a defect, and excluding it from rMax would hide the very thing the gate exists to catch. assess_case.py s25_f3_report implements it (a negative is in the dry run, section ltassess).\n\n## Physics 09's group mismatches, recorded on this child\n\nGROUP MISMATCHES (physics 09 section 3, Lambda-matched pin, sim/physical; the physical reference is the TUBE arteriole): Re x2.667 (1.97 sim against 0.74), Cy x7.11 (0.16 against 0.022), tau_w/G0 x2.0 (57 Pa against 28 Pa), and Pi_p and t_rel/(D/vbar) x2.667. Lambda_dom, Da (3.889e-5), tau_v G/mu (80.95) and L_c/D (0.6) match at 1.0000. The FAIL is geometric: a slot needs 12 mu vbar/H^2 where a tube needs 32 mu vbar/D^2, so at H = D matching the pressure drop gives vbar x2.667 and tau_w x2. Inertia is over-stated but remains much smaller than the elastic terms. pa08's shear-onset margin (x63) halves to about x31 (SUSPECTED). The root fix is the axisymmetric tube, which is a decision for Alireza with the PI BEFORE B77 (planar Lambda-matched, or the tube).\n\n## Cost\n\nCOST (SUSPECTED; the first 1-core run measures it). dt is set by the tangent wave CFL: dt = elasticCourant x hMinElastic / cShear (.C L13056), 2.82e4 steps per 40 ms at 0.5 (design section 4, numerics 07) = 1.41e3 steps for 2 ms; 2.82e3 at 0.25. At ~3.37 s/step (numerics 04): 1.32 h and 2.64 h; at the 5.0 s/step FAIL line: 1.96 h and 3.92 h; plus the set-up (0.7 h, BATCH 73's figure). Output: 4 full writes x 19.5 MB x 1.4 (writePrecision 17) at 31360 cells = 0.11 GB, plus 20 frames of 8 fields: well inside OUTPUT_BUDGET_GB 8.\n",
+   "_what_a_failing_run_looks_like": "THE RUN FAILS, not the physics, on any of: F2 (a >= 1 in any cell at any step); F3 as quoted (rMax > 4, or stiffNonPositive > 0); F7's three clauses as quoted; the odd-even gate as quoted; s/step above 5.0; a required log absent (PHASE_CLOT_DT, PHASE_CLOT_LAMBDA at every step, with dtKV on G0 and on the tangent; the theta-above-cap count; threads 1); or the run not reaching 2 ms (a FatalError, a NaN, or the 6 h clock stop). What it would look like: a NaN or an a >= 1 within the first hundred steps (the tangent CFL is not stable at 5a's units); rMax creeping past 4 (the deviatoric pair loses neutral stability); a ring of new rupture (d* > 0) in the bulk, away from the bond edge (the LT driver ruptures where NH does not); the tangent child and the dt/2 child differing by more than the pre-registered band at a matched write (an accuracy problem, not a stability one)."
+  },
+  {
+   "adhesive_strength_pa": 0.468,
+   "be_div_scheme": "Gauss upwind",
+   "bond_hold_dilation": 4,
+   "bond_hold_penalty": 10000000.0,
+   "clot_erosion_rate": 0.0,
+   "platelet_bind_rate": 5.04,
+   "platelet_diffusivity": 0.0,
+   "platelet_inlet_density_m3": 0.0,
+   "platelet_number_density_m3": 250000000000000.0,
+   "platelet_yield_m3": 4.6296e-17,
+   "release_support_limit": 0.5,
+   "residual_chi": 0.00022222,
+   "skeleton_dilute_drag_rate": 0.0,
+   "skeleton_volume_fraction": 0.45,
+   "platelet_adhesion_speed": 0.001209,
+   "network_pressure_weight": "networkPresence",
+   "network_damage_onset_stretch": 2.105,
+   "network_damage_stretch_scale": 1.0,
+   "network_critical_stretch": 2.8,
+   "network_release_time_s": 0.00033,
+   "final_relaxation_unity": true,
+   "n_correctors": 6,
+   "proj_site_log": "yes",
+   "series": "s25_5a",
+   "wall_shear_rate_1_s": 3200.0,
+   "mean_velocity_m_s": 0.02666666666666667,
+   "end_time_s": 0.002,
+   "write_interval_s": 0.0005,
+   "wall_budget_h": 6.0,
+   "platelet_transport_only": true,
+   "material_label_basis": "transportedLabel",
+   "k0p_m2": 9.7222222e-14,
+   "momentum_pressure_coupling": "blockCoupled",
+   "network_viscosity": "kelvinVoigt",
+   "tau_v_s": 0.001474,
+   "time_scale": 8.333333333333334,
+   "frame_interval_s": 0.0001,
+   "frame_fields": [
+    "q",
+    "p",
+    "U",
+    "Vs",
+    "clotDrag",
+    "poroPerm",
+    "Gfield",
+    "Us"
+   ],
+   "Gc_j_m2": 0.3698,
+   "v_p_m3": 4.6296e-17,
+   "clot_erosion_tau_pa": 0.12,
+   "skeleton_law": "valanisLandelTrilinear",
+   "skeleton_law_coeffs": {
+    "E1_pa": 9.36,
+    "E2_pa": 232.8,
+    "D1": 0.107,
+    "D2": 0.574,
+    "kappa": 0.98
+   },
+   "elastic_courant_modulus": "tangent",
+   "elastic_courant": 0.25,
+   "child_id": "S25_5a_tan_half",
+   "_every_number_and_its_source": {
+    "units": "S_L 5/3, S_t 25/3, S_P 0.04, S_rho = S_P S_t^2 / S_L^2 = 1 exactly (09 section 0, row U). Every key below that is 'sim' is 09's table value; the generator scales only the TIMES (time_scale) and the shear rates (phys/S_t).",
+    "time_scale": "8.333333333333334 = 25/3 = S_t: 09 section 1 (timeScale, the unit ratio, not physics).",
+    "skeleton_law_coeffs": "E1_pa 9.36, E2_pa 232.8 (sim; physical 234 and 5820 Pa FIT to 62 Fig 2a, SUSPECTED), D1 0.107, D2 0.574 (FIT), kappa 0.98 (= networkPressureCoeff; kappa = 2(1+nu)/(3(1-2nu)) = 0.982 at nu 0.12, source 23 p.6): 09 section 1. G = 0.5 E1 = 4.68 Pa sim is DERIVED by the generator from the same float (physical 117 Pa), not stated; the solver requires equality (.C L1694).",
+    "k0p_m2": "9.7222222e-14 sim = 3.5e-14 m2 x S_L^2: source 23 p.5, MEASURED (indentation, human WB); 09 section 1.",
+    "Gc_j_m2": "0.3698 J/m2 sim = 5.547 x S_L x S_P (S_L^1, S_P^1). The physical 5.547 is source 24 per mainCaseControls, NO verified note: UNVERIFIED; source 28 pp.1, 4 give 7.6 +- 0.45 MEASURED and 4.44-6.54 FE. 09 section 1.",
+    "tau_v_s": "1.474e-3 s PHYSICAL (source 98 Table II, 40% Hct, MEASURED; the note warns tau = eta/mu is a band average of a mis-specified Voigt fit). The generator writes networkViscosityTau = S_t x 1.474e-3 = 1.2283333e-2 (09 section 1; floor timeScale x 5e-4 = 4.1667e-3, x2.95 clear).",
+    "network_release_time_s": "3.3e-4 s PHYSICAL (source 63 p.2673, tau1 0.33 +- 0.02 ms, MEASURED). Written as S_t x 3.3e-4 = 2.75e-3 = 09's networkReleaseTime.",
+    "adhesive_strength_pa": "0.468 Pa sim = 0.1 x G (4.68): D75's sigma_A/G 0.1 KEPT, UNSOURCED (CE decision 2; 09 offers 0.016 Pa if D75's 0.4 Pa is physical). It acts only on wall contact; the disc is free. A literature request goes before B77.",
+    "residual_chi / skeleton_volume_fraction": "2.2222e-4 = residualPhiS 1e-4 / phi0 0.45 (09 section 0, C9, INFERRED from D75's relation, not read in code; numerical) and phi0 0.45 (CE decision 4; the 0.68 arm is B77).",
+    "platelet keys": "platelet_bind_rate 5.04, platelet_adhesion_speed 1.209e-3, platelet_yield_m3 = v_p_m3 4.6296e-17, clot_erosion_tau_pa 0.12: 09 section 1 sim values, every one INERT (growth off, plateletTransportOnly yes, clotErosionRate 0).",
+    "elastic_courant / elastic_courant_modulus": "0.5 (the tangent child) or 0.25 (the dt/2 child); tangent: design 7 B76-5a and 09 section 1. The wave-CFL coefficient; the new generator key elastic_courant writes elasticCourant.",
+    "wall_budget_h": "6.0 h (stopAtClockTime 21600 s). NOT in 09's table (a run control). Price: design section 4, numerics 04 from D75's CPU time: ~3.37 s/step on 1 core (SUSPECTED; the first 1-core run measures it); steps 2.82e4 per 40 ms on the tangent (SUSPECTED) = 1.41e3 for 2 ms at 0.5 and 2.82e3 at 0.25 (dt/2). So 1.32 h and 2.64 h at 3.37 s/step, and 1.96 h and 3.92 h at the 5.0 s/step FAIL line. 6.0 h is 1.5 x the FAIL line of the longer child, so a run that is too slow ends in a FAIL verdict and not a clock stop.",
+    "frame_interval_s / frame_fields": "1e-4 s and the 8 production frame fields. NOT in 09's table. They give the odd-even gate its data: the solver logs no zigzag amplitude (grep of the .C: none), so the gate is evaluated offline from the frames' Vs, about 70 steps apart at 1.4e-6 s (1000 steps = 14 frames). 5e-4 / 1e-4 = 5 frames per full write.",
+    "kept from D75 (09: numerical, exponents 0)": "bond_hold_dilation 4, bond_hold_penalty 1e7, release_support_limit 0.5, network_damage_onset_stretch 2.105, network_critical_stretch 2.8, network_damage_stretch_scale 1.0, n_correctors 6, be_div_scheme, momentum_pressure_coupling blockCoupled, network_viscosity kelvinVoigt, material_label_basis transportedLabel, platelet_transport_only, platelet_inlet_density_m3 0 (nP inlet 0).",
+    "NOT IN THE TABLE (reported to the CE)": "(a) platelet_number_density_m3 2.5e14 is D75's, UNCONVERTED (the S_L^-3 image is 5.4e13); it is the interior nP, inert with plateletTransportOnly. (b) the growth diffusivity D stays 1e-10 (the table lists 3.3333e-11, INERT); the generator has no per-child D. (c) write_interval_s, frames and wall_budget_h above."
+   },
+   "expectation": "PRE-REGISTRATION. THE GATES ARE QUOTED VERBATIM from research/designs/2026-10-10-S25-arteriole-bundle.md rev. 2.2 (APPROVED by Alireza 2026-10-10: \"Approve; build and release (Recommended)\"), section 7 B76-5a and section 12 (the block below is copied from the file, not retyped). THE CHILD: S25's 5a at 5a's units: LT-WB (E1 9.36, E2 232.8, D1 0.107, D2 0.574, kappa 0.98 sim), time_scale 25/3, networkRupture fibreRelease (built in), k0 0 (passive platelets), phi0 0.45, PLANAR with the Lambda-matched inlet pressure 0.02770371528, adhesiveStrength 0.468 Pa sim (sigma_A/G 0.1, UNSOURCED), the clot held as in D75, to 2 ms of SIMULATED time. elasticCourant 0.25, elasticCourantModulus tangent. This is the dt/2 arm of the Richardson pair; it differs from S25_5a_tan in elastic_courant ALONE (the generator's pair check).\n\n## B76-5a, verbatim from the design\n\n**B76-5a, the smoke and its Richardson pair** (changes 5 and 11): 5a, LT-WB, with networkRupture fibreRelease, to 2 ms simulated. Two children:\n- the tangent CFL at elasticCourant 0.5;\n- the same child at 0.25 (dt/2).\n\nThe gates, on each child:\n- **F2 (runtime part):** a < 1 in every cell at every step. The construction clauses moved to V25-12.\n- **F3:** max r \u2264 4 at every step, with r dividing by the stiff value \u0393_t used.\n- **F7, physics 08's clauses verbatim:**\n  - **FAIL** on any new rupture (d* > 0) in bulk cells (ind > 0.95) more than 2 cells from the bonded edge. Onset at the bond-edge corner is located and reported, and does not count as a FAIL.\n  - **FAIL** if maxDg > 3e-3, or Hinterface > 10\u00d7 Hbulk (the L8339 bins).\n  - **FAIL** if \\|\u0394Dg\\| > 1e-4 between LT's driver and NH's driver at matched time. This is measured by a host replay of NH's driver on the child's written fields (the verification engineer, after the run).\n  - **Reported:** damage by core and shell, and the core's \u03bb\u03041 \u2212 1 (\u2248 0.24 predicted), for the PI comparison. Compared, not enforced.\n- **Stability:** the cell-to-cell odd-even amplitude of Vs, from a zigzag detector that scores zero on a tanh (memory: an odd-even detector must ignore steep profiles), logged every step. **FAIL** if its per-step growth exceeds 1 + 1e-5 over any 1000 steps.\n- **Logs:** PHASE_CLOT_DT and PHASE_CLOT_LAMBDA on every step, with dtKV on both G0 and the tangent; the \u03b8 > cap count; threads = 1.\n- **Cost:** s/step is MEASURED. **FAIL if > 5.0 s/step,** because 5a would then exceed 3 sessions.\n- **The Richardson pair** (the tangent child against dt/2) gives the dt-accuracy difference that sets B77's control band (below).\n\n## CE ruling on F3\n\nCE RULING (2026-10-10, on case-engineer 09a's hand-off), added to F3 and NOT in the approved design text: F3 also FAILS if stiffNonPositive > 0 at any step. Both laws give stiff > 0 by construction (LT: tau-hat' in [2, 49.7]; NH: b1 > 0), so a cell with stiff <= 0 is a defect, and excluding it from rMax would hide the very thing the gate exists to catch. assess_case.py s25_f3_report implements it (a negative is in the dry run, section ltassess).\n\n## Physics 09's group mismatches, recorded on this child\n\nGROUP MISMATCHES (physics 09 section 3, Lambda-matched pin, sim/physical; the physical reference is the TUBE arteriole): Re x2.667 (1.97 sim against 0.74), Cy x7.11 (0.16 against 0.022), tau_w/G0 x2.0 (57 Pa against 28 Pa), and Pi_p and t_rel/(D/vbar) x2.667. Lambda_dom, Da (3.889e-5), tau_v G/mu (80.95) and L_c/D (0.6) match at 1.0000. The FAIL is geometric: a slot needs 12 mu vbar/H^2 where a tube needs 32 mu vbar/D^2, so at H = D matching the pressure drop gives vbar x2.667 and tau_w x2. Inertia is over-stated but remains much smaller than the elastic terms. pa08's shear-onset margin (x63) halves to about x31 (SUSPECTED). The root fix is the axisymmetric tube, which is a decision for Alireza with the PI BEFORE B77 (planar Lambda-matched, or the tube).\n\n## Cost\n\nCOST (SUSPECTED; the first 1-core run measures it). dt is set by the tangent wave CFL: dt = elasticCourant x hMinElastic / cShear (.C L13056), 2.82e4 steps per 40 ms at 0.5 (design section 4, numerics 07) = 1.41e3 steps for 2 ms; 2.82e3 at 0.25. At ~3.37 s/step (numerics 04): 1.32 h and 2.64 h; at the 5.0 s/step FAIL line: 1.96 h and 3.92 h; plus the set-up (0.7 h, BATCH 73's figure). Output: 4 full writes x 19.5 MB x 1.4 (writePrecision 17) at 31360 cells = 0.11 GB, plus 20 frames of 8 fields: well inside OUTPUT_BUDGET_GB 8.\n",
+   "_what_a_failing_run_looks_like": "THE RUN FAILS, not the physics, on any of: F2 (a >= 1 in any cell at any step); F3 as quoted (rMax > 4, or stiffNonPositive > 0); F7's three clauses as quoted; the odd-even gate as quoted; s/step above 5.0; a required log absent (PHASE_CLOT_DT, PHASE_CLOT_LAMBDA at every step, with dtKV on G0 and on the tangent; the theta-above-cap count; threads 1); or the run not reaching 2 ms (a FatalError, a NaN, or the 6 h clock stop). What it would look like: a NaN or an a >= 1 within the first hundred steps (the tangent CFL is not stable at 5a's units); rMax creeping past 4 (the deviatoric pair loses neutral stability); a ring of new rupture (d* > 0) in the bulk, away from the bond edge (the LT driver ruptures where NH does not); the tangent child and the dt/2 child differing by more than the pre-registered band at a matched write (an accuracy problem, not a stability one)."
+  },
+  {
+   "adhesive_strength_pa": 0.468,
+   "be_div_scheme": "Gauss upwind",
+   "bond_hold_dilation": 4,
+   "bond_hold_penalty": 10000000.0,
+   "clot_erosion_rate": 0.0,
+   "platelet_bind_rate": 5.04,
+   "platelet_diffusivity": 0.0,
+   "platelet_inlet_density_m3": 0.0,
+   "platelet_number_density_m3": 250000000000000.0,
+   "platelet_yield_m3": 4.6296e-17,
+   "release_support_limit": 0.5,
+   "residual_chi": 0.00022222,
+   "skeleton_dilute_drag_rate": 0.0,
+   "skeleton_volume_fraction": 0.45,
+   "platelet_adhesion_speed": 0.001209,
+   "network_pressure_weight": "networkPresence",
+   "network_damage_onset_stretch": 2.105,
+   "network_damage_stretch_scale": 1.0,
+   "network_critical_stretch": 2.8,
+   "network_release_time_s": 0.00033,
+   "final_relaxation_unity": true,
+   "n_correctors": 6,
+   "proj_site_log": "yes",
+   "series": "s25_5a",
+   "wall_shear_rate_1_s": 3200.0,
+   "mean_velocity_m_s": 0.02666666666666667,
+   "end_time_s": 0.0005,
+   "write_interval_s": 0.0005,
+   "wall_budget_h": 0.25,
+   "platelet_transport_only": true,
+   "material_label_basis": "transportedLabel",
+   "k0p_m2": 9.7222222e-14,
+   "momentum_pressure_coupling": "blockCoupled",
+   "network_viscosity": "kelvinVoigt",
+   "tau_v_s": 0.001474,
+   "time_scale": 8.333333333333334,
+   "Gc_j_m2": 0.3698,
+   "v_p_m3": 4.6296e-17,
+   "clot_erosion_tau_pa": 0.12,
+   "skeleton_law": "valanisLandelTrilinear",
+   "skeleton_law_coeffs": {
+    "E1_pa": 9.36,
+    "E2_pa": 232.8,
+    "D1": 0.107,
+    "D2": 0.574,
+    "kappa": 0.98
+   },
+   "elastic_courant_modulus": "tangent",
+   "elastic_courant": 0.5,
+   "child_id": "RT_5a_A",
+   "_every_number_and_its_source": {
+    "parent": "S25_5a_tan (the 5a smoke child S25_5a_tan); the generator's pair check (FSF_PARENT_PAIRS) names exactly the keys below as the difference.",
+    "write_every_step / stop_after_step / N0": "true / 47 / 42: see 'How the instrument is built' in the expectation (N0 = 42 = D75's first frame interval; S = N0 + 5 by design s7 'runs 5 steps').",
+    "end_time_s": "5e-4 s: the BACKSTOP only (about 105 steps at dt 4.76e-6 for the P73 copy; the 5a copy's steps are shorter). Never reached when the watcher works.",
+    "wall_budget_h": "0.25 h = 900 s (stopAtClockTime): the backstop. At 3.4 s/step it is about 265 steps, far past step 47; the generator refuses more than 0.5 h so that a watcher that never touches its file cannot fill the disk (purgeWrite 10 bounds the kept output anyway).",
+    "frame_interval_s / frame_fields": "REMOVED: frames are written at adjustableRunTime, which shortens dt to hit the frame times and would make the RT-1b dt sequence a writer artefact.",
+    "purgeWrite": "10, written by the generator for every write_every_step child (S25_RT1_PURGE_WRITE), with the read-back in rt1_controldict_apply.",
+    "everything_else": "inherited from S25_5a_tan unchanged: material, geometry, flow, bond, physics switches, time_scale, solver_library (none), writePrecision 17."
+   },
+   "expectation": "PRE-REGISTRATION, B76-RT, RT-1 ((ii) the 5a smoke child, N0 where Vs != 0), the cold-start arm A (writes every step to step 47). Design research/designs/2026-10-10-S25-arteriole-bundle.md rev. 2.2 (APPROVED by Alireza 2026-10-10: \"Approve; build and release (Recommended)\"), section 7 B76-RT and section 2C; docket research/investigations/20261010-0056-s25-arteriole-bundle/ (numerics 01 Q1, case-engineer 12). The block below is copied from the design file by markers, not retyped.\n\n## B76-RT, verbatim from the design\n\n**B76-RT, RT-1 (S25 01; change 8)** on two children:\n- (i) a short copy of P73_G4_r3_40;\n- (ii) the 5a smoke child (LT on, networkRupture fibreRelease on), with N0 chosen where Vs \u2260 0.\n\nThe gates:\n- **RT-1a:** m = max\\|\u03b8_B \u2212 \u03b8_A\\| / max\\|\u03b8_A(N0+1) \u2212 \u03b8_A(N0)\\| < 1e-4.\n  - Its denominator must be \u2265 1e-8; otherwise the test is void, not passed.\n  - Today's code reads \u2248 1.\n- **RT-1b:** the dt sequences agree to 1e-12 relative over 5 steps.\n- **RT-1c:** every AUTO_WRITE field at N0+5 agrees to 1e-8 relative. That INCLUDES thetaPendingB_/P_, now persisted (\u00a72C).\n\nThe copy: S25_5a_tan (LT-WB, networkRupture fibreRelease, time_scale 25/3, planar pressure-driven, tangent CFL 0.5) with the frames removed and the run shortened. required_fields = thetaPendingB, thetaPendingP (red team 04 #10, change 8): networkRupture fibreRelease is built in, so the child writes them (solver .C L1202-1225), and RT-1c INCLUDES them. REPORTED, not gated: whether they are nonzero at N0 (pending_persistence_exercised). needs_vs_nonzero = true.\n\n## How the instrument is built (case-engineer 09d, not in the approved text; all of it checkable offline)\n- **Two children, ONE session, in order.** A is a cold start. It writes a FULL time directory at EVERY step (writeControl timeStep, writeInterval 1, writePrecision 17) and stops after step S = 47 = N0 + 5. B restarts from A's directory whose uniform/time index is N0 = 42 (restart_driver.py --index, not \"the latest\": A's latest is step 47) and stops after the same step 47. B's dictionaries are A's (the generator's pair check names only restart_from_child and restart_index), and Allrun refuses the restart if they differ.\n- **The stop.** dt is adaptive, so the step a time-based endTime reaches is unknown offline. A stopAtFile function object `stopAfterStep` (writeNow) is touched by scripts/step_stop_watcher.py when the log shows PHASE_CLOT_DT step=46; OF-13 notices it at the start of step 47, runs it and writes it (measured on fs_G4_kxu_v250: \"stopping now\" at timeIndex 7865, step 7866 ran and was written). end_time_s and wall_budget_h are the BACKSTOP only. A late watcher costs one more step, which every gate tolerates (gates read steps by index). purgeWrite 10 keeps the last 10 full writes (N0 survives an overshoot of up to 4 steps).\n- **N0 = 42.** The number of steps in D75's first frame interval (2e-4 s at dt 4.7619047619e-06, D75 log: deltaT unchanged for its first 3287 steps). MEASURED on D75's returned tarball (preflight/20261009-171539, members 0.0002/Vs, 0.0002/q, 0.0004/q): max|Vs| = 7.689e-3 at step 42, and max|dq| over the next 42 steps = 0.1022, i.e. 2.4e-3 per step, so theta = thetaC + thetaH (theta_ref 0.45) moves about 1e-3 per step: the RT-1a denominator is predicted at 1e-3 (1e-4 to 1e-2), five orders above its 1e-8 floor. D75 is S23v_G4_r3 under a diagnostic id and P73_G4_r3_40 is S23v_G4_r3 under a production id (SUSPECTED same trajectory). For the 5a child no run has returned: 42 is carried over, and the assessor makes max|Vs_A(N0)| > 0 a PRECONDITION (void, not passed, if Vs is 0 at N0).\n- **The gates as the assessor computes them** (assess_case.py s25_rt1_report; all on runs/A and runs/B of the same session):\n  - theta is thetaC + thetaH read from the written fields (solver .C L16500: theta = thetaC_ + thetaH_), at 17 digits.\n  - RT-1a: m = max|theta_B(N0+1) - theta_A(N0+1)| / max|theta_A(N0+1) - theta_A(N0)|; PASS if m < 1e-4. If the denominator is < 1e-8 (or not finite) the verdict is VOID, never PASS.\n  - RT-1b: for steps N0+1 .. N0+5, |dt_B - dt_A| <= 1e-12 |dt_A| on the PHASE_CLOT_DT deltaT of each log (17 digits).\n  - RT-1c: every field file of A's step-47 directory (all of them AUTO_WRITE) must exist in B's, with max|B - A| / max|A| <= 1e-8 per field (a field with max|A| = 0 must have max|B| = 0 exactly); required_fields (the s25_rt1_pairs entry) must exist in both; a field B lacks FAILS.\n  - Preconditions (VOID if unmet): A's log reports PHASE_CLOT_S25_RESTART state=seeded and B's state=restored; the directories of steps N0, N0+1 and 47 exist in A and 47 in B; both logs have the PHASE_CLOT_DT records of steps N0+1 .. 47.\n- **Each gate was seen to fail** (dry_run section `rt1`): a synthetic restart that drops thetaPendingP, one that restarts with a zero carrier (m about 1), one with dt off by 1e-10, one with a field off by 1e-6, one with a void denominator.\n- **Cost.** 47 steps at about 3.4 s (design s7 B76-OFF, 1 thread; D75 measured 3.19 CPU-s with 6 threads) = about 160 s after the set-up; B 5 steps. Output: one time directory is 29.33 MB at writePrecision 12 on D75 (50 fields, 0.04/), x 1.274 = 37.4 MB at 17 digits; A keeps 10 (purgeWrite) = about 0.37 GB, B 6 = about 0.22 GB. Backstop: wall_budget_h 0.25 (900 s, about 265 steps) bounds A at 10 kept directories whatever the watcher does.\n",
+   "_what_a_failing_run_looks_like": "THE INSTRUMENT FAILS, not the physics, if any of:\n- **VOID, not failed:** RT-1a's denominator max|theta_A(N0+1) - theta_A(N0)| < 1e-8 (the test cannot discriminate); for the 5a pair max|Vs_A(N0)| = 0 (N0 is before the skeleton moves: choose a later N0); A's log says state=restored (it was not a cold start) or B's says state=seeded (the restart did not read the state: that is the restart FAILING, report it as RT-1 FAIL as well as void); a directory the gates need is missing.\n- **A or B stops early** (a crash, a construction refusal, the 0.25 h backstop before step 47). Read run-exit-code.txt, log.restartDriver (exit 2 no full write, 3 dictionaries differ, 4 bad input or A did not finish) and log.stepWatcher.\n- **A runs past step 47 by more than 4 steps** (the watcher failed or was late): N0 may have been purged. The assessor reports the last step of each log.\n- **The sibling restart did not happen** (restart.json absent in B, or its chosen index is not 42).\nNOT a failure of the instrument: RT-1a/b/c FAIL on a binary that lacks the S25 restart fix (that is the point of the test: numerics 01 predicts m about 1 on today's code, SUSPECTED, never run).",
+   "write_every_step": true,
+   "stop_after_step": 47
+  },
+  {
+   "adhesive_strength_pa": 0.468,
+   "be_div_scheme": "Gauss upwind",
+   "bond_hold_dilation": 4,
+   "bond_hold_penalty": 10000000.0,
+   "clot_erosion_rate": 0.0,
+   "platelet_bind_rate": 5.04,
+   "platelet_diffusivity": 0.0,
+   "platelet_inlet_density_m3": 0.0,
+   "platelet_number_density_m3": 250000000000000.0,
+   "platelet_yield_m3": 4.6296e-17,
+   "release_support_limit": 0.5,
+   "residual_chi": 0.00022222,
+   "skeleton_dilute_drag_rate": 0.0,
+   "skeleton_volume_fraction": 0.45,
+   "platelet_adhesion_speed": 0.001209,
+   "network_pressure_weight": "networkPresence",
+   "network_damage_onset_stretch": 2.105,
+   "network_damage_stretch_scale": 1.0,
+   "network_critical_stretch": 2.8,
+   "network_release_time_s": 0.00033,
+   "final_relaxation_unity": true,
+   "n_correctors": 6,
+   "proj_site_log": "yes",
+   "series": "s25_5a",
+   "wall_shear_rate_1_s": 3200.0,
+   "mean_velocity_m_s": 0.02666666666666667,
+   "end_time_s": 0.0005,
+   "write_interval_s": 0.0005,
+   "wall_budget_h": 0.25,
+   "platelet_transport_only": true,
+   "material_label_basis": "transportedLabel",
+   "k0p_m2": 9.7222222e-14,
+   "momentum_pressure_coupling": "blockCoupled",
+   "network_viscosity": "kelvinVoigt",
+   "tau_v_s": 0.001474,
+   "time_scale": 8.333333333333334,
+   "Gc_j_m2": 0.3698,
+   "v_p_m3": 4.6296e-17,
+   "clot_erosion_tau_pa": 0.12,
+   "skeleton_law": "valanisLandelTrilinear",
+   "skeleton_law_coeffs": {
+    "E1_pa": 9.36,
+    "E2_pa": 232.8,
+    "D1": 0.107,
+    "D2": 0.574,
+    "kappa": 0.98
+   },
+   "elastic_courant_modulus": "tangent",
+   "elastic_courant": 0.5,
+   "child_id": "RT_5a_B",
+   "_every_number_and_its_source": {
+    "parent": "S25_5a_tan (the 5a smoke child S25_5a_tan); the generator's pair check (FSF_PARENT_PAIRS) names exactly the keys below as the difference.",
+    "write_every_step / stop_after_step / N0": "true / 47 / 42: see 'How the instrument is built' in the expectation (N0 = 42 = D75's first frame interval; S = N0 + 5 by design s7 'runs 5 steps').",
+    "end_time_s": "5e-4 s: the BACKSTOP only (about 105 steps at dt 4.76e-6 for the P73 copy; the 5a copy's steps are shorter). Never reached when the watcher works.",
+    "wall_budget_h": "0.25 h = 900 s (stopAtClockTime): the backstop. At 3.4 s/step it is about 265 steps, far past step 47; the generator refuses more than 0.5 h so that a watcher that never touches its file cannot fill the disk (purgeWrite 10 bounds the kept output anyway).",
+    "frame_interval_s / frame_fields": "REMOVED: frames are written at adjustableRunTime, which shortens dt to hit the frame times and would make the RT-1b dt sequence a writer artefact.",
+    "purgeWrite": "10, written by the generator for every write_every_step child (S25_RT1_PURGE_WRITE), with the read-back in rt1_controldict_apply.",
+    "everything_else": "inherited from S25_5a_tan unchanged: material, geometry, flow, bond, physics switches, time_scale, solver_library (none), writePrecision 17.",
+    "restart_from_child / restart_index": "RT_5a_A / 42: restart_driver.py --index 42 on RT_5a_A's case directory; Allrun refuses the restart if RT_5a_A has not exited 0 or its dictionaries differ."
+   },
+   "expectation": "PRE-REGISTRATION, B76-RT, RT-1 ((ii) the 5a smoke child, N0 where Vs != 0), the restart arm B (restarts from A's step 42, runs 5 steps). Design research/designs/2026-10-10-S25-arteriole-bundle.md rev. 2.2 (APPROVED by Alireza 2026-10-10: \"Approve; build and release (Recommended)\"), section 7 B76-RT and section 2C; docket research/investigations/20261010-0056-s25-arteriole-bundle/ (numerics 01 Q1, case-engineer 12). The block below is copied from the design file by markers, not retyped.\n\n## B76-RT, verbatim from the design\n\n**B76-RT, RT-1 (S25 01; change 8)** on two children:\n- (i) a short copy of P73_G4_r3_40;\n- (ii) the 5a smoke child (LT on, networkRupture fibreRelease on), with N0 chosen where Vs \u2260 0.\n\nThe gates:\n- **RT-1a:** m = max\\|\u03b8_B \u2212 \u03b8_A\\| / max\\|\u03b8_A(N0+1) \u2212 \u03b8_A(N0)\\| < 1e-4.\n  - Its denominator must be \u2265 1e-8; otherwise the test is void, not passed.\n  - Today's code reads \u2248 1.\n- **RT-1b:** the dt sequences agree to 1e-12 relative over 5 steps.\n- **RT-1c:** every AUTO_WRITE field at N0+5 agrees to 1e-8 relative. That INCLUDES thetaPendingB_/P_, now persisted (\u00a72C).\n\nThe copy: S25_5a_tan (LT-WB, networkRupture fibreRelease, time_scale 25/3, planar pressure-driven, tangent CFL 0.5) with the frames removed and the run shortened. required_fields = thetaPendingB, thetaPendingP (red team 04 #10, change 8): networkRupture fibreRelease is built in, so the child writes them (solver .C L1202-1225), and RT-1c INCLUDES them. REPORTED, not gated: whether they are nonzero at N0 (pending_persistence_exercised). needs_vs_nonzero = true.\n\n## How the instrument is built (case-engineer 09d, not in the approved text; all of it checkable offline)\n- **Two children, ONE session, in order.** A is a cold start. It writes a FULL time directory at EVERY step (writeControl timeStep, writeInterval 1, writePrecision 17) and stops after step S = 47 = N0 + 5. B restarts from A's directory whose uniform/time index is N0 = 42 (restart_driver.py --index, not \"the latest\": A's latest is step 47) and stops after the same step 47. B's dictionaries are A's (the generator's pair check names only restart_from_child and restart_index), and Allrun refuses the restart if they differ.\n- **The stop.** dt is adaptive, so the step a time-based endTime reaches is unknown offline. A stopAtFile function object `stopAfterStep` (writeNow) is touched by scripts/step_stop_watcher.py when the log shows PHASE_CLOT_DT step=46; OF-13 notices it at the start of step 47, runs it and writes it (measured on fs_G4_kxu_v250: \"stopping now\" at timeIndex 7865, step 7866 ran and was written). end_time_s and wall_budget_h are the BACKSTOP only. A late watcher costs one more step, which every gate tolerates (gates read steps by index). purgeWrite 10 keeps the last 10 full writes (N0 survives an overshoot of up to 4 steps).\n- **N0 = 42.** The number of steps in D75's first frame interval (2e-4 s at dt 4.7619047619e-06, D75 log: deltaT unchanged for its first 3287 steps). MEASURED on D75's returned tarball (preflight/20261009-171539, members 0.0002/Vs, 0.0002/q, 0.0004/q): max|Vs| = 7.689e-3 at step 42, and max|dq| over the next 42 steps = 0.1022, i.e. 2.4e-3 per step, so theta = thetaC + thetaH (theta_ref 0.45) moves about 1e-3 per step: the RT-1a denominator is predicted at 1e-3 (1e-4 to 1e-2), five orders above its 1e-8 floor. D75 is S23v_G4_r3 under a diagnostic id and P73_G4_r3_40 is S23v_G4_r3 under a production id (SUSPECTED same trajectory). For the 5a child no run has returned: 42 is carried over, and the assessor makes max|Vs_A(N0)| > 0 a PRECONDITION (void, not passed, if Vs is 0 at N0).\n- **The gates as the assessor computes them** (assess_case.py s25_rt1_report; all on runs/A and runs/B of the same session):\n  - theta is thetaC + thetaH read from the written fields (solver .C L16500: theta = thetaC_ + thetaH_), at 17 digits.\n  - RT-1a: m = max|theta_B(N0+1) - theta_A(N0+1)| / max|theta_A(N0+1) - theta_A(N0)|; PASS if m < 1e-4. If the denominator is < 1e-8 (or not finite) the verdict is VOID, never PASS.\n  - RT-1b: for steps N0+1 .. N0+5, |dt_B - dt_A| <= 1e-12 |dt_A| on the PHASE_CLOT_DT deltaT of each log (17 digits).\n  - RT-1c: every field file of A's step-47 directory (all of them AUTO_WRITE) must exist in B's, with max|B - A| / max|A| <= 1e-8 per field (a field with max|A| = 0 must have max|B| = 0 exactly); required_fields (the s25_rt1_pairs entry) must exist in both; a field B lacks FAILS.\n  - Preconditions (VOID if unmet): A's log reports PHASE_CLOT_S25_RESTART state=seeded and B's state=restored; the directories of steps N0, N0+1 and 47 exist in A and 47 in B; both logs have the PHASE_CLOT_DT records of steps N0+1 .. 47.\n- **Each gate was seen to fail** (dry_run section `rt1`): a synthetic restart that drops thetaPendingP, one that restarts with a zero carrier (m about 1), one with dt off by 1e-10, one with a field off by 1e-6, one with a void denominator.\n- **Cost.** 47 steps at about 3.4 s (design s7 B76-OFF, 1 thread; D75 measured 3.19 CPU-s with 6 threads) = about 160 s after the set-up; B 5 steps. Output: one time directory is 29.33 MB at writePrecision 12 on D75 (50 fields, 0.04/), x 1.274 = 37.4 MB at 17 digits; A keeps 10 (purgeWrite) = about 0.37 GB, B 6 = about 0.22 GB. Backstop: wall_budget_h 0.25 (900 s, about 265 steps) bounds A at 10 kept directories whatever the watcher does.\n",
+   "_what_a_failing_run_looks_like": "THE INSTRUMENT FAILS, not the physics, if any of:\n- **VOID, not failed:** RT-1a's denominator max|theta_A(N0+1) - theta_A(N0)| < 1e-8 (the test cannot discriminate); for the 5a pair max|Vs_A(N0)| = 0 (N0 is before the skeleton moves: choose a later N0); A's log says state=restored (it was not a cold start) or B's says state=seeded (the restart did not read the state: that is the restart FAILING, report it as RT-1 FAIL as well as void); a directory the gates need is missing.\n- **A or B stops early** (a crash, a construction refusal, the 0.25 h backstop before step 47). Read run-exit-code.txt, log.restartDriver (exit 2 no full write, 3 dictionaries differ, 4 bad input or A did not finish) and log.stepWatcher.\n- **A runs past step 47 by more than 4 steps** (the watcher failed or was late): N0 may have been purged. The assessor reports the last step of each log.\n- **The sibling restart did not happen** (restart.json absent in B, or its chosen index is not 42).\nNOT a failure of the instrument: RT-1a/b/c FAIL on a binary that lacks the S25 restart fix (that is the point of the test: numerics 01 predicts m about 1 on today's code, SUSPECTED, never run).",
+   "write_every_step": true,
+   "stop_after_step": 47,
+   "restart_from_child": "RT_5a_A",
+   "restart_index": 42
+  }
+ ],
+ "s25_paired_comparisons": [
+  {
+   "pair_id": "B76-OFF",
+   "arms": [
+    "B76_OFF_A",
+    "B76_OFF_B"
+   ]
+  }
+ ],
+ "s25_rt1_pairs": [
+  {
+   "pair_id": "RT_P73",
+   "a": "RT_P73_A",
+   "b": "RT_P73_B",
+   "n0": 42,
+   "required_fields": [
+    "thetaPendingB",
+    "thetaPendingP"
+   ],
+   "needs_vs_nonzero": false
+  },
+  {
+   "pair_id": "RT_5a",
+   "a": "RT_5a_A",
+   "b": "RT_5a_B",
+   "n0": 42,
+   "required_fields": [
+    "thetaPendingB",
+    "thetaPendingP"
+   ],
+   "needs_vs_nonzero": true
   }
  ]
 }

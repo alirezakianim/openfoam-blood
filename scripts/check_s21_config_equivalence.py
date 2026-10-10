@@ -37,7 +37,25 @@ Mutations, each of which must make its check FAIL (exit 1 if one is not caught):
   N1 a deleted parameter in a twin's dictionary            -> the all-children check
   N2 a built-in key as an entry of a child's fvSolution    -> the all-children check
 
+  M10 one byte flipped in a new 0/U                        -> (5), and the FAIL line must NAME 0/U alone
+  M11 writePrecision 17 -> 16 in a new controlDict          -> (5), named system/controlDict
+  M12 an extra controlDict edit beside writePrecision 17    -> (5), named system/controlDict
+  M13 writePrecision left at 12 (the S25 edit absent)       -> (5), named as the missing edit
+  M14 child.json time_scale 2.0                             -> (5), named time_scale
+  M15 an Xu child's physicalProperties nu planted           -> (5), named constant/physicalProperties
+  M16 an Xu child's physicalProperties left at the old nu   -> (5), named as the missing edit
+
 Exit 0 only if every check passes and every mutation is caught.
+
+S25 re-pin (verification-engineer V-B2a 20, docket 20261010-0056-s25-arteriole-bundle): a pre-existing
+child gains, over the pre-S21 generator's output, exactly these S25 changes, each pinned to its text:
+  - system/controlDict: `writePrecision 12;` -> `writePrecision 17;` (design S25 section 2C), all 12;
+  - child.json: the member `time_scale` = 1.0 (S25 section 2A), all 12;
+  - constant/physicalProperties: the four xu5_g* children's nu 3.3333333333e-6 -> 3.902439024390244e-06
+    = 4e-3/1025 (OI-76; DECISIONS 2026-10-10 "OI-76 fixed in the generator", case-engineer 11).
+  The third was not in the brief's "two intended changes"; it is in the decisions log as intended.
+The "files differ" list of check (5) named the first four IDENTICAL files (it took a symmetric difference
+with every old file); it now lists exactly the files whose bytes differ.
 """
 from __future__ import annotations
 
@@ -252,6 +270,19 @@ def pinned_to_s22(new_runs, cid) -> bool:
     return json.loads((new_runs / cid / "child.json").read_text()).get("solver_library") == "s22"
 
 
+# S25's intended edits to a pre-existing child: (file, old text, new text, children it applies to).
+# The new file must equal the old one with exactly this text replaced once; a child it applies to whose
+# new file still carries the old text FAILS (the edit is required, not only allowed).
+XU_NU_OLD = "nu [0 2 -1 0 0 0 0] 3.3333333333e-6;\n"
+XU_NU_NEW = "nu [0 2 -1 0 0 0 0] 3.902439024390244e-06;\n"
+assert float(XU_NU_NEW.split()[-1].rstrip(";")) == 4e-3 / 1025      # Xu's 4 cP over rho 1025 (create_cases.py L3023)
+S25_EDITS = (
+    ("system/controlDict", "writePrecision 12;\n", "writePrecision 17;\n", lambda cid: True),
+    ("constant/physicalProperties", XU_NU_OLD, XU_NU_NEW, lambda cid: cid.startswith("xu5_g")),
+)
+S25_TIME_SCALE = 1.0
+
+
 def check_files(old_runs, new_runs, ids):
     bad = []
     skip = ("constant/phaseClotProperties", "child.json")
@@ -270,14 +301,34 @@ def check_files(old_runs, new_runs, ids):
             cut = old_t.replace("    div(qPhi,w) bounded Gauss upwind;\n", "", 1)
             if cut != old_t and cut == (new_runs / cid / fv).read_text():
                 o[fv] = n[fv]
+        # S25: each intended edit, pinned to its exact text (the old file with that text replaced once
+        # must equal the new file byte for byte); a missing edit is a failure of its own.
+        for rel, old_txt, new_txt, applies in S25_EDITS:
+            if rel not in o or rel not in n or not applies(cid):
+                continue
+            old_t = (old_runs / cid / rel).read_text()
+            new_t = (new_runs / cid / rel).read_text()
+            if old_t.count(old_txt) != 1:
+                bad.append(f"(5) {cid}: {rel}: the old file does not carry {old_txt.strip()!r} exactly once")
+            elif new_t == old_t:
+                bad.append(f"(5) {cid}: {rel}: the S25 edit is MISSING ({old_txt.strip()!r} -> {new_txt.strip()!r})")
+            elif old_t.replace(old_txt, new_txt, 1) == new_t:
+                o[rel] = n[rel]
         if o != n:
-            diff = sorted(set(o) ^ set(k for k in n if o.get(k) != n[k]) | {k for k in o if n.get(k) != o[k]})
-            bad.append(f"(5) {cid}: files differ: {diff[:4]}")
+            # the files whose bytes differ, and only those (the old expression, a symmetric difference
+            # with every old file, listed identical files: ['0/Dg', '0/H', '0/U', '0/Us'])
+            diff = sorted(k for k in set(o) | set(n) if o.get(k) != n.get(k))
+            bad.append(f"(5) {cid}: files differ: {diff[:8]}")
         oj = json.loads((old_runs / cid / "child.json").read_text())
         nj = json.loads((new_runs / cid / "child.json").read_text())
         sj = strip_builtin(nj)
         if pin:
             sj.pop("solver_library", None)          # the one member the pin adds (an s22 child.json names it)
+        ts = sj.pop("time_scale", None)             # S25 section 2A: the one member the time scale adds
+        if "time_scale" in oj:
+            bad.append(f"(5) {cid}: the OLD child.json already has time_scale (the baseline moved)")
+        if isinstance(ts, bool) or not isinstance(ts, (int, float)) or ts != S25_TIME_SCALE:
+            bad.append(f"(5) {cid}: child.json time_scale is {ts!r}, S25 pins {S25_TIME_SCALE}")
         if strip_builtin(oj) != sj:
             keys = sorted(k for k in set(strip_builtin(oj)) | set(sj)
                           if strip_builtin(oj).get(k) != sj.get(k))
@@ -358,6 +409,22 @@ def mutate(new_runs, work, kind):
     elif kind == "M5":
         f = next(p for p in sorted((m / cid / "0").glob("*")) if p.is_file() and p.stat().st_size > 200)
         b = bytearray(f.read_bytes()); b[-5] ^= 0x01; f.write_bytes(bytes(b))
+    elif kind == "M10":
+        f = m / cid / "0" / "U"
+        b = bytearray(f.read_bytes()); b[-5] ^= 0x01; f.write_bytes(bytes(b))
+    elif kind in ("M11", "M12", "M13"):
+        f = m / cid / "system" / "controlDict"; t = f.read_text()
+        t2 = {"M11": t.replace("writePrecision 17;", "writePrecision 16;", 1),
+              "M12": re.sub(r"(?m)^(endTime\s+)", r"\g<1>1", t, count=1),
+              "M13": t.replace("writePrecision 17;", "writePrecision 12;", 1)}[kind]
+        assert t2 != t; f.write_text(t2)
+    elif kind == "M14":
+        p = m / cid / "child.json"; j = json.loads(p.read_text()); j["time_scale"] = 2.0
+        p.write_text(json.dumps(j, indent=2) + "\n")
+    elif kind in ("M15", "M16"):
+        f = m / PRE_EXISTING[10] / "constant" / "physicalProperties"; t = f.read_text()
+        t2 = t.replace(XU_NU_NEW, "nu [0 2 -1 0 0 0 0] 3.9e-06;\n" if kind == "M15" else XU_NU_OLD, 1)
+        assert t2 != t; f.write_text(t2)
     elif kind == "M6":
         p = m / cid / "child.json"; j = json.loads(p.read_text()); j["fibreSlack"] = "v1"
         p.write_text(json.dumps(j, indent=2) + "\n")
@@ -413,13 +480,34 @@ def main() -> int:
         missed = []
         want = {"M1": "(3)", "M2": "(4)", "M3": "(2)", "M5": "(5)", "M6": "(5)", "M7": "(3)",
                 "M8": "(5)", "M9": "(5)"}
+        base = set(run_all(old_runs, new_runs, PRE_EXISTING))
         for kind, tag in want.items():
             m = mutate(new_runs, work, kind)
             got = run_all(old_runs, m, PRE_EXISTING)
-            ok = any(g.startswith(tag) for g in got)
+            # CAUGHT = a failure line the unmutated run does not have (a red baseline caught everything)
+            ok = any(g.startswith(tag) and g not in base for g in got)
             print(f"mutation {kind}: {'caught' if ok else 'NOT CAUGHT'} by check {tag} ({len(got)} failure lines)")
             if not ok:
                 missed.append(kind)
+            shutil.rmtree(m)
+        # S25 pins and the naming negatives: the new FAIL line must name the file/member that was changed,
+        # and name nothing else
+        named = {"M5": ("files differ: ['0/", None), "M10": ("files differ: ['0/U']", PRE_EXISTING[7]),
+                 "M11": ("files differ: ['system/controlDict']", PRE_EXISTING[7]),
+                 "M12": ("files differ: ['system/controlDict']", PRE_EXISTING[7]),
+                 "M13": ("system/controlDict: the S25 edit is MISSING", PRE_EXISTING[7]),
+                 "M14": ("time_scale is 2.0", PRE_EXISTING[7]),
+                 "M15": ("files differ: ['constant/physicalProperties']", PRE_EXISTING[10]),
+                 "M16": ("constant/physicalProperties: the S25 edit is MISSING", PRE_EXISTING[10])}
+        for kind, (needle, cid) in named.items():
+            m = mutate(new_runs, work, kind)
+            got = [g for g in run_all(old_runs, m, PRE_EXISTING) if g not in base]
+            if cid is not None:
+                got = [g for g in got if f" {cid}: " in g]
+            ok = len(got) >= 1 and any(needle in g for g in got) and all(g.startswith("(5)") for g in got)
+            print(f"mutation {kind}: {'NAMED' if ok else 'NOT NAMED'} -> {got[:2]}")
+            if not ok:
+                missed.append(kind + "-name")
             shutil.rmtree(m)
         for kind in ("N1", "N2"):
             m = mutate(new_runs, work, kind)
