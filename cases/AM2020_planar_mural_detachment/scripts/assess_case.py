@@ -2901,18 +2901,21 @@ def s25_pair_report(children: dict, controls: dict) -> list:
 # Two children of ONE session (the controls' top-level `s25_rt1_pairs`): A, a cold start that writes a full directory at every step
 # up to S = N0 + 5, and B, which restarts from A's step N0 and runs to S. Everything is read from the children's directories:
 #   RT-1a  m = max|theta_B - theta_A| at step N0+1 / max|theta_A(N0+1) - theta_A(N0)|, theta = thetaC + thetaH (solver .C L16500);
-#          PASS if m < 1e-4; a denominator below 1e-8 (or not finite) is VOID, never PASS;
-#   RT-1b  the PHASE_CLOT_DT deltaT of steps N0+1..S agree to 1e-12 relative;
-#   RT-1c  every field of A's step-S directory exists in B's and agrees to 1e-8 relative (max|B-A| / max|A| per field; a field with
-#          max|A| = 0 must be exactly 0 in B), INCLUDING the pair's required_fields (thetaPendingB, thetaPendingP for 5a).
+#          a field the solver wrote `uniform` (thetaH, before any platelet has deposited) is BROADCAST to the cells of the other
+#          (S25.1, design 2026-10-13 section C(a)); PASS only if the numerator max|theta_B - theta_A| is EXACTLY 0 (S25.1 section D3:
+#          bitwise, the values being written at writePrecision 17); a denominator below 1e-8 (or not finite) is VOID, never PASS;
+#          the sum can round a one-ulp difference away, so thetaC and thetaH must each also be EXACTLY equal;
+#   RT-1b  the PHASE_CLOT_DT deltaT of steps N0+1..S are EQUAL (PASS only at relative difference exactly 0, the log printing 17 digits);
+#   RT-1c  every field of A's step-S directory exists in B's and is EQUAL to it, bit for bit (max|B-A| == 0 per field), INCLUDING the
+#          pair's required_fields (thetaPendingB, thetaPendingP for 5a). The relative error is still reported.
+# The three gates were 1e-4 / 1e-12 / 1e-8 in B76 (RT-1c passed at 8.8e-9 with the OI-77 defect present, so it could not see a second
+# defect of that size); S25.1 replaces each by exact equality because both arms run the same binary on the same restart state.
 # Preconditions (VOID when unmet): the directories and PHASE_CLOT_DT records the gates read exist; A is a cold start (state=seeded or no
 # restart line) and for a pair with needs_vs_nonzero max|Vs_A(N0)| > 0. B reporting state=seeded is a FAIL (the restart did not restore).
-RT1_M_GATE = 1e-4
 RT1_DENOMINATOR_MIN = 1e-8
-RT1_DT_REL = 1e-12
-RT1_FIELD_REL = 1e-8
 RT1_STEPS = 5
-RT1_DT_MIN_DIGITS = 13   # resolution of a 1e-12 relative gate: one decimal beyond it
+RT1_DT_MIN_DIGITS = 17   # an exact-equality claim on deltaT is resolvable only if the log prints 17 significant digits (max over its records)
+RT1_WRITE_PRECISION_MIN = 17   # a field file written at fewer digits cannot show a bitwise difference
 _RT1_NUM = re.compile(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?|[-+]?nan|[-+]?inf", re.I)
 _RT1_COMPONENTS = {"scalar": 1, "label": 1, "vector": 3, "symmTensor": 6, "tensor": 9, "sphericalTensor": 1}
 _RT1_DT = re.compile(r"^PHASE_CLOT_DT step=(\d+) time=\S+ deltaT=(\S+)", re.M)
@@ -2957,6 +2960,17 @@ def rt1_full_dirs(case: Path) -> dict:
     return out
 
 
+def rt1_dt_digits(log: Path) -> int:
+    """The most significant digits any PHASE_CLOT_DT deltaT of the log prints. The stream drops trailing zeros, so one record can print 16
+    digits of a 17-digit double; the maximum over the log shows the precision the logger writes."""
+    if not log.is_file():
+        return 0
+    best = 0
+    for _, d in _RT1_DT.findall(log.read_text(errors="replace")):
+        best = max(best, len(re.sub(r"[^0-9]", "", d.lower().split("e")[0]).strip("0")) if re.search(r"\d", d) else 0)
+    return best
+
+
 def rt1_dt(log: Path) -> dict:
     """{step: deltaT as printed} from the PHASE_CLOT_DT records (absolute time index)."""
     if not log.is_file():
@@ -2975,13 +2989,42 @@ def rt1_max_abs(vals) -> float:
     return max((abs(v) for v in vals), default=0.0)
 
 
-def rt1_theta(d: Path):
+def rt1_broadcast(field, n: int, what: str) -> list:
+    """The cell values of a scalar field read by rt1_read_field. The solver writes a field whose cells are all equal as
+    `internalField uniform v;` (one number); it stands for n cells. A nonuniform field must already hold n."""
+    kind, size, vals = field
+    if kind == "uniform":
+        if len(vals) != 1:
+            raise ValueError(f"{what}: a uniform scalar field holds {len(vals)} numbers, expected 1")
+        return vals * n
+    if size != n or len(vals) != n:
+        raise ValueError(f"{what}: {len(vals)} values against {n} cells")
+    return vals
+
+
+def rt1_theta_parts(d: Path):
+    """(thetaC, thetaH), one value per cell each. A uniform-written field is broadcast to the cells of the other (S25.1 C(a)); the
+    B76 reader compared 31360 numbers with 1 and called RT-1a VOID on a parse defect. Both uniform: one cell."""
     c, h = rt1_read_field(d / "thetaC"), rt1_read_field(d / "thetaH")
     if c is None or h is None:
         raise ValueError(f"{d.name}: thetaC or thetaH is not a readable field")
-    if len(c[2]) != len(h[2]):
-        raise ValueError(f"{d.name}: thetaC and thetaH differ in size ({len(c[2])} against {len(h[2])})")
-    return [x + y for x, y in zip(c[2], h[2])]
+    n = next((f[1] for f in (c, h) if f[0] != "uniform"), 1)
+    return rt1_broadcast(c, n, f"{d.name}/thetaC"), rt1_broadcast(h, n, f"{d.name}/thetaH")
+
+
+def rt1_theta(d: Path):
+    """theta = thetaC + thetaH, one value per cell."""
+    cv, hv = rt1_theta_parts(d)
+    return [x + y for x, y in zip(cv, hv)]
+
+
+def rt1_write_precision(case: Path):
+    """writePrecision of the child's system/controlDict (None if unreadable)."""
+    try:
+        m = re.search(r"(?m)^\s*writePrecision\s+(\d+)\s*;", (case / "system" / "controlDict").read_text(errors="replace"))
+    except OSError:
+        return None
+    return int(m.group(1)) if m else None
 
 
 def rt1_pair(a: Path, b: Path, entry: dict, a_log: str = "log.phaseClotAxisymmetricFluid") -> dict:
@@ -2994,6 +3037,12 @@ def rt1_pair(a: Path, b: Path, entry: dict, a_log: str = "log.phaseClotAxisymmet
     dta, dtb = rt1_dt(a / a_log), rt1_dt(b / a_log)
     sa, sb = rt1_restart_state(a / a_log), rt1_restart_state(b / a_log)
     res["restart_state"] = {"A": sa, "B": sb}
+    wp = {"A": rt1_write_precision(a), "B": rt1_write_precision(b)}
+    res["write_precision"] = wp
+    for what, v in wp.items():
+        if v is None or v < RT1_WRITE_PRECISION_MIN:
+            void.append(f"{what}'s system/controlDict writePrecision is {v!r}, below {RT1_WRITE_PRECISION_MIN}: a bitwise comparison of its fields is "
+                        f"below the resolution of the files")
     res["last_step"] = {"A": max(dta) if dta else None, "B": max(dtb) if dtb else None}
     res["full_write_steps"] = {"A": sorted(da)[:1] + sorted(da)[-1:] if da else [], "B": sorted(db)[:1] + sorted(db)[-1:] if db else []}
     if sa == "restored":
@@ -3031,7 +3080,7 @@ def rt1_pair(a: Path, b: Path, entry: dict, a_log: str = "log.phaseClotAxisymmet
     res["pending_max_abs_at_n0"] = pend
     res["pending_persistence_exercised"] = bool(any(v for v in (pend.get("thetaPendingB"), pend.get("thetaPendingP"))))
     # ---- RT-1a
-    g = {"threshold": RT1_M_GATE, "denominator_min": RT1_DENOMINATOR_MIN}
+    g = {"threshold": "numerator == 0 exactly", "denominator_min": RT1_DENOMINATOR_MIN}
     try:
         if n0 in da and n0 + 1 in da and n0 + 1 in db:
             t0, t1, tb = rt1_theta(da[n0]), rt1_theta(da[n0 + 1]), rt1_theta(db[n0 + 1])
@@ -3039,14 +3088,17 @@ def rt1_pair(a: Path, b: Path, entry: dict, a_log: str = "log.phaseClotAxisymmet
                 raise ValueError("theta sizes differ between A(N0), A(N0+1) and B(N0+1)")
             den = max(abs(y - x) for x, y in zip(t0, t1))
             num = max(abs(y - x) for x, y in zip(t1, tb))
-            g.update(numerator=num, denominator=den)
+            # The sum can round away a one-ulp difference of its smaller part; "exactly 0" is asked of thetaC and thetaH themselves.
+            (ca, ha), (cb, hb) = rt1_theta_parts(da[n0 + 1]), rt1_theta_parts(db[n0 + 1])
+            num_c, num_h = max(abs(y - x) for x, y in zip(ca, cb)), max(abs(y - x) for x, y in zip(ha, hb))
+            g.update(numerator=num, denominator=den, numerator_thetaC=num_c, numerator_thetaH=num_h)
             if not (math.isfinite(den) and math.isfinite(num)) or not den >= RT1_DENOMINATOR_MIN:
                 g["status"] = "VOID"
                 g["reason"] = f"denominator {den!r} < {RT1_DENOMINATOR_MIN:g} (or not finite): the test cannot discriminate"
                 void.append(f"RT-1a: {g['reason']}")
             else:
                 g["m"] = num / den
-                g["status"] = "PASS" if g["m"] < RT1_M_GATE else "FAIL"
+                g["status"] = "PASS" if (num == 0.0 and num_c == 0.0 and num_h == 0.0) else "FAIL"
         else:
             g["status"] = "VOID"
             g["reason"] = "a directory RT-1a reads is missing"
@@ -3056,7 +3108,7 @@ def rt1_pair(a: Path, b: Path, entry: dict, a_log: str = "log.phaseClotAxisymmet
         void.append(f"RT-1a: {error}")
     res["gates"]["RT-1a"] = g
     # ---- RT-1b
-    g = {"threshold_rel": RT1_DT_REL, "worst_rel": None}
+    g = {"threshold": "relative difference == 0 exactly", "worst_rel": None}
     rel = []
     for i in range(n0 + 1, s_end + 1):
         if i in dta and i in dtb:
@@ -3064,19 +3116,19 @@ def rt1_pair(a: Path, b: Path, entry: dict, a_log: str = "log.phaseClotAxisymmet
             rel.append((abs(y - x) / abs(x) if x != 0 and math.isfinite(x) and math.isfinite(y) else math.inf, i))
     if len(rel) == steps:
         g["worst_rel"], g["worst_step"] = max(rel)
-        g["status"] = "PASS" if g["worst_rel"] <= RT1_DT_REL else "FAIL"
-        g["digits_printed"] = min(len(re.sub(r"[^0-9]", "", str(dta[i]).lower().split("e")[0]).lstrip("0")) for i in range(n0 + 1, s_end + 1))
+        g["status"] = "PASS" if g["worst_rel"] == 0.0 else "FAIL"
+        g["digits_printed"] = min(rt1_dt_digits(a / a_log), rt1_dt_digits(b / a_log))
         if g["digits_printed"] < RT1_DT_MIN_DIGITS and g["status"] == "PASS":
-            # a 1e-12 relative gate is resolvable only if the log prints enough digits; a PASS below that is not evidence
+            # exact equality is resolvable only if the log prints 17 digits (the most any of its records prints); a PASS below that is not evidence
             g["status"] = "VOID"
-            g["reason"] = (f"the log prints {g['digits_printed']} significant digits of deltaT, fewer than {RT1_DT_MIN_DIGITS}: "
-                           f"a {RT1_DT_REL:g} relative difference is below its resolution")
+            g["reason"] = (f"the log prints at most {g['digits_printed']} significant digits of deltaT, fewer than {RT1_DT_MIN_DIGITS}: "
+                           f"an exact equality is below its resolution")
     else:
         g["status"] = "VOID"
         g["reason"] = "fewer than 5 matched PHASE_CLOT_DT records"
     res["gates"]["RT-1b"] = g
     # ---- RT-1c
-    g = {"threshold_rel": RT1_FIELD_REL, "fields": 0, "worst": []}
+    g = {"threshold": "max|B-A| == 0 exactly, every field", "fields": 0, "worst": []}
     if s_end in da and s_end in db:
         names = sorted(str(p.relative_to(da[s_end])) for p in da[s_end].rglob("*") if p.is_file())
         problems, worst = [], []
@@ -3113,8 +3165,8 @@ def rt1_pair(a: Path, b: Path, entry: dict, a_log: str = "log.phaseClotAxisymmet
             diff = max((abs(y - x) for x, y in zip(fa[2], fb[2])), default=0.0)
             rel_err = (diff / scale) if scale > 0.0 else (0.0 if diff == 0.0 else math.inf)
             worst.append((rel_err, rel_name))
-            if rel_err > RT1_FIELD_REL:
-                problems.append(f"{rel_name}: max|B-A|/max|A| = {rel_err:.3g} > {RT1_FIELD_REL:g}")
+            if diff != 0.0:
+                problems.append(f"{rel_name}: max|B-A| = {diff:.3g} (relative {rel_err:.3g}) is not 0")
         worst.sort(reverse=True)
         g["worst"] = [{"field": n, "rel": r} for r, n in worst[:5]]
         g["problems"] = problems[:20]
@@ -3139,6 +3191,134 @@ def rt1_pair(a: Path, b: Path, entry: dict, a_log: str = "log.phaseClotAxisymmet
         res["status"] = "FAIL"
     else:
         res["status"] = "PASS"
+    return res
+
+
+# ---------------------------------------------------------------------------------------------------------------------------------
+# S25 odd-even stability gate (design 2026-10-10-S25-arteriole-bundle section 7 B76-5a and section 12 item 9; S25.1 section C(b)).
+# Read OFFLINE from the Vs frames the solver writes (every write interval; the solver logs no odd-even amplitude).
+#   Detector  zigzag score of four consecutive cells along an axis: d_i = a[i+1]-a[i]; if d0*d1 < 0 and d1*d2 < 0 the score is
+#             min(|d0|,|d1|,|d2|), else 0. It is exactly 0 on ANY monotone profile (a tanh of any width) and on a smooth single extremum;
+#             it needs three alternating differences, so it sees a cell-to-cell odd-even mode and no smooth shape.
+#   Amplitude A(frame) = max score over Vs_x and Vs_y, along x and along y.
+#   GATED     the CLOT phase: a stencil counts only if all four of its cells have q < 0.5 (q is the blood fraction). Blood-phase Vs is
+#             not a stress-carrying velocity: the Vs equation there is driven by a theta -> 0 tail (forensics 02, 20261013-1405).
+#   REPORTED  the whole-field amplitude, with its worst window ratio. It is not gated (S25.1 C(b)).
+#   Gate      FAIL if, for two frames i < j at least S25_STAB_WINDOW_STEPS steps apart, max(A_j, floor) > max(A_i, floor) *
+#             (1 + S25_STAB_GROWTH)^(step_j - step_i). The floor is the instrument's resolution: S25_STAB_FLOOR_REL of the largest |Vs|
+#             of any frame; below it an amplitude is not told from zero, so a mode "growing" from 0 to the floor is not growth.
+#             VOID (never PASS) when no pair of frames is far enough apart, when q or Vs is missing, or when no frame holds a clot cell.
+S25_STAB_SERIES = ("s25_5a",)
+S25_STAB_GROWTH = 1e-5            # per step: design section 7 B76-5a (1 + 1e-5 over any 1000 steps)
+S25_STAB_WINDOW_STEPS = 1000
+S25_STAB_FLOOR_REL = 1e-6         # of max|Vs|; a recorded decision (case-engineer 05, S25.1): see the report for the verdicts it decides
+S25_STAB_CLOT_Q = 0.5
+_S25_STAB_HEX = re.compile(r"hex\s*\([^)]*\)\s*\(\s*(\d+)\s+(\d+)\s+(\d+)\s*\)")
+
+
+def s25_zigzag_amplitude(a: list, nx: int, ny: int, mask: list | None = None) -> tuple:
+    """(max score, number of stencils with a nonzero score) of the 4-cell zigzag detector on a flat nx*ny field (cell = j*nx + i), along x
+    and along y. With a mask, only stencils whose four cells are all masked count."""
+    best, count = 0.0, 0
+    for axis in (0, 1):
+        step, n_line, n_lines = (1, nx, ny) if axis == 0 else (nx, ny, nx)
+        line_stride = nx if axis == 0 else 1
+        for ln in range(n_lines):
+            base = ln * line_stride
+            for i in range(n_line - 3):
+                k = base + i * step
+                if mask is not None and not (mask[k] and mask[k + step] and mask[k + 2 * step] and mask[k + 3 * step]):
+                    continue
+                d0, d1, d2 = a[k + step] - a[k], a[k + 2 * step] - a[k + step], a[k + 3 * step] - a[k + 2 * step]
+                if d0 * d1 < 0.0 and d1 * d2 < 0.0:
+                    sc = min(abs(d0), abs(d1), abs(d2))
+                    count += 1
+                    best = max(best, sc)
+    return best, count
+
+
+def s25_stability_windows(steps: list, amps: list, floor: float) -> dict:
+    """The worst growth over all frame pairs at least S25_STAB_WINDOW_STEPS apart, as ratio / (1 + S25_STAB_GROWTH)^dsteps (> 1 fails).
+    None when there is no such pair."""
+    worst = None
+    for i in range(len(steps)):
+        for j in range(i + 1, len(steps)):
+            ds = steps[j] - steps[i]
+            if ds < S25_STAB_WINDOW_STEPS:
+                continue
+            ratio = max(amps[j], floor) / max(amps[i], floor)
+            over = ratio / (1.0 + S25_STAB_GROWTH) ** ds
+            if worst is None or over > worst["over_bound"]:
+                worst = {"over_bound": over, "ratio": ratio, "bound": (1.0 + S25_STAB_GROWTH) ** ds, "step_from": steps[i], "step_to": steps[j],
+                         "amp_from": amps[i], "amp_to": amps[j]}
+    return worst or {}
+
+
+def s25_stability_report(case: Path) -> dict:
+    """The odd-even gate of one child from its Vs/q frames (see the block comment above). Every non-answer is VOID, never PASS."""
+    res: dict = {"verdict": "VOID", "gated_on": "clot phase (stencil cells all q < 0.5)", "growth_per_step": S25_STAB_GROWTH,
+                 "window_steps": S25_STAB_WINDOW_STEPS, "floor_rel": S25_STAB_FLOOR_REL}
+    try:
+        bm = (case / "system" / "blockMeshDict").read_text(errors="replace")
+        blocks = _S25_STAB_HEX.findall(bm)
+        if len(blocks) != 1 or int(blocks[0][2]) != 1:
+            raise ValueError(f"system/blockMeshDict does not hold exactly one 2-D hex block ({blocks})")
+        nx, ny = int(blocks[0][0]), int(blocks[0][1])
+        res["grid"] = [nx, ny]
+        frames = []
+        for d in case.iterdir():
+            try:
+                t = float(d.name)
+            except ValueError:
+                continue
+            if not d.is_dir() or t <= 0.0 or not (d / "Vs").is_file() or not (d / "q").is_file() or not (d / "uniform" / "time").is_file():
+                continue
+            m = re.search(r"(?m)^\s*index\s+(\d+)\s*;", (d / "uniform" / "time").read_text(errors="replace"))
+            if m:
+                frames.append((int(m.group(1)), d))
+        frames.sort()
+        res["frames"] = len(frames)
+        if len(frames) < 2:
+            raise ValueError(f"{len(frames)} frame(s) hold Vs, q and uniform/time: the gate needs at least 2")
+        steps, a_clot, a_all, n_clot_cells, vmax = [], [], [], [], 0.0
+        for step, d in frames:
+            vs, q = rt1_read_field(d / "Vs"), rt1_read_field(d / "q")
+            if q is None or vs is None or q[0] == "uniform" or q[1] != nx * ny:
+                raise ValueError(f"{d.name}: q is not a nonuniform field of {nx * ny} cells")
+            if vs[0] == "uniform":
+                comps = [[0.0] * (nx * ny)] * 2 if all(v == 0.0 for v in vs[2]) else None
+                if comps is None:
+                    raise ValueError(f"{d.name}: Vs is uniform and nonzero")
+                vmax = max(vmax, 0.0)
+            else:
+                if vs[1] != nx * ny:
+                    raise ValueError(f"{d.name}: Vs holds {vs[1]} cells, the mesh {nx * ny}")
+                comps = [vs[2][0::3], vs[2][1::3]]
+                vmax = max(vmax, max(abs(v) for v in vs[2]))
+            mask = [v < S25_STAB_CLOT_Q for v in q[2]]
+            ac = max(s25_zigzag_amplitude(c, nx, ny, mask)[0] for c in comps)
+            aw = max(s25_zigzag_amplitude(c, nx, ny)[0] for c in comps)
+            steps.append(step)
+            a_clot.append(ac)
+            a_all.append(aw)
+            n_clot_cells.append(sum(mask))
+        if not any(n_clot_cells):
+            raise ValueError("no frame holds a clot cell (q < 0.5): the clot-phase gate has nothing to judge")
+        if not vmax > 0.0:
+            raise ValueError("Vs is 0 in every frame: the skeleton never moved and the gate has nothing to judge")
+        floor = S25_STAB_FLOOR_REL * vmax
+        res.update(floor=floor, max_abs_vs=vmax, steps=steps, clot_cells=n_clot_cells, amp_clot=a_clot, amp_whole_field=a_all,
+                   span_steps=steps[-1] - steps[0])
+        wc, ww = s25_stability_windows(steps, a_clot, floor), s25_stability_windows(steps, a_all, floor)
+        res["clot_worst_window"], res["whole_field_worst_window_reported_not_gated"] = wc, ww
+        if not wc:
+            res["reason"] = f"no two frames are {S25_STAB_WINDOW_STEPS} steps apart (span {res['span_steps']})"
+        else:
+            res["verdict"] = "FAIL" if wc["over_bound"] > 1.0 else "PASS"
+    except OSError as error:
+        res["reason"] = f"{type(error).__name__}: {error.strerror}"      # no file name: the message must not embed a scratch directory
+    except (ValueError, TypeError) as error:
+        res["reason"] = str(error)
     return res
 
 
@@ -5555,6 +5735,9 @@ def assess_child(case: Path, spec: dict, controls: dict) -> dict:
         "s19": s19_report(text, spec, case) if "s19" in spec else None,
         # S25 build 1: report-only (no gate reads it).
         "s25": s25_report(text),
+        # S25.1 C(b): the odd-even stability gate on the clot phase, read from the Vs frames. Report-only for `admissible`. A RT-1 arm
+        # stops by design after a few steps (stop_after_step) and has no 1000-step window.
+        "s25_stability": (s25_stability_report(case) if spec["series"] in S25_STAB_SERIES and not spec.get("stop_after_step") else None),
         # Only the throat series has a throat. Everything else gets
         # None rather than a zero, so an absent measurement can never
         # be read as a measured absence of blockage.
@@ -7061,6 +7244,7 @@ def main() -> int:
     s25_f3 = {cid: (c.get("s25") or {}).get("gates", {}).get("F3") for cid, c in children.items()}
     s25_pairs = s25_pair_report(children, controls)
     s25_rt1 = s25_rt1_report(runs, children, controls)
+    s25_stab = {cid: (c.get("s25_stability") or {}).get("verdict") for cid, c in children.items() if c.get("s25_stability")}
 
     result = {
         "case": "AM2020_planar_mural_detachment",
@@ -7073,6 +7257,8 @@ def main() -> int:
         "s25_f3_failures": sorted(cid for cid, v in s25_f3.items() if v == "FAIL"),
         "s25_paired": s25_pairs,
         "s25_rt1": s25_rt1,
+        "s25_stability_gate": s25_stab,
+        "s25_stability_failures": sorted(cid for cid, v in s25_stab.items() if v == "FAIL"),
         "growth_vs_flow": growth_table(children, controls),
         "required_strength": required_strength_table(children),
         "deformation": deformation_table(children, controls),
@@ -7111,6 +7297,7 @@ def main() -> int:
         "s25_f3_failures": result["s25_f3_failures"],
         "s25_paired": {p["pair_id"]: p["status"] for p in s25_pairs},
         "s25_rt1": {p["pair_id"]: p["status"] for p in s25_rt1},
+        "s25_stability": s25_stab,
         "growth_exponent": result["growth_vs_flow"]["flow_dependence"]["exponent"],
         "required_strength_rows": len(result["required_strength"]["rows"]),
         "demonstration": [

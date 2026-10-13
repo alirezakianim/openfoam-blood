@@ -1735,6 +1735,52 @@ def s25_build1_checks(only: str | None = None) -> None:
 
 
 # ---------------------------------------------------------------------------------------------------------------------
+# S25.1 A (solver-engineer 04, docket 20261013-1405-run023502-b76-s25-verification; design 2026-10-13-S25.1 rev. 2
+# section A, OI-77): the constructor stores the phase weights' old time on a restart and REFUSES a restart (start time
+# > 0) whose directory holds no phiSkel. Same mechanism as S25 build 1: a Python MIRROR of the refusal, PINNED to the
+# whitespace-squashed solver text, each pin seen to break when its guard is deleted or loosened in a scratch copy, and
+# the mirror run on both sides of the boundary. Runs alone:
+#   python3 -B -c "import dry_run; dry_run.s251_checks()"
+# ---------------------------------------------------------------------------------------------------------------------
+def s251_restart_would_refuse(start_time: float, files) -> str | None:
+    """The constructor's S25.1 A refusal: a restart (runTime.value() > 0 at construction) with no <time>/phiSkel.
+    None = accepted (a cold start, with or without phiSkel; a restart that has it)."""
+    return "PHISKEL" if (start_time > 0 and "phiSkel" not in files) else None
+
+
+def s251_checks() -> None:
+    assert S23_SOLVER_C.is_file(), f"the solver source is absent: {S23_SOLVER_C}"
+    src = S23_SOLVER_C.read_text()
+    pins = ("const bool restartS251 = runTime.value() > 0;",
+            "if (restartS251 && !phiSkel_.headerOk())",
+            "<< \"file (\" << phiSkel_.objectPath() << \"): the phase weights' \"",
+            "if (phiSkel_.headerOk()) { phiFluid_ = 1.0 - phiSkel_; phiSkel_.oldTime(); phiFluid_.oldTime(); }",
+            "if (restartS251) { Wp_.oldTime(); } // S25 C: LAST")
+    drifts = (
+        ("the refusal deleted", "if (restartS251 && !phiSkel_.headerOk())", "if (false)"),
+        ("a cold start counted as a restart", "runTime.value() > 0;", "runTime.value() >= 0;"),
+        ("the file not named", "phiSkel_.objectPath()", "phiSkel_.name()"),
+        ("phiFluid_ left at 1 (its assignment dropped)", "{ phiFluid_ = 1.0 - phiSkel_; phiSkel_.oldTime();",
+         "{ phiSkel_.oldTime();"),
+        ("the phiFluid_ old time not stored", "phiSkel_.oldTime(); phiFluid_.oldTime(); }", "phiSkel_.oldTime(); }"),
+        ("the Wp_ prime taken on a cold start too", "if (restartS251) { Wp_.oldTime(); }", "{ Wp_.oldTime(); }"))
+    _s25_drift(src, pins, drifts, "S25.1 A")
+    t42 = 0.0002003173603    # RT_P73's restart level (docket 20261013-1405, 01)
+    cases = (
+        ("accepted: a cold start, no phiSkel (every generated child's 0/)", 0.0, {"w", "U", "p"}, None),
+        ("accepted: a cold start with a phiSkel file", 0.0, {"w", "U", "p", "phiSkel"}, None),
+        ("accepted: a restart from an S25 write", t42, {"w", "U", "p", "phiSkel", "uniform/time"}, None),
+        ("PHISKEL: a restart from a pre-S25 write (no phiSkel)", t42, {"w", "U", "p", "uniform/time"}, "PHISKEL"),
+        ("PHISKEL: the smallest positive start time", 5e-324, {"w"}, "PHISKEL"),
+    )
+    for label, t0, files, want in cases:
+        got = s251_restart_would_refuse(t0, files)
+        assert got == want, f"{label}: the mirror says {got!r}, S25.1 A says {want!r}"
+    print(f"   s251: the restart refusal and the old-time primes are pinned to the solver ({len(drifts)} drifts seen); "
+          f"{len(cases)} directories judged: a pre-S25 restart refused (PHISKEL), cold starts and S25 restarts accepted")
+
+
+# ---------------------------------------------------------------------------------------------------------------------
 # S25 BUILD 2 (solver-engineer report 07; design 2026-10-10-S25 sections 2A, 3A, 5, 12): the LT keys' config refusals, the
 # generator that writes them, and the assessor's F3 / dtKVTangent / paired-CPU readers. Same mechanism as build 1: a Python
 # MIRROR of each solver predicate, PINNED to the whitespace-squashed solver text (each pin occurs exactly once), the pin check
@@ -2575,8 +2621,74 @@ def _s25_b76off_section() -> None:
         bench.close()
 
 
+def _s25_b78_section() -> None:
+    """BATCH 78 (S25.1 re-check; case-engineer 06): the six children generate alone, the parent-pair rows are the guard that refuses a drift (each negative seen to be refused
+    for its stated reason and, with ONLY that guard removed from a scratch generator, ACCEPTED), the RT pair is scored by an s25_rt1_pairs entry, and an 18 ms end on a 5 ms write
+    interval is refused. Run alone: python3 -B -c "import dry_run; dry_run.s25_build2_checks('b78')"."""
+    bench, gen = _gen_bench_section("b78")
+    try:
+        A, B, C1, C2, RA, RB = "B78_OFF_A", "B78_OFF_B", "B78_CTL_1", "B78_CTL_2", "B78_RT_5a_A", "B78_RT_5a_B"
+        kid = lambda c, cid: next(x for x in c["children"] if x["child_id"] == cid)
+
+        def edit(cid, **ch):
+            def m(c):
+                k = kid(c, cid)
+                for key, v in ch.items():
+                    if v is None:
+                        k.pop(key, None)
+                    else:
+                        k[key] = v
+            return m
+        row_b = '    ("B78_OFF_B", "P73_G4_r3_40", set(), {"end_time_s", "write_interval_s"}),\n'
+        row_a = '    ("B78_OFF_A", "B78_OFF_B", {"solver_library"}, set()),\n'
+        row_c1 = '    ("B78_CTL_1", "B78_OFF_B", set(), {"end_time_s", "write_interval_s"}),\n'
+        row_c2 = '    ("B78_CTL_2", "B78_CTL_1", set(), set()),\n'
+        row_rb = '    ("B78_RT_5a_B", "B78_RT_5a_A", set(), {"restart_from_child", "restart_index"}),\n'
+        call_rt1 = "    s25_rt1_pairs_refusal(controls)\n"
+        # --- positives: every B78 child generates alone, A on the baseline pin, the others on the package build
+        for cid in (A, B, C1, C2, RA, RB):
+            rc, last, d = gen(None, cid)
+            assert rc == 0, (cid, last)
+            j = json.loads((d / "child.json").read_text())
+            assert j["child_id"] == cid and (d / "child.env").exists() == (cid == A), cid
+        negatives = (
+            ("B78_OFF_B drifting from P73_G4_r3_40 in a run control", edit(B, wall_budget_h=12.0), B, "FSF parent check: B78_OFF_B differs from P73_G4_r3_40 in wall_budget_h", ((row_b, ""), (row_a, ""), (row_c1, ""))),
+            ("B78_OFF_B with its parent's end time and write interval (no difference)", edit(B, end_time_s=0.04, write_interval_s=0.005), B,
+             "does not differ from P73_G4_r3_40 in its named key end_time_s, write_interval_s", ((row_b, ""), (row_a, ""), (row_c1, ""))),
+            ("B78_OFF_A differing from B78_OFF_B in a second key (k0p_m2)", edit(A, k0p_m2=5e-13), A, "FSF parent check: B78_OFF_A differs from B78_OFF_B in k0p_m2", ((row_a, ""),)),
+            ("B78_CTL_2 drifting from B78_CTL_1 (k0p_m2)", edit(C2, k0p_m2=5e-13), C2, "FSF parent check: B78_CTL_2 differs from B78_CTL_1 in k0p_m2", ((row_c2, ""),)),
+            ("B78_RT_5a_B restarting from BATCH 76's RT_5a_A", edit(RB, restart_from_child="RT_5a_A"), RB, "must restart from B78_RT_5a_A (restart_from_child)", ((call_rt1, ""), (row_rb, ""))),
+            ("an end time that is not a whole number of write intervals (18 ms on 5 ms)", edit(B, write_interval_s=0.005), B, "is not a whole number of write intervals", ()),
+        )
+        removed = 0
+        for label, mutate, child, want, patches in negatives:
+            rc, last, _ = gen(mutate, child)
+            assert rc != 0, f"the generator ACCEPTED {label}"
+            assert want in last, f"{label}: refused for the wrong reason: {last}"
+            how = "no removable guard line (an inline raise)"
+            if patches:
+                rc2, last2, _ = gen(mutate, child, patches)
+                assert rc2 == 0 or want not in last2, f"{label}: the refusal survives the removal of its guard: {last2}"
+                removed += rc2 == 0
+                how = "ACCEPTED" if rc2 == 0 else f"fails otherwise ({last2[:90]})"
+            print(f"generator refuses: {label:<72} -> {want[:52]!r}; guard removed: {how}")
+
+        def drop_pair(c):
+            c["s25_rt1_pairs"] = [e for e in c["s25_rt1_pairs"] if e["pair_id"] != "B78_RT_5a"]
+        label, want = "the B78_RT_5a pair without its s25_rt1_pairs entry (nothing would score it)", "every RT-1 child is in exactly one s25_rt1_pairs entry; unscored ['B78_RT_5a_A', 'B78_RT_5a_B']"
+        rc, last, _ = gen(drop_pair, RA)
+        assert rc != 0 and want in last, (label, rc, last)
+        rc2, last2, _ = gen(drop_pair, RA, ((call_rt1, ""),))
+        assert rc2 == 0, (label, last2)
+        removed += 1
+        print(f"generator refuses: {label:<72} -> {want[:52]!r}; guard removed: ACCEPTED")
+        print(f"   b78: the six children generate alone; {len(negatives) + 1} generator refusals each for its own reason, {removed} accepted with only their guard removed")
+    finally:
+        bench.close()
+
+
 # ---- case-engineer 09d: B76-RT (RT-1, the restart pairs) ---------------------------------------------------------------------------------
-# Run alone: python3 -B -c "import dry_run; dry_run.s25_build2_checks('rt1')"   (about a minute; the sections below are rt1gen, rt1watch, rt1allrun, rt1gates)
+# Run alone: python3 -B -c "import dry_run; dry_run.s25_build2_checks('rt1')"   (about a minute; the sections below are rt1gen, rt1watch, rt1allrun, rt1gates; "stab", the S25.1 odd-even gate, runs alone as s25_build2_checks("stab"))
 _RT1_FIELDS = (("thetaC", "scalar"), ("thetaH", "scalar"), ("w", "scalar"), ("q", "scalar"), ("Vs", "vector"),
                ("thetaPendingB", "symmTensor"), ("thetaPendingP", "scalar"))
 _RT1_COMP = {"scalar": 1, "vector": 3, "symmTensor": 6}
@@ -2613,9 +2725,17 @@ def _rt1_state(step: int, n: int = 30, seed: int = 7) -> dict:
     return out
 
 
+def _rt1_write_uniform(path: Path, value: float) -> None:
+    """A scalar field the way the solver writes one whose cells are all equal: `internalField uniform v;` (thetaH before any deposit)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"FoamFile\n{{\n    version 2.0;\n    format ascii;\n    class volScalarField;\n    object {path.name};\n}}\n\n"
+                    f"dimensions [0 0 0 0 0 0 0];\n\ninternalField uniform {value:.17g};\n\nboundaryField\n{{\n}}\n\n"
+                    "// ************************************************************************* //\n")
+
+
 def _rt1_dirs(root: Path, *, n0: int = 42, mutate=None, dt_text: str = "4.7619047619047618e-06", n: int = 30,
               fields=tuple(f for f, _ in _RT1_FIELDS), state_a: str = "seeded", state_b: str = "restored", vs_zero: bool = False,
-              void_den: bool = False) -> tuple:
+              void_den: bool = False, write_precision: int | None = 17, theta_h_uniform: bool = False) -> tuple:
     """runs/A: full writes at steps n0-4 .. n0+5 and a log; runs/B: full writes at n0 .. n0+5 and a log. A perfect restart: B's values ARE A's."""
     a, b = root / "A", root / "B"
     s_end = n0 + 5
@@ -2628,10 +2748,17 @@ def _rt1_dirs(root: Path, *, n0: int = 42, mutate=None, dt_text: str = "4.761904
                 st["thetaC"] = ("scalar", [r + 1e-12 * (k - n0) for r in _rt1_state(n0, n)["thetaC"][1]])    # theta moves by 1e-12 per step
             d = case / f"0.{k:04d}"
             for f in fields:
-                _rt1_write_field(d / f, *st[f])
+                if f == "thetaH" and theta_h_uniform:
+                    _rt1_write_uniform(d / f, 0.0)      # as the solver writes thetaH before a platelet has deposited
+                else:
+                    _rt1_write_field(d / f, *st[f])
             (d / "uniform").mkdir(exist_ok=True)
             (d / "uniform" / "time").write_text(f"FoamFile\n{{\n    format ascii;\n}}\nvalue 0.{k:04d};\nname \"0.{k:04d}\";\nindex {k};\ndeltaT 4.7619047619047618e-06;\n")
             (d / "uniform" / "phaseClotState").write_text("FoamFile\n{\n    format ascii;\n}\nexplicitDiffusionRate 0;\n")
+    if write_precision is not None:
+        for case in (a, b):
+            (case / "system").mkdir(exist_ok=True)
+            (case / "system" / "controlDict").write_text(f"FoamFile\n{{\n    format ascii;\n}}\nwriteFormat ascii;\nwritePrecision {write_precision};\ntimePrecision 10;\n")
     for case, first, state in ((a, 1, state_a), (b, n0 + 1, state_b)):
         last = s_end
         lines = [f"PHASE_CLOT_S25_RESTART state={state}"]
@@ -2730,9 +2857,15 @@ def _s25_rt1_gates_section() -> None:
             den = max(abs(y - x) for x, y in zip(t0, t1))
             _rt1_rewrite(b / "0.0043", "thetaC", lambda rows: [rows[0] + frac * den] + rows[1:])
         return m
-    r = neg("m = 0.99e-4 (just under the gate)", "PASS", "RT-1a", "PASS", mutate=off_by(0.99e-4))
+    r = neg("m = 0.99e-4 (B76's gate passed it; S25.1 passes only exactly 0)", "FAIL", "RT-1a", "FAIL", mutate=off_by(0.99e-4))
     assert 0.98e-4 < r["gates"]["RT-1a"]["m"] < 1.0e-4
-    r = neg("m = 1.01e-4 (just over the gate)", "FAIL", "RT-1a", "FAIL", mutate=off_by(1.01e-4))
+    import math as _m
+
+    def one_ulp(a, b):               # B's theta at N0+1 is ONE ulp off in one cell
+        _rt1_rewrite(b / "0.0043", "thetaC", lambda rows: [_m.nextafter(rows[0], 2.0)] + rows[1:])
+    r = neg("RT-1a: B's theta one ulp off in one cell", "FAIL", "RT-1a", "FAIL", mutate=one_ulp)
+    assert r["gates"]["RT-1a"]["numerator_thetaC"] > 0.0 and r["gates"]["RT-1a"]["m"] < 1e-12, r["gates"]["RT-1a"]
+    r = neg("m = 1.01e-4", "FAIL", "RT-1a", "FAIL", mutate=off_by(1.01e-4))
     assert 1.0e-4 < r["gates"]["RT-1a"]["m"] < 1.02e-4
     r = neg("the denominator is 1e-12 (< 1e-8): the test cannot discriminate", "VOID", "RT-1a", "VOID", text="cannot discriminate", void_den=True)
     assert r["gates"]["RT-1a"]["denominator"] < 1e-8
@@ -2745,8 +2878,9 @@ def _s25_rt1_gates_section() -> None:
         return m
     r = neg("dt of step 45 off by 1e-10 relative", "FAIL", "RT-1b", "FAIL", mutate=dt_off(1e-10))
     assert r["gates"]["RT-1b"]["worst_step"] == 45 and 0.9e-10 < r["gates"]["RT-1b"]["worst_rel"] < 1.1e-10
-    neg("dt of step 45 off by 1e-13 relative (below the gate)", "PASS", "RT-1b", "PASS", mutate=dt_off(1e-13))
-    neg("the logs print 12 digits: a 1e-12 gate is not resolvable", "VOID", "RT-1b", "VOID", text="below its resolution", dt_text="4.76190476190e-06")
+    r = neg("dt of step 45 off by 1e-13 relative (B76's gate passed it)", "FAIL", "RT-1b", "FAIL", mutate=dt_off(1e-13))
+    assert r["gates"]["RT-1b"]["worst_step"] == 45 and r["gates"]["RT-1b"]["worst_rel"] > 0.0
+    neg("the logs print 12 digits: an exact equality is not resolvable", "VOID", "RT-1b", "VOID", text="below its resolution", dt_text="4.76190476190e-06")
 
     def drop_dt(a, b):
         lg = b / "log.phaseClotAxisymmetricFluid"
@@ -2761,7 +2895,11 @@ def _s25_rt1_gates_section() -> None:
             _rt1_rewrite(b / "0.0047", field, lambda rows: [(r * (1 + frac) if i == cell else r) for i, r in enumerate(rows)])
         return m
     r = neg("thetaH off by 1e-6 relative at N0+5", "FAIL", "RT-1c", "FAIL", text="thetaH", mutate=field_off("thetaH", 1e-6))
-    neg("thetaH off by 1e-9 relative (below the gate)", "PASS", "RT-1c", "PASS", mutate=field_off("thetaH", 1e-9))
+    neg("thetaH off by 1e-9 relative (B76's gate passed it)", "FAIL", "RT-1c", "FAIL", text="thetaH", mutate=field_off("thetaH", 1e-9))
+
+    def w_one_ulp(a, b):
+        _rt1_rewrite(b / "0.0047", "w", lambda rows: [rows[0]] + [_m.nextafter(rows[1], 2.0)] + rows[2:])
+    r = neg("RT-1c: w one ulp off in one cell at N0+5", "FAIL", "RT-1c", "FAIL", text="w: max|B-A|", mutate=w_one_ulp)
     neg("w off by 1e-7 relative", "FAIL", "RT-1c", "FAIL", text="w:", mutate=field_off("w", 1e-7))
     neg("a required field is absent from BOTH (thetaPendingB)", "FAIL", "RT-1c", "FAIL", text="required field thetaPendingB is absent",
         entry=entry5a, fields=("thetaC", "thetaH", "w", "q", "Vs", "thetaPendingP"))
@@ -2783,6 +2921,19 @@ def _s25_rt1_gates_section() -> None:
     neg("B says state=seeded (the restart did not restore)", "FAIL", text="did not read uniform/phaseClotState", state_b="seeded")
     neg("A's step-N0 directory purged (a late stop)", "VOID", text="purged", mutate=lambda a, b: shutil.rmtree(a / "0.0042"))
     neg("B's log missing", "VOID", mutate=lambda a, b: (b / "log.phaseClotAxisymmetricFluid").unlink())
+    # ---- S25.1 C(a): a uniform-written field is broadcast, never a parse defect
+    r = neg("thetaH written `uniform` in every directory (the solver's early form): RT-1a is judged, not VOID", "PASS", "RT-1a", "PASS", theta_h_uniform=True)
+    assert r["gates"]["RT-1a"]["m"] == 0.0 and r["gates"]["RT-1a"]["denominator"] > 1e-4 and r["gates"]["RT-1c"]["status"] == "PASS", r["gates"]
+
+    def uniform_differs(a, b):       # B's thetaH at N0+1 is uniform 1e-3, A's uniform 0: the broadcast must SEE it
+        _rt1_write_uniform(b / "0.0043" / "thetaH", 1e-3)
+    r = neg("thetaH uniform 0 in A and uniform 1e-3 in B at N0+1: broadcast sees it", "FAIL", "RT-1a", "FAIL", theta_h_uniform=True, mutate=uniform_differs)
+    assert r["gates"]["RT-1a"]["numerator"] > 0.0, r["gates"]["RT-1a"]
+    neg("thetaH uniform in A and nonuniform in B at N0+5: RT-1c names the kind", "FAIL", "RT-1c", "FAIL", text="not the same kind and size",
+        theta_h_uniform=True, mutate=lambda a, b: _rt1_write_field(b / "0.0047" / "thetaH", "scalar", [0.0] * 30))
+    # ---- S25.1 D3: the bitwise claim needs a file written at 17 digits
+    neg("controlDict writePrecision 6: a bitwise comparison is below the resolution of the files", "VOID", text="writePrecision", write_precision=6)
+    neg("no controlDict: the precision cannot be read", "VOID", text="writePrecision", write_precision=None)
     # ---- the registry: a pair whose arms are not in the assessed run is not an error
     rep = ac.s25_rt1_report(Path("/nonexistent"), {"x": {}}, {"s25_rt1_pairs": [_rt1_entry(pair_id="p")]})
     assert rep == [{"pair_id": "p", "status": "ARMS_NOT_IN_THIS_RUN", "arms_absent": ["A", "B"]}], rep
@@ -2792,15 +2943,28 @@ def _s25_rt1_gates_section() -> None:
         assert src.count(old) == 1, f"the assessor text for {tag} moved: {old[:80]!r}"
         return load(src.replace(old, new), tag)
     removed = []
-    m_gate = mutated('g["status"] = "PASS" if g["m"] < RT1_M_GATE else "FAIL"', 'g["status"] = "PASS"', "mgate")
+    m_gate = mutated('g["status"] = "PASS" if (num == 0.0 and num_c == 0.0 and num_h == 0.0) else "FAIL"', 'g["status"] = "PASS"', "mgate")
     assert verdict(m_gate, mutate=zero_carrier)["gates"]["RT-1a"]["status"] == "PASS"
-    removed.append("RT-1a threshold -> m = 1 PASSES")
+    removed.append("RT-1a exact-zero test -> m = 1 PASSES")
+    m_gate2 = mutated('g["status"] = "PASS" if (num == 0.0 and num_c == 0.0 and num_h == 0.0) else "FAIL"', 'g["status"] = "PASS" if num / den < 1e-4 else "FAIL"', "mgate2")
+    assert verdict(m_gate2, mutate=one_ulp)["gates"]["RT-1a"]["status"] == "PASS" and verdict(ac, mutate=one_ulp)["gates"]["RT-1a"]["status"] == "FAIL"
+    removed.append("RT-1a back to B76's m < 1e-4 -> the one-ulp difference PASSES")
+    m_bc = mutated("""    return rt1_broadcast(c, n, f"{d.name}/thetaC"), rt1_broadcast(h, n, f"{d.name}/thetaH")""",
+                   """    if len(c[2]) != len(h[2]):
+        raise ValueError(f"{d.name}: thetaC and thetaH differ in size ({len(c[2])} against {len(h[2])})")
+    return c[2], h[2]""", "bcast")
+    r_old = verdict(m_bc, theta_h_uniform=True)
+    assert r_old["gates"]["RT-1a"]["status"] == "VOID" and "differ in size" in r_old["gates"]["RT-1a"]["reason"], r_old["gates"]["RT-1a"]
+    removed.append("RT-1a broadcast -> thetaH uniform (1 number) against thetaC (30) is VOID again, B76's parse defect")
     m_den = mutated('if not (math.isfinite(den) and math.isfinite(num)) or not den >= RT1_DENOMINATOR_MIN:', 'if False:', "den")
     assert verdict(m_den, void_den=True)["gates"]["RT-1a"]["status"] == "PASS"
     removed.append("RT-1a denominator floor -> the 1e-12 denominator PASSES")
-    m_dt = mutated('g["status"] = "PASS" if g["worst_rel"] <= RT1_DT_REL else "FAIL"', 'g["status"] = "PASS"', "dtgate")
+    m_dt = mutated('g["status"] = "PASS" if g["worst_rel"] == 0.0 else "FAIL"', 'g["status"] = "PASS"', "dtgate")
     assert verdict(m_dt, mutate=dt_off(1e-10))["gates"]["RT-1b"]["status"] == "PASS"
-    removed.append("RT-1b threshold -> dt off by 1e-10 PASSES")
+    removed.append("RT-1b exact-equality test -> dt off by 1e-10 PASSES")
+    m_dt2 = mutated('g["status"] = "PASS" if g["worst_rel"] == 0.0 else "FAIL"', 'g["status"] = "PASS" if g["worst_rel"] <= 1e-12 else "FAIL"', "dtgate2")
+    assert verdict(m_dt2, mutate=dt_off(1e-13))["gates"]["RT-1b"]["status"] == "PASS"
+    removed.append("RT-1b back to B76's 1e-12 -> dt off by 1e-13 PASSES")
     m_dig = mutated('if g["digits_printed"] < RT1_DT_MIN_DIGITS and g["status"] == "PASS":', 'if False:', "digits")
     assert verdict(m_dig, dt_text="4.76190476190e-06")["gates"]["RT-1b"]["status"] == "PASS"
     removed.append("RT-1b resolution rule -> the 12-digit log PASSES")
@@ -2813,9 +2977,15 @@ def _s25_rt1_gates_section() -> None:
                     problems.append''', "req")
     assert verdict(m_req, entry=entry5a, fields=("thetaC", "thetaH", "w", "q", "Vs", "thetaPendingP"))["gates"]["RT-1c"]["status"] == "PASS"
     removed.append("RT-1c required-field test -> a field absent from both PASSES")
-    m_rel = mutated("if rel_err > RT1_FIELD_REL:", "if False:", "rel")
+    m_rel = mutated("if diff != 0.0:", "if False:", "rel")
     assert verdict(m_rel, mutate=field_off("w", 1e-7))["gates"]["RT-1c"]["status"] == "PASS"
-    removed.append("RT-1c 1e-8 threshold -> w off by 1e-7 PASSES")
+    removed.append("RT-1c exact-equality test -> w off by 1e-7 PASSES")
+    m_rel2 = mutated("if diff != 0.0:", "if rel_err > 1e-8:", "rel2")
+    assert verdict(m_rel2, mutate=field_off("thetaH", 1e-9))["gates"]["RT-1c"]["status"] == "PASS" and verdict(m_rel2, mutate=w_one_ulp)["gates"]["RT-1c"]["status"] == "PASS"
+    removed.append("RT-1c back to B76's 1e-8 relative -> thetaH off by 1e-9 and w one ulp off PASS")
+    m_wp = mutated("if v is None or v < RT1_WRITE_PRECISION_MIN:", "if False:", "wp")
+    assert verdict(m_wp, write_precision=6)["status"] == "PASS"
+    removed.append("RT-1 writePrecision rule -> files written at 6 digits PASS a bitwise claim")
     m_vs = mutated('if entry.get("needs_vs_nonzero") and vs is not None and not vs > 0.0:', 'if False:', "vs")
     assert verdict(m_vs, entry=entry5a, vs_zero=True)["status"] == "PASS"
     removed.append("Vs != 0 precondition -> Vs = 0 PASSES")
@@ -2968,7 +3138,7 @@ def _s25_rt1_allrun_section() -> None:
                 _rt1_write_field(c / "0" / "w", "scalar", [0.0])
             for k in range(38, 48):
                 d = a / f"0.{k:04d}"
-                for f in ("w", "U", "p"):
+                for f in ("w", "U", "p", "phiSkel"):
                     _rt1_write_field(d / f, "scalar", [float(k)])
                 (d / "uniform").mkdir()
                 (d / "uniform" / "time").write_text(f"FoamFile\n{{\n    format ascii;\n}}\nvalue 0.{k:04d};\nname \"0.{k:04d}\";\nindex {k};\ndeltaT 1e-06;\n\n"
@@ -3161,14 +3331,147 @@ def _s25_rt1_gen_section() -> None:
         bench.close()
 
 
+# ---- case-engineer 05 (S25.1 C(b)): the odd-even stability gate on the clot phase ------------------------------------------------------
+_STAB_NX, _STAB_NY = 40, 12
+
+
+def _stab_child(root: Path, name: str, vs_fn, *, steps=tuple(range(70, 2100, 70)), clot=lambda i, j: 10 <= i < 30 and 3 <= j < 9,
+                blocks: str = "hex (0 1 2 3 4 5 6 7) (40 12 1) simpleGrading (1 1 1)", drop_q: bool = False) -> Path:
+    """A child directory with frames at `steps`: Vs = (vs_fn(step, i, j), 0, 0), q = 0.01 in the clot cells and 1 elsewhere."""
+    case = root / name
+    (case / "system").mkdir(parents=True)
+    (case / "system" / "blockMeshDict").write_text(f"FoamFile\n{{\n    format ascii;\n}}\nblocks\n(\n    {blocks}\n);\n")
+    for k in steps:
+        d = case / f"{k * 1e-6:.6g}"
+        _rt1_write_field(d / "Vs", "vector", [[vs_fn(k, i, j), 0.0, 0.0] for j in range(_STAB_NY) for i in range(_STAB_NX)])
+        if not drop_q:
+            _rt1_write_field(d / "q", "scalar", [0.01 if clot(i, j) else 1.0 for j in range(_STAB_NY) for i in range(_STAB_NX)])
+        (d / "uniform").mkdir(exist_ok=True)
+        (d / "uniform" / "time").write_text(f"FoamFile\n{{\n    format ascii;\n}}\nindex {k};\n")
+    return case
+
+
+def _s25_stability_section() -> None:
+    """The S25.1 C(b) gate: the detector scores 0 on a tanh; the gate is on the clot phase only; it FAILS on a growing clot mode, at
+    the registered bound; each guard deleted from a scratch assessor copy lets its negative pass."""
+    import importlib.util, math as _m
+    path = Path(__file__).resolve().parent / "assess_case.py"
+    src = path.read_text()
+
+    def load(text: str, tag: str):
+        with tempfile.TemporaryDirectory(prefix="am2020-stab-mod-") as t:
+            p = Path(t) / f"assess_case_{tag}.py"
+            p.write_text(text)
+            spec = importlib.util.spec_from_file_location(f"assess_case_stab_{tag}", p)
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = mod
+            spec.loader.exec_module(mod)
+            return mod
+    ac = load(src, "real")
+    nx, ny = _STAB_NX, _STAB_NY
+    shown, removed = [], []
+    # ---- the detector alone: zero on a tanh of any width, nonzero on a tanh plus an odd-even mode
+    for w in (0.3, 0.5, 1.0, 3.0, 10.0):
+        f = [_m.tanh((i - 20) / w) for _ in range(ny) for i in range(nx)]
+        f2 = [v + 1e-6 * (-1.0) ** i for v, i in zip(f, [i for _ in range(ny) for i in range(nx)])]
+        a0, a1 = ac.s25_zigzag_amplitude(f, nx, ny)[0], ac.s25_zigzag_amplitude(f2, nx, ny)[0]
+        assert a0 == 0.0, (w, a0)
+        # the mode is seen where the profile is flatter than the mode (3 alternating differences are needed): in the tails of a narrow tanh
+        assert (a1 > 0.0) == (w <= 1.0), (w, a1)
+    f = [_m.tanh((i - 20) / 1.0) + 1e-6 * (-1.0) ** i for _ in range(ny) for i in range(nx)]
+    assert 1e-6 < ac.s25_zigzag_amplitude(f, nx, ny)[0] < 3e-6
+    shown.append("detector: 0.0 on a tanh of width 0.3, 0.5, 1, 3, 10; a width-1 tanh plus a 1e-6 odd-even mode scores 1e-6 .. 3e-6 (seen in the flat tails)")
+
+    def mode(step, i, j, e0=1e-3, g=0.0):         # odd-even amplitude e0 (1+g)^step
+        return e0 * (1.0 + g) ** step * (-1.0) ** i
+
+    def smooth(step, i, j, w=3.0):
+        return 0.1 * _m.tanh((i - 20) / w)
+
+    def judge(mod, fn, **kw):
+        with tempfile.TemporaryDirectory(prefix="am2020-stab-") as t:
+            return mod.s25_stability_report(_stab_child(Path(t), "c", fn, **kw))
+
+    def case(label, want, fn, mod=None, **kw):
+        r = judge(mod or ac, fn, **kw)
+        assert r["verdict"] == want, f"{label}: {r['verdict']} (wanted {want}): {json.dumps(r)[:700]}"
+        shown.append(f"{label}: {want}")
+        return r
+    inclot = lambda i, j: 10 <= i < 30 and 3 <= j < 9
+    # ---- PASS
+    r = case("a smooth tanh in the clot, nothing else", "PASS", smooth)
+    assert max(r["amp_clot"]) == 0.0 and max(r["amp_whole_field"]) == 0.0 and r["frames"] == 29 and r["grid"] == [40, 12]
+    r = case("a tanh that steepens from width 10 to 0.3 over the run (a front sharpening)", "PASS",
+             lambda k, i, j: 0.1 * _m.tanh((i - 20) / (10.0 - 9.7 * k / 2030.0)))
+    assert max(r["amp_clot"]) == 0.0, r["amp_clot"]
+    r = case("a clot odd-even mode that is constant (1e-3, seen by the detector)", "PASS", lambda k, i, j: smooth(k, i, j) + (mode(k, i, j) if inclot(i, j) else 0.0))
+    assert min(r["amp_clot"]) > 1e-4 and r["clot_worst_window"]["ratio"] == 1.0 or abs(r["clot_worst_window"]["ratio"] - 1.0) < 1e-9, r["clot_worst_window"]
+    r = case("a clot mode growing at 0.5e-5 per step (inside the bound)", "PASS",
+             lambda k, i, j: smooth(k, i, j) + (mode(k, i, j, g=0.5e-5) if inclot(i, j) else 0.0))
+    assert min(r["amp_clot"]) > 1e-4 and 0.5 < r["clot_worst_window"]["over_bound"] < 1.0, r["clot_worst_window"]
+    r = case("a clot mode of 1e-8 of max|Vs| that appears at two frames and goes (below the floor, as in the returned 5a children)", "PASS",
+             lambda k, i, j: 0.1 + (1e-9 * (-1.0) ** i if inclot(i, j) and k in (700, 1400) else 0.0))
+    assert 0.0 < max(r["amp_clot"]) < r["floor"], (r["amp_clot"], r["floor"])
+    rb = case("odd-even growth x1.001 per step in the BLOOD phase only: clot gate PASSES, the whole field is REPORTED over the bound", "PASS",
+              lambda k, i, j: smooth(k, i, j) + (0.0 if inclot(i, j) else mode(k, i, j, e0=1e-5, g=1e-3)))
+    assert rb["clot_worst_window"]["over_bound"] < 1.0 and rb["whole_field_worst_window_reported_not_gated"]["over_bound"] > 1.0, rb
+    assert all(a == 0.0 for a in rb["amp_clot"]), rb["amp_clot"]
+    # ---- FAIL
+    r = case("a clot mode growing at 1.5e-5 per step (outside the bound)", "FAIL",
+             lambda k, i, j: smooth(k, i, j) + (mode(k, i, j, g=1.5e-5) if inclot(i, j) else 0.0))
+    assert 1.0 < r["clot_worst_window"]["over_bound"] < 1.1, r["clot_worst_window"]
+    r = case("a clot mode growing at 1e-3 per step", "FAIL", lambda k, i, j: smooth(k, i, j) + (mode(k, i, j, g=1e-3) if inclot(i, j) else 0.0))
+    case("a clot mode absent for 1400 steps, then 1e-3 of max|Vs| (growth from zero)", "FAIL",
+         lambda k, i, j: smooth(k, i, j) + (1e-3 * (-1.0) ** i if inclot(i, j) and k >= 1500 else 0.0))
+    # ---- VOID, never PASS
+    case("no frame holds a clot cell (q = 1 everywhere)", "VOID", smooth, clot=lambda i, j: False)
+    r = case("frames span only 600 steps (no 1000-step window)", "VOID", smooth, steps=tuple(range(60, 660, 60)))
+    assert "1000 steps apart" in r["reason"], r
+    case("q missing from the frames", "VOID", smooth, drop_q=True)
+    case("two blocks in the blockMeshDict", "VOID", smooth, blocks="hex (0 1 2 3 4 5 6 7) (40 12 1) simpleGrading (1 1 1)\n    hex (0 1 2 3 4 5 6 7) (4 4 1) simpleGrading (1 1 1)")
+    r = case("Vs is 0 in every frame (the skeleton never moved)", "VOID", lambda k, i, j: 0.0)
+    assert "never moved" in r["reason"], r
+    # ---- each guard deleted from a scratch copy lets its negative pass
+    def mutated(old: str, new: str, tag: str):
+        assert src.count(old) == 1, f"the assessor text for {tag} moved: {old[:80]!r}"
+        return load(src.replace(old, new), tag)
+    m_mask = mutated("ac = max(s25_zigzag_amplitude(c, nx, ny, mask)[0] for c in comps)", "ac = max(s25_zigzag_amplitude(c, nx, ny)[0] for c in comps)", "mask")
+    blood = lambda k, i, j: smooth(k, i, j) + (0.0 if inclot(i, j) else mode(k, i, j, e0=1e-5, g=1e-3))
+    assert judge(m_mask, blood)["verdict"] == "FAIL" and judge(ac, blood)["verdict"] == "PASS"
+    removed.append("clot mask -> the blood-phase growth FAILS the gate (the whole-field form B76 read)")
+    m_alt = mutated("if d0 * d1 < 0.0 and d1 * d2 < 0.0:", "if True:", "alt")
+    steep = lambda k, i, j: 0.1 * _m.tanh((i - 20) / (10.0 - 9.7 * k / 2030.0))
+    assert judge(m_alt, steep)["verdict"] == "FAIL" and judge(ac, steep)["verdict"] == "PASS"
+    removed.append("alternation test -> a steepening tanh scores > 0 and FAILS")
+    m_gate = mutated('res["verdict"] = "FAIL" if wc["over_bound"] > 1.0 else "PASS"', 'res["verdict"] = "PASS"', "bound")
+    grow = lambda k, i, j: smooth(k, i, j) + (mode(k, i, j, g=1e-3) if inclot(i, j) else 0.0)
+    assert judge(m_gate, grow)["verdict"] == "PASS"
+    removed.append("growth bound -> a clot mode growing 1e-3 per step PASSES")
+    m_floor = mutated("floor = S25_STAB_FLOOR_REL * vmax", "floor = 1e-300 * vmax", "floor")
+    tiny = lambda k, i, j: 0.1 + (1e-9 * (-1.0) ** i if inclot(i, j) and k in (700, 1400) else 0.0)
+    assert judge(m_floor, tiny)["verdict"] == "FAIL" and judge(ac, tiny)["verdict"] == "PASS"
+    removed.append("resolution floor -> a 1e-8 relative mode appearing from zero FAILS")
+    m_win = mutated("if ds < S25_STAB_WINDOW_STEPS:", "if ds < 1:", "window")
+    assert judge(m_win, grow, steps=tuple(range(60, 660, 60)))["verdict"] == "FAIL" and judge(ac, grow, steps=tuple(range(60, 660, 60)))["verdict"] == "VOID"
+    removed.append("1000-step window -> a 600-step run is judged instead of VOID")
+    m_clot = mutated("if not any(n_clot_cells):", "if False:", "noclot")
+    assert judge(m_clot, smooth, clot=lambda i, j: False)["verdict"] == "PASS"
+    removed.append("no-clot-cell test -> a run without a clot PASSES")
+    for x in shown:
+        print("   stability:", x)
+    for x in removed:
+        print("   stability guard removed:", x)
+    print(f"   stab: {len(shown)} judgements as expected; {len(removed)} guards deleted one at a time, each lets its negative pass")
+
+
 def s25_build2_checks(only: str | None = None) -> None:
     assert S23_SOLVER_C.is_file(), f"the solver source is absent: {S23_SOLVER_C}"
     src = S23_SOLVER_C.read_text()
     sections = (("ltsolver", lambda: _s25_lt_solver_section(src)), ("ltgen", _s25_lt_gen_section),
                 ("ltpairs", _s25_lt_pairs_section), ("ltassess", lambda: _s25_lt_assess_section(src)),
-                ("5agen", _s25_5a_gen_section), ("oi76", _s25_oi76_section), ("b76off", _s25_b76off_section),
+                ("5agen", _s25_5a_gen_section), ("oi76", _s25_oi76_section), ("b76off", _s25_b76off_section), ("b78", _s25_b78_section),
                 ("rt1gen", _s25_rt1_gen_section), ("rt1watch", _s25_rt1_watch_section), ("rt1allrun", _s25_rt1_allrun_section),
-                ("rt1gates", _s25_rt1_gates_section))
+                ("rt1gates", _s25_rt1_gates_section), ("stab", _s25_stability_section))
     ran = 0
     for name, fn in sections:
         if only is not None and only != name and not (only == "rt1" and name.startswith("rt1")):
@@ -3261,17 +3564,26 @@ def s23_generator_negatives(only: str | None = None) -> None:
         assert len(every) == KEPT_CHILDREN, (len(every), KEPT_CHILDREN)
         assert not [c for c in every if "volumetricTearRatio" in props(c)], "volumetricTearRatio written for a child that does not name it"
         # S25: every legacy child states S_t = 1.0, writes it, and writes 17 digits (the grid is not a filter: all of them)
-        # the legacy children (every child outside the S25 5a series, whose four children (two smoke, the RT-1 pair) state S_t = 25/3 on purpose)
+        # the legacy children (every child outside the S25 5a series, whose six children (two smoke, the RT-1 pair, BATCH 78's RT-1 pair) state S_t = 25/3 on purpose)
         legacy = [c for c in every if json.loads((root / "runs" / c / "child.json").read_text())["series"] != "s25_5a"]
-        assert len(legacy) == KEPT_CHILDREN - 4, (len(legacy), KEPT_CHILDREN)
+        assert len(legacy) == KEPT_CHILDREN - 6, (len(legacy), KEPT_CHILDREN)
         assert all("\ntimeScale 1.0;\n" in props(c) for c in legacy), "a child's dictionary lacks timeScale 1.0"
         assert all(json.loads((root / "runs" / c / "child.json").read_text())["time_scale"] == 1.0 for c in legacy)
-        assert [c for c in every if c not in legacy] == ["RT_5a_A", "RT_5a_B", "S25_5a_tan", "S25_5a_tan_half"]
-        assert all("\ntimeScale 8.333333333333334;\n" in props(c) for c in ("RT_5a_A", "RT_5a_B", "S25_5a_tan", "S25_5a_tan_half"))
+        assert [c for c in every if c not in legacy] == ["B78_RT_5a_A", "B78_RT_5a_B", "RT_5a_A", "RT_5a_B", "S25_5a_tan", "S25_5a_tan_half"]
+        assert all("\ntimeScale 8.333333333333334;\n" in props(c) for c in ("B78_RT_5a_A", "B78_RT_5a_B", "RT_5a_A", "RT_5a_B", "S25_5a_tan", "S25_5a_tan_half"))
         # B76-RT (case-engineer 09d): the RT-1 children carry their parents' phaseClotProperties exactly (only the run controls differ), A = B, no library pin
         assert props("RT_P73_A") == props("RT_P73_B") == props("P73_G4_r3_40"), "an RT_P73 child's phaseClotProperties drifted from its parent"
         assert props("RT_5a_A") == props("RT_5a_B") == props("S25_5a_tan"), "an RT_5a child's phaseClotProperties drifted from its parent"
-        for c in ("RT_P73_A", "RT_P73_B", "RT_5a_A", "RT_5a_B"):
+        # BATCH 78 (S25.1, case-engineer 06): the RT_5a pair is RT_5a_A / RT_5a_B's dictionary under new ids; the OFF/CTL children are P73_G4_r3_40's dictionary exactly (end time and write
+        # interval are controlDict keys, not phaseClotProperties); only B78_OFF_A carries the baseline pin, so the library is the ONLY difference between the OFF arms' children
+        assert props("B78_RT_5a_A") == props("B78_RT_5a_B") == props("RT_5a_A"), "a BATCH 78 RT_5a child's phaseClotProperties drifted from its parent"
+        assert props("B78_OFF_A") == props("B78_OFF_B") == props("B78_CTL_1") == props("B78_CTL_2") == props("P73_G4_r3_40"), "a BATCH 78 OFF/CTL child's phaseClotProperties drifted from P73_G4_r3_40"
+        assert json.loads((root / "runs" / "B78_OFF_A" / "child.json").read_text())["solver_library"] == "baseline"
+        for _f in ("system/controlDict", "system/fvSolution", "system/fvSchemes", "constant/physicalProperties", "constant/momentumTransport"):
+            assert (root / "runs" / "B78_OFF_A" / _f).read_bytes() == (root / "runs" / "B78_OFF_B" / _f).read_bytes(), _f
+            assert (root / "runs" / "B78_CTL_1" / _f).read_bytes() == (root / "runs" / "B78_CTL_2" / _f).read_bytes(), _f
+        assert (root / "runs" / "B78_CTL_1" / "child.json").read_text().replace("B78_CTL_1", "B78_CTL_2") == (root / "runs" / "B78_CTL_2" / "child.json").read_text()
+        for c in ("RT_P73_A", "RT_P73_B", "RT_5a_A", "RT_5a_B", "B78_RT_5a_A", "B78_RT_5a_B"):
             assert not (root / "runs" / c / "child.env").exists() and "solver_library" not in json.loads((root / "runs" / c / "child.json").read_text()), c
         assert all(re.search(r"(?m)^writePrecision\s+17;", (root / "runs" / c / "system" / "controlDict").read_text())
                    for c in every), "a controlDict is not at writePrecision 17"
@@ -3289,7 +3601,7 @@ def s23_generator_negatives(only: str | None = None) -> None:
         assert props("D74_refI") == props("S23v_G4_r3")
         # BATCH 75: the re-run child has the same parent's dictionary, no library pin, no S23 block
         assert props("D75_refI") == props("S23v_G4_r3")
-        for c in ("P73_G4_r3_40", "P73_G40_40", "D74_refI", "D75_refI", "B76_OFF_B"):
+        for c in ("P73_G4_r3_40", "P73_G40_40", "D74_refI", "D75_refI", "B76_OFF_B", "B78_OFF_B", "B78_CTL_1", "B78_CTL_2"):
             assert not (root / "runs" / c / "child.env").exists(), c
             assert "solver_library" not in json.loads((root / "runs" / c / "child.json").read_text()), c
         # B76-OFF (S25 section 7): both arms have P73_G4_r3_40's dictionary exactly (timeScale 1.0 included: the baseline source ignores it) and
@@ -3303,7 +3615,7 @@ def s23_generator_negatives(only: str | None = None) -> None:
         assert len(re.findall(r"(?m)^\s*sensitivityLimit\s+tanDelta0;\s*$", props("S23v_G4_nor3"))) == 1
         # child.env: the 2 earlier library children and the 13 pinned ones (item 5), nothing else
         pinned = sorted(S23_PINNED_S22)
-        assert sorted(c for c in every if (root / "runs" / c / "child.env").exists()) == sorted(["S22v_G40_A0", "S23v_G4_r3_S22", "B76_OFF_A"] + pinned)
+        assert sorted(c for c in every if (root / "runs" / c / "child.env").exists()) == sorted(["S22v_G40_A0", "S23v_G4_r3_S22", "B76_OFF_A", "B78_OFF_A"] + pinned)
         for c in ["S23v_G4_r3_S22"] + pinned:
             assert json.loads((root / "runs" / c / "child.json").read_text())["solver_library"] == "s22", c
         assert [c for c in every if json.loads((root / "runs" / c / "child.json").read_text()).get("solver_library") == "s22"] == sorted(["S23v_G4_r3_S22"] + pinned)
@@ -3331,6 +3643,11 @@ def s23_generator_negatives(only: str | None = None) -> None:
             cd = (root / "runs" / cid / "system" / "controlDict").read_text()
             assert f"endTime         {end};" in cd or re.search(rf"endTime\s+{end};", cd), (cid, "endTime")
             assert re.search(r"writeInterval\s+0\.005;", cd), (cid, "writeInterval")
+        # BATCH 78: 18 ms with full writes at 6 ms (18 is not a whole number of 5 ms), and the 84-step control with its one full write at 0.4 ms
+        for cid, (end, wi) in {"B78_OFF_A": (0.018, 0.006), "B78_OFF_B": (0.018, 0.006), "B78_CTL_1": (0.0004, 0.0004), "B78_CTL_2": (0.0004, 0.0004)}.items():
+            cd = (root / "runs" / cid / "system" / "controlDict").read_text()
+            assert re.search(rf"(?m)^endTime\s+{end};", cd) and re.search(rf"(?m)^writeInterval\s+{wi};", cd), (cid, "B78 endTime / writeInterval")
+            assert re.search(r"(?m)^writeControl\s+adjustableRunTime;", cd), (cid, "B78 writeControl")
         # child.env, SOURCED the way Allrun does (bash, `.`), each refusal seen to fire
         envs = {"s22": (root / "runs" / "S23v_G4_r3_S22" / "child.env", "PHASE_CLOT_S22_LIBBIN", "PHASE_CLOT_P2PRIME_LIBBIN"),
                 "p2prime": (root / "runs" / "S22v_G40_A0" / "child.env", "PHASE_CLOT_P2PRIME_LIBBIN", "PHASE_CLOT_S22_LIBBIN"),
@@ -3432,7 +3749,7 @@ def reference_library_wiring() -> None:
     spec.loader.exec_module(nbsel)
     text = nbsel.source_of(root / "notebooks" / "AM2020_main_case_colab.ipynb")
     batch, batches = nbsel.parse(text)
-    assert batch == max(batches) == 76, (batch, max(batches))
+    assert batch == max(batches) == 78, (batch, max(batches))
     # the build script re-pins by exactly these two patterns; a second match would break the release
     assert len(re.findall(r"EXPECTED_REPO_DIGEST = '[0-9a-f]{64}'", text)) == 1
     assert len(re.findall(r"EXPECTED_TAG = 'digest-[0-9a-f]{12}'", text)) == 1
@@ -3447,7 +3764,7 @@ def reference_library_wiring() -> None:
     assert "P2PRIME_TAG" in table and "S22REF_TAG" in table and "BASELINE_TAG" in table
     flags = dict(re.findall(r"(\d+): \('(\w+)', \w+, \w+, '(--[\w-]+)'", table) and
                  [(b, f"{n}|{fl}") for b, n, fl in re.findall(r"(\d+): \('(\w+)', \w+, \w+, '(--[\w-]+)'", table)])
-    assert flags == {"71": "p2prime|--p2prime-solver", "72": "s22|--s22-solver", "76": "baseline|--baseline-solver"}, flags
+    assert flags == {"71": "p2prime|--p2prime-solver", "72": "s22|--s22-solver", "76": "baseline|--baseline-solver", "78": "baseline|--baseline-solver"}, flags
     # the runner's functions, executed from source
     runner_src = (CASE / "scripts" / "run_main_case_colab.py").read_text()
     ns = {"json": json, "Path": Path}
@@ -3538,6 +3855,16 @@ def reference_library_wiring() -> None:
     refused(need("B76_OFF_A", controls), {"p2prime": "", "s22": "", "baseline": ""}, "--baseline-solver was not passed")
     refused(need("B76_OFF_B", controls), {"p2prime": "", "s22": "", "baseline": "/x"}, "built for nothing")
     check(need("B76_OFF_A", controls), {"p2prime": "", "s22": "", "baseline": "/x"})
+    # BATCH 78 (S25.1 re-check) is ONE session on the 1-core runtime (no launch 2): B78_OFF_A names solver_library baseline, so the one launch clones the baseline release and passes --baseline-solver;
+    # it passes --mkl-threads 1 and no --mkl-cbwr; its children are the notebook's session in the generator's matrix order (both arms of every pair in it)
+    assert [k for k in by if k[0] == 78] == [(78, 1)], sorted(by)
+    assert by[(78, 1)]["children"] == ["B78_OFF_A", "B78_OFF_B", "B78_CTL_1", "B78_CTL_2", "B78_RT_5a_A", "B78_RT_5a_B"], by[(78, 1)]["children"]
+    assert need(" ".join(by[(78, 1)]["children"]), controls) == {"baseline"} and need("B78_OFF_B B78_CTL_1 B78_CTL_2 B78_RT_5a_A B78_RT_5a_B", controls) == set()
+    assert by[(78, 1)]["library_passed"] == ["baseline"]
+    a78 = by[(78, 1)]["argv"]
+    assert "--mkl-cbwr" not in a78 and a78[a78.index("--mkl-threads") + 1] == "1" and "--baseline-solver" in a78 and "--s22-solver" not in a78 and "--p2prime-solver" not in a78, a78
+    refused(need(" ".join(by[(78, 1)]["children"]), controls), {"p2prime": "", "s22": "", "baseline": ""}, "--baseline-solver was not passed")
+    check(need(" ".join(by[(78, 1)]["children"]), controls), {"p2prime": "", "s22": "", "baseline": "/x"})
     assert "--s22-solver" in by[(72, 1)]["argv"] and "--s22-solver" not in by[(72, 2)]["argv"]
     # the same two negatives on this function's own exec'd runner functions
     check(need(" ".join(by[(72, 1)]["children"]), controls), {"p2prime": "", "s22": "/x"})
@@ -3547,7 +3874,7 @@ def reference_library_wiring() -> None:
     seen = nbsel.negatives(cell, controls, 72)
     print("   the reference-library wiring agrees: notebook pins, batch table, generator children, runner flags; "
           f"7 start-of-session cases seen both ways; {len(records)} launch argvs accepted by the runner's own parser "
-          f"(BATCH 72 launch 1 passes --s22-solver, launch 2 does not; BATCH 73, BATCH 74 and BATCH 75, one session each, pass none; BATCH 76 launch 1 passes --baseline-solver, launches 2 and 3 do not, and none passes --mkl-cbwr); {len(seen)} launch negatives each refused "
+          f"(BATCH 72 launch 1 passes --s22-solver, launch 2 does not; BATCH 73, BATCH 74 and BATCH 75, one session each, pass none; BATCH 76 launch 1 passes --baseline-solver, launches 2 and 3 do not, BATCH 78 (one session) passes --baseline-solver, and none passes --mkl-cbwr); {len(seen)} launch negatives each refused "
           "for its stated reason")
 
 
@@ -4122,10 +4449,10 @@ S21_GENERATOR_NEGATIVES = (
 # The number of children the generator emits: the 18 kept + the 8 S22 validation
 # twins of BATCH 71 + the 4 S23 twins of BATCH 72 + the 2 production children of BATCH 73 + the 1 diagnostic child of BATCH 74
 # (D74_refI, the passive intact-network reference) + the 1 re-run child of BATCH 75 (D75_refI, the same measurement on rev. 3.1) + the 2 B76-5a
-# smoke children (S25_5a_tan, S25_5a_tan_half; case-engineer 09b) + the 2 B76-OFF children (B76_OFF_A on the baseline binary, B76_OFF_B on the S25 build; case-engineer 09c). ONE pin, read by
+# smoke children (S25_5a_tan, S25_5a_tan_half; case-engineer 09b) + the 2 B76-OFF children (B76_OFF_A on the baseline binary, B76_OFF_B on the S25 build; case-engineer 09c) + the 4 B76-RT children (RT_P73_A/B, RT_5a_A/B) + the 6 BATCH 78 children (B78_OFF_A/B, B78_CTL_1/2, B78_RT_5a_A/B; case-engineer 06). ONE pin, read by
 # s21_generator_negatives, s23_generator_negatives and main(): BATCH 72 updated main's copy and left this
 # function's at 26, and release 2026-10-07 died on it ten minutes into the build.
-KEPT_CHILDREN = 42
+KEPT_CHILDREN = 48
 
 
 def s21_generator_negatives() -> None:
@@ -4326,6 +4653,7 @@ def main() -> int:
     run_direct("s23_generator_refuses_bad_tear_ratio", s23_generator_negatives)
     run_direct("s25_build1_refusals_gamma_scaling_and_assessor_fields", s25_build1_checks)
     run_direct("s25_build2_lt_refusals_generator_and_assessor_gates", s25_build2_checks)
+    run_direct("s251_restart_phiskel_refusal_and_old_time_primes", s251_checks)
 
 
     # --- THE PARSER ITSELF --------------------------------------------------
@@ -5120,8 +5448,11 @@ def main() -> int:
         # BATCH 74's one-session filter (BATCH 74's record) stays exercised while a later batch is the default
         run_direct("batch_74_launch_filters_generate", lambda: launch_filters_generate(nbsel, 74, _filtered_generation))
     if _batch != 75:
-        # BATCH 75's one-session filter stays exercised while BATCH 76 is the default
+        # BATCH 75's one-session filter stays exercised while a later batch is the default
         run_direct("batch_75_launch_filters_generate", lambda: launch_filters_generate(nbsel, 75, _filtered_generation))
+    if _batch != 76:
+        # BATCH 76's three launches (1-core: each filter generates by itself and in the notebook's order) stay exercised while BATCH 78 is the default
+        run_direct("batch_76_launch_filters_generate", lambda: launch_filters_generate(nbsel, 76, _filtered_generation))
 
     def one_core_launch():
         # S25 (the 1-core runtime batches 76/77): BATCHES[77] has no entry until its children are written, so the
@@ -5129,7 +5460,7 @@ def main() -> int:
         # carries --mkl-threads 1 and NO --mkl-cbwr, design section 12.1), and that filter generates by itself, as the cell hands it to Allrun.
         argvs = nbsel.check_one_core(nbsel.launch_cell(
             Path(__file__).resolve().parents[3] / "notebooks" / "AM2020_main_case_colab.ipynb"), nbsel.CONTROLS)
-        assert sorted(argvs) == [76, 77], sorted(argvs)
+        assert sorted(argvs) == [76, 77, 78], sorted(argvs)
         filt = ["P73_G4_r3_40"]
         rc, built, last = _filtered_generation(filt)
         assert rc == 0, f"the 1-core stand-in filter was refused: {last}"

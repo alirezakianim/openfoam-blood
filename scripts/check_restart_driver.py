@@ -49,7 +49,7 @@ def uniform_time(d: Path, value: str, index: int) -> None:
 
 def make_full(case: Path, name: str, index: int) -> Path:
     d = case / name
-    for f in ("w", "U", "p", "thetaC", "thetaH", "nP", "Wp", "phiSkelOwn"):
+    for f in ("w", "U", "p", "phiSkel", "thetaC", "thetaH", "nP", "Wp", "phiSkelOwn"):
         field(d / f)
     uniform_time(d, name, index)
     return d
@@ -133,7 +133,7 @@ def run_all(driver, tmp: Path) -> None:
     assert sorted(rec["moved_aside"]) == ["0.0202", "0.03", "0.0302"], rec["moved_aside"]
     assert (case / "restart_discarded" / "0.03" / "w").is_file() and not (case / "0.03").exists()
     saved = json.loads((case / "restart.json").read_text())
-    assert saved["chosen"] == "0.02" and set(saved["sha256"]) >= {"w", "U", "p", "uniform/time"}
+    assert saved["chosen"] == "0.02" and set(saved["sha256"]) >= {"w", "U", "p", "phiSkel", "uniform/time"}
     print("  applies  startFrom startTime; startTime 0.02; newer directories moved aside, none deleted; restart.json written")
 
     # 2. refusals, each on its own
@@ -146,6 +146,11 @@ def run_all(driver, tmp: Path) -> None:
     make_full(case, "0.01", 1)
     (case / "0.01" / "w").unlink()
     expect("a full write without w", driver, 2, "no w", case)
+
+    case = fresh()
+    make_full(case, "0.01", 1)
+    (case / "0.01" / "phiSkel").unlink()
+    expect("a full write without phiSkel (S25.1: the constructor refuses a restart without it)", driver, 2, "no phiSkel", case)
 
     case = fresh()
     make_full(case, "0.01", 1)
@@ -358,7 +363,8 @@ def guards_can_fail(tmp: Path) -> None:
     """Delete each guard in a scratch copy of the driver; the matching fixture must then be ACCEPTED."""
     text = DRIVER.read_text()
     edits = (
-        ("the w requirement", 'FULL_WRITE_REQUIRED = ("w", "U", "p", "uniform/time")', 'FULL_WRITE_REQUIRED = ("U", "p", "uniform/time")'),
+        ("the w requirement", 'FULL_WRITE_REQUIRED = ("w", "U", "p", "phiSkel", "uniform/time")', 'FULL_WRITE_REQUIRED = ("U", "p", "phiSkel", "uniform/time")'),
+        ("the phiSkel requirement", 'FULL_WRITE_REQUIRED = ("w", "U", "p", "phiSkel", "uniform/time")', 'FULL_WRITE_REQUIRED = ("w", "U", "p", "uniform/time")'),
         ("the footer test", "if not tail or not FOOTER.match(tail[-1]):", "if False:"),
         ("the latestTime refusal", 'if re.search(r"(?m)^\\s*startFrom\\s+latestTime\\s*;", ctl):', "if False:"),
         ("the index match", "if kind == \"full\" and (index is None or step == index):", "if kind == \"full\":"),
@@ -373,9 +379,13 @@ def guards_can_fail(tmp: Path) -> None:
         root.mkdir()
         c = make_case(root)
         if what == "the w requirement":
-            make_frame(c, "0.0002")
+            field(make_frame(c, "0.0002") / "phiSkel")            # a frame that holds everything but w (and uniform/time)
             rec = mod.choose(c)[0]
             assert rec.name == "0.0002"
+        elif what == "the phiSkel requirement":
+            d = make_full(c, "0.01", 1)
+            (d / "phiSkel").unlink()                              # a write from a build before S25: no phiSkel
+            assert mod.choose(c)[0].name == "0.01"
         elif what == "the footer test":
             d = make_full(c, "0.01", 1)
             t = (d / "p").read_text()

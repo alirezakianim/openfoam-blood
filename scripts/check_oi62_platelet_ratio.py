@@ -24,6 +24,10 @@ expression, translated to Python doubles) at Wp = q for every sign of q and agai
 quotient for q >= qFloor. Every predicate has at least one planted defect that must be CAUGHT,
 labelled with V62-8's letter (a)-(h); a no-op control edit must change nothing (MISSED).
 
+S25.1 B (solver-engineer 04, docket 20261013-1405): the w-diffusion operand is the deviation w - 1 (wDevS251),
+formed after w_.correctBoundaryConditions(), with today's scheme name laplacian(gammaPlateletf,w) passed
+explicitly; LAPLACIAN/EEQN_* re-pinned, W_DEV/W_LAP_NAME added to p_operand, mutations S251-B1..B3.
+
 usage: python3 -B scripts/check_oi62_platelet_ratio.py      (exit 0 = pass, 1 = fail)
 Written by solver-engineer 12 (docket 20261008-1507-run081155-b72-s23-validation).
 
@@ -79,7 +83,11 @@ Q_OLD_S = 'constvolScalarFieldqOldS("qOldS",qOldPlatelet_.valid()?qOldPlatelet_(
 W_OLD_S = 'constvolScalarFieldWOldS("WOldS",qOldS+e_);'
 OPERAND = 'w_=plateletRatioC6(WOldS,qOldS,"wOperandC6");w_.correctBoundaryConditions();'
 WRITTEN = 'w_=plateletRatioC6(Wp_,q_,"wC6");w_.correctBoundaryConditions();}w_.correctBoundaryConditions();}'
-LAPLACIAN = "fvc::laplacian(gammaPlateletf,w_)"
+LAPLACIAN = "fvc::laplacian(gammaPlateletf,wDevS251,wLapSchemeS251)"
+# S25.1 B (OI-78): the operand is the deviation w - 1, formed after w_.correctBoundaryConditions(), and the
+# scheme name is today's laplacian(gammaPlateletf,w), passed explicitly (red team 03 change 2)
+W_DEV = 'constvolScalarFieldwDevS251("wDev",w_-dimensionedScalar("one",w_.dimensions(),1));'
+W_LAP_NAME = 'constwordwLapSchemeS251("laplacian(gammaPlateletf,w)");'
 C6_HEAD = ('constautoplateletRatioC6=[this](constvolScalarField&WS,constvolScalarField&qS,constword&ratioName){'
            'tmp<volScalarField>tRatio(volScalarField::New(ratioName,mesh_,'
            'dimensionedScalar(WS.dimensions()/qS.dimensions(),0)));'
@@ -136,9 +144,9 @@ SINK = "fvm::Sp(interfaceDelta_*adhesionSpeedEff_/qEff,e_)"
 SINK_SRC = "-interfaceDelta_*adhesionSpeedEff_*(q_/qEff)"
 EEQN_CARRIER = ("fvScalarMatrixeEqn(fvm::ddt(e_)+plateletContentConvection(carrier,e_)"
                 "+fvm::Sp(interfaceDelta_*adhesionSpeedEff_/qEff,e_)-eDepositS25"
-                "==fvc::laplacian(gammaPlateletf,w_)-interfaceDelta_*adhesionSpeedEff_*(q_/qEff));")
+                "==fvc::laplacian(gammaPlateletf,wDevS251,wLapSchemeS251)-interfaceDelta_*adhesionSpeedEff_*(q_/qEff));")
 EEQN_PLAIN = ("fvScalarMatrixeEqn(fvm::ddt(e_)+fvm::Sp(interfaceDelta_*adhesionSpeedEff_/qEff,e_)-eDepositS25"
-              "==fvc::laplacian(gammaPlateletf,w_)-interfaceDelta_*adhesionSpeedEff_*(q_/qEff));")
+              "==fvc::laplacian(gammaPlateletf,wDevS251,wLapSchemeS251)-interfaceDelta_*adhesionSpeedEff_*(q_/qEff));")
 E_DEPOSIT = ("eDepositS25.primitiveFieldRef()=plateletDepositStep_"
              "/(skeletonVolumeFraction_*mesh_.time().deltaTValue());")
 WP_REFORM = "Wp_.primitiveFieldRef()=q_.primitiveField()+e_.primitiveField();Wp_.correctBoundaryConditions();"
@@ -241,7 +249,11 @@ def p_operand(c):
             # S25 R1: the content at level n is q^n + e^n, formed before the operand
             and 0 <= b.find(Q_OLD_S) < b.find(W_OLD_S) < k and b.count(W_OLD_S) == 1
             and count_assign(b, "w_") == 2              # the operand and the written w, nothing else
-            and "Wp_/qEffOld" not in b and "Wp_/qEff;" not in b)
+            and "Wp_/qEffOld" not in b and "Wp_/qEff;" not in b
+            # S25.1 B: the deviation w - 1 is formed AFTER the operand (and its correctBoundaryConditions), before
+            # the laplacian, once; the scheme name is today's
+            and b.count(W_DEV) == 1 and k < b.find(W_DEV) < lap
+            and b.count(W_LAP_NAME) == 1 and b.find(W_LAP_NAME) < lap)
 
 
 def p_c6_rule(c):
@@ -464,10 +476,10 @@ MUTATIONS = (
      "            //   the adhesion sink, the signed delta k/q_s with\n", 7),
 
     # ---- S25 R1: the e equation. T (the deposition transfer), the explicit w-diffusion, the re-formation Wp := q + e
-    ("R1", "              + plateletContentConvection(carrier, e_)\n              + fvm::Sp(interfaceDelta_*adhesionSpeedEff_/qEff, e_)\n              - eDepositS25\n             ==\n                fvc::laplacian(gammaPlateletf, w_)\n",
+    ("R1", "              + plateletContentConvection(carrier, e_)\n              + fvm::Sp(interfaceDelta_*adhesionSpeedEff_/qEff, e_)\n              - eDepositS25\n             ==\n                fvc::laplacian(gammaPlateletf, wDevS251, wLapSchemeS251)\n",
      "              + plateletContentConvection(carrier, e_)\n              + fvm::Sp(interfaceDelta_*adhesionSpeedEff_/qEff, e_)\n"
-     "             ==\n                fvc::laplacian(gammaPlateletf, w_)\n", 8),
-    ("R1", "              fvm::ddt(e_)\n              + fvm::Sp(interfaceDelta_*adhesionSpeedEff_/qEff, e_)\n              - eDepositS25\n             ==\n                fvc::laplacian(gammaPlateletf, w_)\n",
+     "             ==\n                fvc::laplacian(gammaPlateletf, wDevS251, wLapSchemeS251)\n", 8),
+    ("R1", "              fvm::ddt(e_)\n              + fvm::Sp(interfaceDelta_*adhesionSpeedEff_/qEff, e_)\n              - eDepositS25\n             ==\n                fvc::laplacian(gammaPlateletf, wDevS251, wLapSchemeS251)\n",
      "              fvm::ddt(e_)\n              + fvm::Sp(interfaceDelta_*adhesionSpeedEff_/qEff, e_)\n"
      "              - eDepositS25\n             ==\n                interfaceDelta_*adhesionSpeedEff_*0\n", 8),
     ("R1", "        Wp_.primitiveFieldRef() = q_.primitiveField() + e_.primitiveField();\n"
@@ -482,12 +494,12 @@ MUTATIONS = (
      "            // S10 FIX 3 carried to e: the content's limited (linear - upwind)\n", 8),
 
     # ---- OI-64 (verification 14 section 3): the ten planted defects the original guard MISSED, on the built text
-    ("OI64-D1", "              + plateletContentConvection(carrier, e_)\n              + fvm::Sp(interfaceDelta_*adhesionSpeedEff_/qEff, e_)\n              - eDepositS25\n             ==\n                fvc::laplacian(gammaPlateletf, w_)\n",
+    ("OI64-D1", "              + plateletContentConvection(carrier, e_)\n              + fvm::Sp(interfaceDelta_*adhesionSpeedEff_/qEff, e_)\n              - eDepositS25\n             ==\n                fvc::laplacian(gammaPlateletf, wDevS251, wLapSchemeS251)\n",
      "              + plateletContentConvection(carrier, e_)\n              + fvm::Sp(interfaceDelta_*adhesionSpeedEff_/qEff, e_)\n"
-     "              - eDepositS25\n             ==\n                fvc::laplacian(gammaPlateletf, Wp_)\n", 9),
-    ("OI64-D2b", "              fvm::ddt(e_)\n              + fvm::Sp(interfaceDelta_*adhesionSpeedEff_/qEff, e_)\n              - eDepositS25\n             ==\n                fvc::laplacian(gammaPlateletf, w_)\n",
+     "              - eDepositS25\n             ==\n                fvc::laplacian(gammaPlateletf, Wp_, wLapSchemeS251)\n", 9),
+    ("OI64-D2b", "              fvm::ddt(e_)\n              + fvm::Sp(interfaceDelta_*adhesionSpeedEff_/qEff, e_)\n              - eDepositS25\n             ==\n                fvc::laplacian(gammaPlateletf, wDevS251, wLapSchemeS251)\n",
      "              fvm::ddt(e_)\n              + fvm::Sp(interfaceDelta_*adhesionSpeedEff_/qEff, e_)\n"
-     "              - eDepositS25\n             ==\n                fvc::laplacian(gammaPlateletf, Wp_)\n", 9),
+     "              - eDepositS25\n             ==\n                fvc::laplacian(gammaPlateletf, Wp_, wLapSchemeS251)\n", 9),
     ("OI64-D3", "        Wp_.correctBoundaryConditions();\n        {\n            const scalar eAbsMaxS25",
      "        Wp_.correctBoundaryConditions();\n        Wp_ = max(Wp_, dimensionedScalar(Wp_.dimensions(), 0));\n"
      "        {\n            const scalar eAbsMaxS25", 9),
@@ -508,10 +520,19 @@ MUTATIONS = (
     ("OI64-D9", "        // Measured every step, because the failure above was silent in every\n",
      "        const_cast<surfaceScalarField&>(gammaPlateletf) *= 1e-3;\n"
      "        // Measured every step, because the failure above was silent in every\n", 9),
-    ("OI64-D11", "              + plateletContentConvection(carrier, e_)\n              + fvm::Sp(interfaceDelta_*adhesionSpeedEff_/qEff, e_)\n              - eDepositS25\n             ==\n                fvc::laplacian(gammaPlateletf, w_)\n",
+    ("OI64-D11", "              + plateletContentConvection(carrier, e_)\n              + fvm::Sp(interfaceDelta_*adhesionSpeedEff_/qEff, e_)\n              - eDepositS25\n             ==\n                fvc::laplacian(gammaPlateletf, wDevS251, wLapSchemeS251)\n",
      "              + plateletContentConvection(carrier, e_)\n              + fvm::Sp(interfaceDelta_*adhesionSpeedEff_/qEff, e_)\n"
-     "              - eDepositS25\n             ==\n                fvc::laplacian(gammaPlateletf, w_)\n"
+     "              - eDepositS25\n             ==\n                fvc::laplacian(gammaPlateletf, wDevS251, wLapSchemeS251)\n"
      "              + fvc::laplacian(gammaPlateletf, w_)\n", 9),
+    # ---- S25.1 B (OI-78): the deviation operand and today's scheme name
+    ("S251-B1", '            w_ - dimensionedScalar("one", w_.dimensions(), 1)\n',
+     '            w_ + dimensionedScalar("zero", w_.dimensions(), 0)\n', 0),
+    ("S251-B2", '        const word wLapSchemeS251("laplacian(gammaPlateletf,w)");\n',
+     '        const word wLapSchemeS251("laplacian(gammaPlateletf,wDev)");\n', 0),
+    ("S251-B3", "              - eDepositS25\n             ==\n                fvc::laplacian(gammaPlateletf, wDevS251, wLapSchemeS251)\n"
+                "              - interfaceDelta_*adhesionSpeedEff_*(q_/qEff)\n            );\n            // Wp's solver controls",
+     "              - eDepositS25\n             ==\n                fvc::laplacian(gammaPlateletf, w_)\n"
+     "              - interfaceDelta_*adhesionSpeedEff_*(q_/qEff)\n            );\n            // Wp's solver controls", 8),
 )
 
 

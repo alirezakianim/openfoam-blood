@@ -102,7 +102,7 @@ run_child() {
     # S25 section 2C (OI-65): THE RESTART DRIVER. AM2020_RESTART_FROM is exported by the runner only for
     # --restart-from and names a directory <child>/<time dirs>, constant/, system/ (a previous session's
     # case-after-run tarball, extracted). It runs HERE, after the case is regenerated and initialised and
-    # before foamRun: it picks the child's last FULL, INTACT write (w, U, p, uniform/time, every file closed
+    # before foamRun: it picks the child's last FULL, INTACT write (w, U, p, phiSkel, uniform/time, every file closed
     # by OpenFOAM's footer; never latestTime, never a frame), refuses regenerated dictionaries that differ
     # from the writing session's, copies that directory in and sets `startFrom startTime; startTime <it>`.
     # Exit 2/3/4 is recorded as a setup failure and the child is NOT solved. Unset: a no-op for every child.

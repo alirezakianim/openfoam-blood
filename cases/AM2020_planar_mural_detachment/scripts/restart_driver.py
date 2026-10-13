@@ -48,8 +48,10 @@ from pathlib import Path
 
 # The members a full write must hold. w: MUST_READ in phaseClotAxisymmetricFluid.C L201. U and p: MUST_READ
 # in OpenFOAM-13 incompressibleFluid.C L60-92. uniform/time: the index, time and deltaT the restart resumes
-# from (Time.C L214-262). A frame has U and p and (D75) uniform/time, but no w.
-FULL_WRITE_REQUIRED = ("w", "U", "p", "uniform/time")
+# from (Time.C L214-262). A frame has U and p and (D75) uniform/time, but no w. phiSkel (S25.1, OI-77): the constructor reads it on
+# a restart to rebuild the stored old time of the phase weights, and REFUSES a restart whose directory lacks it (docket
+# 20261013-1405, 04); a write that lacks it (a build before S25) is therefore not restartable and is refused HERE, naming it.
+FULL_WRITE_REQUIRED = ("w", "U", "p", "phiSkel", "uniform/time")
 FOOTER = re.compile(rb"^// \*+ //\s*$")
 # The dictionaries that must be identical between the session that wrote the state and the one resuming it.
 DICTIONARIES = ("constant/phaseClotProperties", "constant/physicalProperties", "constant/momentumTransport",

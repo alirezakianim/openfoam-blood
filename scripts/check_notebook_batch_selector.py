@@ -68,8 +68,12 @@ ONE_SESSION = {73: ("P73_G4_r3_40", "P73_G40_40"), 74: ("D74_refI",), 75: ("D75_
 # children of each launch IN THE ORDER THEY RUN, which is the generator's matrix order (Allrun runs a launch's children in matrix order, never in the order BATCHES names them; dry_run
 # launch_filters_generate asserts the built order for these batches). Launch 1 holds the baseline arm (solver_library baseline), the only launch that clones a reference library.
 ONE_CORE_SESSIONS = {76: {1: ("B76_OFF_A",), 2: ("B76_OFF_B",),
-                          3: ("RT_P73_A", "RT_P73_B", "RT_5a_A", "RT_5a_B", "S25_5a_tan", "S25_5a_tan_half")}}
-ONE_CORE_LIBRARY_LAUNCHES = {76: {1: ["baseline"], 2: [], 3: []}}
+                          3: ("RT_P73_A", "RT_P73_B", "RT_5a_A", "RT_5a_B", "S25_5a_tan", "S25_5a_tan_half")},
+                   # S25.1 BATCH 78 (design 2026-10-13-S25.1 section C(d) and D): ONE session, sequential, both arms of every pair in it, the children in the generator's matrix order (the order they run in);
+                   # its one launch holds B78_OFF_A (solver_library baseline), so it clones the baseline library. No LAUNCHES entry (ONE_CORE_ONE_SESSION below).
+                   78: {1: ("B78_OFF_A", "B78_OFF_B", "B78_CTL_1", "B78_CTL_2", "B78_RT_5a_A", "B78_RT_5a_B")}}
+ONE_CORE_ONE_SESSION = (78,)
+ONE_CORE_LIBRARY_LAUNCHES = {76: {1: ["baseline"], 2: [], 3: []}, 78: {1: ["baseline"]}}
 FAKE_SOLVER = "/content/openfoam-blood-ref/user-applications/phaseClotAxisymmetricFluid"
 FAKE_BASE = ["--package", "/content/package.zip", "--repo-digest", "0" * 64]
 
@@ -226,8 +230,12 @@ def check_launches(cell: str, controls: Path = CONTROLS, selected: int | None = 
     # the baseline release's pin (BATCH 76 launch 1): its own constants, spelt so the release re-pin never touches them
     if not re.fullmatch(r"[0-9a-f]{64}", names["BASELINE_REPO_DIGEST"]) or names["BASELINE_TAG"] != "digest-" + names["BASELINE_REPO_DIGEST"][:12]:
         raise LaunchError(f"BASELINE_TAG {names['BASELINE_TAG']!r} is not 'digest-' + the first 12 hex of BASELINE_REPO_DIGEST {names['BASELINE_REPO_DIGEST']!r}")
-    if 76 in by_batch and tuple(by_batch[76][:3]) != ("baseline", names["BASELINE_TAG"], names["BASELINE_REPO_DIGEST"]):
-        raise LaunchError(f"REFERENCE_LIBRARY_BY_BATCH[76] must be the baseline library at BASELINE_TAG / BASELINE_REPO_DIGEST; it is {by_batch.get(76)!r}")
+    for _b in (76, 78):
+        if _b in by_batch and tuple(by_batch[_b][:3]) != ("baseline", names["BASELINE_TAG"], names["BASELINE_REPO_DIGEST"]):
+            raise LaunchError(f"REFERENCE_LIBRARY_BY_BATCH[{_b}] must be the baseline library at BASELINE_TAG / BASELINE_REPO_DIGEST; it is {by_batch.get(_b)!r}")
+    for _b in ONE_CORE_ONE_SESSION:
+        if _b in launches:
+            raise LaunchError(f"BATCH {_b} is ONE session (both arms of every pair share it) and must have no LAUNCHES entry; it has {sorted(launches[_b])}")
     # the newest entry is always checked, even while BATCH still selects an older one (BATCH 73 is built before it is the default)
     strict = sorted({b for b in by_batch} | ({selected} if selected is not None else set()) | {max(batches)}
                     | {b for b in ONE_SESSION if b in batches})
@@ -318,8 +326,8 @@ def check_one_core(cell: str, controls: Path = CONTROLS, concurrency: int = 1) -
     if one_core["threads"] != 1:
         raise LaunchError(f"the 1-core runtime batches run ONE solver thread (S25 section 7) and pin NO MKL_CBWR (section 12.1: the solver's own "
                           f"mkl_cbwr_set(AUTO) overrides it): ONE_CORE_MKL_THREADS must be 1; got {one_core['threads']!r}")
-    if names["LAUNCH_CONCURRENCY"].get(76) != 1 or names["LAUNCH_CONCURRENCY"].get(77) != 1:
-        raise LaunchError("LAUNCH_CONCURRENCY must force batches 76 and 77 to 1")
+    if any(names["LAUNCH_CONCURRENCY"].get(_b) != 1 for _b in (76, 77, 78)):
+        raise LaunchError("LAUNCH_CONCURRENCY must force batches 76, 77 and 78 to 1")
     child = "P73_G4_r3_40"
     out = {}
     for b in one_core["batches"]:
@@ -458,7 +466,7 @@ def negatives(cell: str, controls: Path = CONTROLS, selected: int = 72) -> list:
         ("BATCH 76 launch 1 does not clone the baseline library", lambda: check_launches(
             mutate(cell, r"^    \(76, 1\): True,", "    (76, 1): False,"), controls, selected), "--baseline-solver was not passed"),
         ("BATCH 76 loses its CONCURRENCY 1 forcing", lambda: check_launches(
-            _replace_all(cell, "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 76: 1, 77: 1}", "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 77: 1}", 1), controls, selected),
+            _replace_all(cell, "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 76: 1, 77: 1, 78: 1}", "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 77: 1, 78: 1}", 1), controls, selected),
          "CONCURRENCY must be 1"),
         ("the baseline tag is not its digest's prefix", lambda: check_launches(
             mutate(cell, r"^BASELINE_TAG = 'digest-[0-9a-f]{12}'$", "BASELINE_TAG = 'digest-000000000000'"), controls, selected),
@@ -469,8 +477,32 @@ def negatives(cell: str, controls: Path = CONTROLS, selected: int = 72) -> list:
         ("a 1-core batch with 6 solver threads", lambda: check_one_core(
             mutate(cell, r"^ONE_CORE_MKL_THREADS = 1$", "ONE_CORE_MKL_THREADS = 6"), controls),
          "ONE_CORE_MKL_THREADS must be 1"),
+        # S25.1 BATCH 78: ONE session, both arms of every pair in it, sequential in the generator's matrix order, the baseline library cloned once
+        ("BATCH 78 runs OFF_B before OFF_A (a pair runs A then B)", lambda: check_launches(
+            _replace_all(cell, '78: ("B78_OFF_A B78_OFF_B B78_CTL_1', '78: ("B78_OFF_B B78_OFF_A B78_CTL_1', 1), controls, selected),
+         "in this order"),
+        ("BATCH 78 runs the 5a pair before the control pair", lambda: check_launches(
+            _replace_all(cell, 'B78_CTL_1 B78_CTL_2 B78_RT_5a_A B78_RT_5a_B", 7.8,', 'B78_RT_5a_A B78_RT_5a_B B78_CTL_1 B78_CTL_2", 7.8,', 1), controls, selected),
+         "in this order"),
+        ("BATCH 78 loses a child", lambda: check_launches(
+            _replace_all(cell, 'B78_RT_5a_A B78_RT_5a_B", 7.8,', 'B78_RT_5a_A", 7.8,', 1), controls, selected),
+         "in this order"),
+        ("BATCH 78 split into two launches", lambda: check_launches(
+            mutate(cell, r"^LAUNCHES = \{", 'LAUNCHES = {\n    78: {1: ("B78_OFF_A B78_OFF_B", 7.5), 2: ("B78_CTL_1 B78_CTL_2 B78_RT_5a_A B78_RT_5a_B", 0.3)},'), controls, selected),
+         "ONE session (both arms of every pair share it) and must have no LAUNCHES entry"),
+        ("BATCH 78 at LAUNCH 2", lambda: fn_launch73(cell, 2, controls, concurrency=1, batch=78), "no launch split"),
+        ("BATCH 78 does not clone the baseline library", lambda: check_launches(
+            mutate(cell, r"^    \(78, 1\): True,", "    (78, 1): False,"), controls, selected), "--baseline-solver was not passed"),
+        ("BATCH 78 clones another release as its baseline", lambda: check_launches(
+            _replace_all(cell, "78: ('baseline', BASELINE_TAG, BASELINE_REPO_DIGEST,", "78: ('baseline', S22REF_TAG, S22REF_REPO_DIGEST,", 1), controls, selected),
+         "must be the baseline library"),
+        ("BATCH 78 loses its CONCURRENCY 1 forcing", lambda: check_launches(
+            _replace_all(cell, "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 76: 1, 77: 1, 78: 1}", "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 76: 1, 77: 1}", 1), controls, selected),
+         "CONCURRENCY must be 1"),
+        ("BATCH 78 names a child the controls do not define", lambda: check_launches(
+            cell, _controls_without(controls, "B78_CTL_2"), selected), "not child_ids in mainCaseControls.json"),
         ("BATCH 75 declared a 1-core batch (its branch needs CONCURRENCY 2)", lambda: check_launches(
-            mutate(cell, r"^ONE_CORE_BATCHES = \(76, 77\)$", "ONE_CORE_BATCHES = (75, 76, 77)"), controls, selected),
+            mutate(cell, r"^ONE_CORE_BATCHES = \(76, 77, 78\)$", "ONE_CORE_BATCHES = (75, 76, 77, 78)"), controls, selected),
          "CONCURRENCY must be 1"),
         ("a multi-core batch whose argv carries the 1-core pin", lambda: check_launches(
             _replace_all(cell, "'library': library, 'runner_args': runner_args}",
@@ -557,7 +589,7 @@ def fn_launch73(cell: str, launch: int, controls: Path, concurrency: int = 2, ba
 def main() -> int:
     if "--self-test" in sys.argv[1:]:
         try:
-            for label, line in negatives(launch_cell(), CONTROLS, 76):
+            for label, line in negatives(launch_cell(), CONTROLS, 78):
                 print(f"   refused: {label} -> {line}")
         except (LaunchError, AssertionError) as error:
             fail(f"self-test: {error}")

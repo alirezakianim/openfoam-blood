@@ -1480,6 +1480,17 @@ FSF_PARENT_PAIRS = (
     ("RT_5a_A", "S25_5a_tan", set(), {"end_time_s", "wall_budget_h", "frame_interval_s", "frame_fields",
                                       "write_every_step", "stop_after_step"}),
     ("RT_5a_B", "RT_5a_A", set(), {"restart_from_child", "restart_index"}),
+    # BATCH 78 (S25.1 re-check; design 2026-10-13-S25.1-restart-oldtime-and-instruments.md rev. 2 section D; docket 20261013-1405, case-engineer 06): ONE session, sequential.
+    # B78-OFF: P73_G4_r3_40 to 18 ms by two binaries. B (the S25.1 build) differs from the parent in the end time and in the write interval (6 ms: 18 ms is not a whole number of the
+    # parent's 5 ms, and frame_output_refusal needs the end time to be a write time); A differs from B in the binary alone (solver_library baseline = release-e2a57db1).
+    ("B78_OFF_B", "P73_G4_r3_40", set(), {"end_time_s", "write_interval_s"}),
+    ("B78_OFF_A", "B78_OFF_B", {"solver_library"}, set()),
+    # B78-CTL: the same dictionary twice (S25.1 against S25.1): 84 steps, one full write at 0.4 ms. CTL_2 differs from CTL_1 in no key.
+    ("B78_CTL_1", "B78_OFF_B", set(), {"end_time_s", "write_interval_s"}),
+    ("B78_CTL_2", "B78_CTL_1", set(), set()),
+    # B78-RT_5a: BATCH 76's RT_5a_A / RT_5a_B dictionaries under new ids (B76's pre-registration stays on the old ones).
+    ("B78_RT_5a_A", "RT_5a_A", set(), set()),
+    ("B78_RT_5a_B", "B78_RT_5a_A", set(), {"restart_from_child", "restart_index"}),
 )
 
 
@@ -4431,7 +4442,15 @@ def main() -> int:
     'RT_P73_A': 64,
     'RT_P73_B': 65,
     'RT_5a_A': 66,
-    'RT_5a_B': 67}
+    'RT_5a_B': 67,
+    # BATCH 78 (ONE session, sequential): OFF_A then OFF_B, the S25.1 control pair, then the 5a restart pair. Series throat_free_shell (23) runs before s25_5a (24) whatever the numbers
+    # below say, so a P73 restart pair (series throat_free_shell) would run BEFORE the 5a pair; these numbers only order within a series.
+    'B78_OFF_A': 80,
+    'B78_OFF_B': 81,
+    'B78_CTL_1': 82,
+    'B78_CTL_2': 83,
+    'B78_RT_5a_A': 90,
+    'B78_RT_5a_B': 91}
     # S17 (design section 6): the mechanical control check, before anything
     # is ordered for launch. The controls-entry half runs for every pair; the
     # child.json half for the pairs whose control is built in this run

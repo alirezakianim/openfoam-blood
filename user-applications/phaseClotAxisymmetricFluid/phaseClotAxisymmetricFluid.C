@@ -3454,6 +3454,50 @@ Foam::solvers::phaseClotAxisymmetricFluid::phaseClotAxisymmetricFluid
         << " permeabilityFloor=" << permeabilityFloor_
         << endl;
 
+    // S25.1 A (OI-77; design 2026-10-13-S25.1 rev. 2 section A; docket
+    // 20261013-1405, 01 Q1 and 03 Q1-Q2): THE PHASE WEIGHTS' OLD TIME ON A
+    // RESTART. phiSkel_ (read) and phiFluid_ (NO_READ, so 1 here) had no
+    // stored old time, so the first oldTime() -- inside fvm::ddt(phiSkel_,
+    // Vs_) and fvm::ddt(phiFluid_, U_), AFTER momentumPredictor() has updated
+    // both -- copied level n+1 (OF-13 OldTimeField.C:322-349), and the first
+    // restarted step solved phi^{n+1}(X - X^n)/dt in draining cells. Here
+    // phiFluid_ takes the written level's value (the operation the step
+    // itself applies, on the same double) and BOTH old times are stored. The
+    // next step's first write rotates the CURRENT value -- level n -- into
+    // them (storeOldTimesInner: field0 = field), as on the continuous run, so
+    // what is load-bearing is that the old times EXIST and that phiFluid_
+    // holds 1 - phiSkel_ when the step starts (docket 20261013-1405, 04,
+    // host test se04_restart_oldtime_host.py). A cold start reads no
+    // phiSkel and takes neither branch. Wp_'s old time (read only by the LED
+    // audit in solvePlatelets()) is stored on a restart only, after Wp_'s
+    // last constructor write (updateDerivedFields() above). No field read
+    // here is restored by restoreRestartState().
+    //
+    // A restart with no phiSkel file (a directory written before S25) is
+    // REFUSED: there is no written level to restore, and today's lazy copy
+    // would silently keep the defect.
+    const bool restartS251 = runTime.value() > 0;
+    if (restartS251 && !phiSkel_.headerOk())
+    {
+        FatalErrorInFunction
+            << "restart at time " << runTime.name() << " has no phiSkel "
+            << "file (" << phiSkel_.objectPath() << "): the phase weights' "
+            << "old time is the written level n and cannot be restored "
+            << "without it (design 2026-10-13-S25.1 section A, OI-77). "
+            << "Restart from a directory written by S25 or later, or start "
+            << "from t = 0." << exit(FatalError);
+    }
+    if (phiSkel_.headerOk())
+    {
+        phiFluid_ = 1.0 - phiSkel_;
+        phiSkel_.oldTime();
+        phiFluid_.oldTime();
+    }
+    if (restartS251)
+    {
+        Wp_.oldTime();
+    }
+
     // S25 C: LAST, after every seed above, so a restored value is the one
     // the first step reads.
     restoreRestartState();
@@ -12560,6 +12604,26 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlatelets()
             plateletDepositStep_
            /(skeletonVolumeFraction_*mesh_.time().deltaTValue());
 
+        // S25.1 B (OI-78; design 2026-10-13-S25.1 rev. 2 section B; docket
+        // 20261013-1405, 01 Q2 and 03 Q3): w's diffusion acts on the
+        // DEVIATION w - 1. At e == 0, w == 1 exactly (C6), so the operand is
+        // exactly 0 in every cell and on every patch, its gradient is exactly
+        // 0, and so is the non-orthogonal correction that carried grad(1)
+        // round-off (sum S_f/V) into e on the throat (e <= 1.3e-16). With w's
+        // BCs it is the same operator: on zeroGradient patches
+        // (w_b - 1) - (w_P - 1) = 0, w's own snGrad; on the inlet (fixedValue
+        // 1, here calculated 0) deltaCoeffs*(0 - (w_P - 1)). It is formed
+        // AFTER w_.correctBoundaryConditions() above, so its patch values are
+        // this step's. The scheme name is passed EXPLICITLY and is today's:
+        // fvcLaplacian.C names it "laplacian(" + gamma.name() + ',' +
+        // vf.name() + ')', i.e. laplacian(gammaPlateletf,w).
+        const volScalarField wDevS251
+        (
+            "wDev",
+            w_ - dimensionedScalar("one", w_.dimensions(), 1)
+        );
+        const word wLapSchemeS251("laplacian(gammaPlateletf,w)");
+
         if (phaseCarrier_.valid())
         {
             // THE SAME OPERATOR AS c, NOT MERELY THE SAME SCHEME NAME.
@@ -12659,8 +12723,9 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlatelets()
             // ddt and conservative convection); the carrier divergence and
             // q's own inflow cancel against q's equation and are absent. The
             // sources are events and the laws only:
-            //   +lap(gamma, w^n), w^n = C6(q^n + e^n, q^n): Wp's diffusion,
-            //     kept (red team 04 change 6); exactly 0 at e == 0 (w == 1);
+            //   +lap(gamma, w^n - 1), w^n = C6(q^n + e^n, q^n): Wp's
+            //     diffusion, kept (red team 04 change 6); exactly 0 at e == 0
+            //     (w == 1; S25.1 B: the operand is the deviation);
             //   the adhesion sink, TODAY'S: -(delta k) Wp/qEff with
             //     Wp = q + e and qEff = max(|q|, qFloor), so implicit
             //     Sp(delta k/qEff, e) and explicit -delta k q/qEff (design
@@ -12682,7 +12747,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlatelets()
               + fvm::Sp(interfaceDelta_*adhesionSpeedEff_/qEff, e_)
               - eDepositS25
              ==
-                fvc::laplacian(gammaPlateletf, w_)
+                fvc::laplacian(gammaPlateletf, wDevS251, wLapSchemeS251)
               - interfaceDelta_*adhesionSpeedEff_*(q_/qEff)
             );
             // Wp's solver controls (no new fvSolution key): e replaces Wp's
@@ -12722,7 +12787,7 @@ void Foam::solvers::phaseClotAxisymmetricFluid::solvePlatelets()
               + fvm::Sp(interfaceDelta_*adhesionSpeedEff_/qEff, e_)
               - eDepositS25
              ==
-                fvc::laplacian(gammaPlateletf, w_)
+                fvc::laplacian(gammaPlateletf, wDevS251, wLapSchemeS251)
               - interfaceDelta_*adhesionSpeedEff_*(q_/qEff)
             );
             eEqn.solve
