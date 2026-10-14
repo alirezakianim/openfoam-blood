@@ -10,6 +10,8 @@ cases/AM2020_mural_geometry_gate/scripts/run_smoke_phase_colab.py
 cases/AM2020_paper_cylinder_platelet_initial_condition_gate/scripts/run_platelet_initial_condition_colab.py
 cases/AM2020_planar_mural_detachment/Allrun
 cases/AM2020_planar_mural_detachment/constant/mainCaseControls.json
+cases/AM2020_planar_mural_detachment/constant/yGate/na09_blockMeshDict
+cases/AM2020_planar_mural_detachment/constant/yGate/na09_points_ref_2d.npy
 cases/AM2020_planar_mural_detachment/scripts/apply_throat.py
 cases/AM2020_planar_mural_detachment/scripts/assess_case.py
 cases/AM2020_planar_mural_detachment/scripts/clot_free_watcher.py
@@ -22,6 +24,15 @@ cases/AM2020_planar_mural_detachment/scripts/seed_stage2_content.py
 cases/AM2020_planar_mural_detachment/scripts/seed_theta_peak.py
 cases/AM2020_planar_mural_detachment/scripts/shrink_returned_run_colab.py
 cases/AM2020_planar_mural_detachment/scripts/step_stop_watcher.py
+cases/AM2020_planar_mural_detachment/scripts/y_gate/fixtures/y_cells_2d.npy
+cases/AM2020_planar_mural_detachment/scripts/y_gate/fixtures/y_outlet_faces_2d.npy
+cases/AM2020_planar_mural_detachment/scripts/y_gate/na06_ymesh.py
+cases/AM2020_planar_mural_detachment/scripts/y_gate/na09_roundtrip.py
+cases/AM2020_planar_mural_detachment/scripts/y_gate/y_gate_fixture.py
+cases/AM2020_planar_mural_detachment/scripts/y_gate/y_gate_report.py
+cases/AM2020_planar_mural_detachment/scripts/y_gate/y_initialise.py
+cases/AM2020_planar_mural_detachment/scripts/y_gate/y_mesh_gate.py
+cases/AM2020_planar_mural_detachment/scripts/y_gate/y_synth.py
 cases/AM2020_planar_mural_detachment/template/0/Dg
 cases/AM2020_planar_mural_detachment/template/0/H
 cases/AM2020_planar_mural_detachment/template/0/U

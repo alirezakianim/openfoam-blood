@@ -46,6 +46,18 @@ PATCHES = """boundaryField
     back { type empty; }
 }
 """
+# THE Y MESH'S PATCHES (inlet, outlet, wall, front, back): the Y gate's walls are ONE patch named `wall`, and thetaC/thetaH written with the
+# channel's bottom/top would name patches that do not exist (a FatalIOError at the first read). Chosen by constant/yGate.json, the marker the
+# generator writes for that child only; every other child keeps PATCHES above, byte for byte.
+PATCHES_Y = """boundaryField
+{
+    inlet { type zeroGradient; }
+    outlet { type zeroGradient; }
+    wall { type zeroGradient; }
+    front { type empty; }
+    back { type empty; }
+}
+"""
 
 
 def dictionary_value(text: str, key: str) -> str | None:
@@ -73,13 +85,14 @@ def read_internal(path: Path) -> list[float]:
 
 
 def write_scalar(path: Path, name: str, values: list[float]) -> None:
+    patches = PATCHES_Y if (path.parents[1] / "constant" / "yGate.json").is_file() else PATCHES
     body = "\n".join(f"{v:.16g}" for v in values)
     path.write_text(
         "FoamFile\n{\n    format ascii;\n    class volScalarField;\n"
         f'    location "0";\n    object {name};\n}}\n'
         "dimensions [0 0 0 0 0 0 0];\n"
         f"internalField nonuniform List<scalar>\n{len(values)}\n(\n{body}\n)\n;\n"
-        + PATCHES
+        + patches
     )
 
 

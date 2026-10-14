@@ -71,9 +71,11 @@ ONE_CORE_SESSIONS = {76: {1: ("B76_OFF_A",), 2: ("B76_OFF_B",),
                           3: ("RT_P73_A", "RT_P73_B", "RT_5a_A", "RT_5a_B", "S25_5a_tan", "S25_5a_tan_half")},
                    # S25.1 BATCH 78 (design 2026-10-13-S25.1 section C(d) and D): ONE session, sequential, both arms of every pair in it, the children in the generator's matrix order (the order they run in);
                    # its one launch holds B78_OFF_A (solver_library baseline), so it clones the baseline library. No LAUNCHES entry (ONE_CORE_ONE_SESSION below).
-                   78: {1: ("B78_OFF_A", "B78_OFF_B", "B78_CTL_1", "B78_CTL_2", "B78_RT_5a_A", "B78_RT_5a_B")}}
-ONE_CORE_ONE_SESSION = (78,)
-ONE_CORE_LIBRARY_LAUNCHES = {76: {1: ["baseline"], 2: [], 3: []}, 78: {1: ["baseline"]}}
+                   78: {1: ("B78_OFF_A", "B78_OFF_B", "B78_CTL_1", "B78_CTL_2", "B78_RT_5a_A", "B78_RT_5a_B")},
+                   # BATCH 79, the Y-bifurcation geometry gate (design 2026-10-14-case-y-bifurcation-gate.md rev. 2.2): ONE session, ONE child, on the S25.1 build itself (no reference library).
+                   79: {1: ("B79_Y_GATE",)}}
+ONE_CORE_ONE_SESSION = (78, 79)
+ONE_CORE_LIBRARY_LAUNCHES = {76: {1: ["baseline"], 2: [], 3: []}, 78: {1: ["baseline"]}, 79: {1: []}}
 FAKE_SOLVER = "/content/openfoam-blood-ref/user-applications/phaseClotAxisymmetricFluid"
 FAKE_BASE = ["--package", "/content/package.zip", "--repo-digest", "0" * 64]
 
@@ -310,6 +312,9 @@ def check_launches(cell: str, controls: Path = CONTROLS, selected: int | None = 
                 raise LaunchError(f"BATCH {b} launch {lnum} passes --mkl-cbwr; a 1-core batch pins no MKL CNR branch (design section 12.1)")
         if names["LAUNCH_CONCURRENCY"].get(b) != 1:
             raise LaunchError(f"BATCH {b} must be forced to CONCURRENCY 1 by LAUNCH_CONCURRENCY")
+        if b not in names["ONE_CORE_BATCHES"]:
+            raise LaunchError(f"BATCH {b} is a 1-core runtime batch (ONE_CORE_SESSIONS) but ONE_CORE_BATCHES {tuple(names['ONE_CORE_BATCHES'])} lacks it: "
+                              f"it would run with the multi-core thread count and a pinned MKL_CBWR")
     return records
 
 
@@ -326,8 +331,8 @@ def check_one_core(cell: str, controls: Path = CONTROLS, concurrency: int = 1) -
     if one_core["threads"] != 1:
         raise LaunchError(f"the 1-core runtime batches run ONE solver thread (S25 section 7) and pin NO MKL_CBWR (section 12.1: the solver's own "
                           f"mkl_cbwr_set(AUTO) overrides it): ONE_CORE_MKL_THREADS must be 1; got {one_core['threads']!r}")
-    if any(names["LAUNCH_CONCURRENCY"].get(_b) != 1 for _b in (76, 77, 78)):
-        raise LaunchError("LAUNCH_CONCURRENCY must force batches 76, 77 and 78 to 1")
+    if any(names["LAUNCH_CONCURRENCY"].get(_b) != 1 for _b in (76, 77, 78, 79)):
+        raise LaunchError("LAUNCH_CONCURRENCY must force batches 76, 77, 78 and 79 to 1")
     child = "P73_G4_r3_40"
     out = {}
     for b in one_core["batches"]:
@@ -466,7 +471,7 @@ def negatives(cell: str, controls: Path = CONTROLS, selected: int = 72) -> list:
         ("BATCH 76 launch 1 does not clone the baseline library", lambda: check_launches(
             mutate(cell, r"^    \(76, 1\): True,", "    (76, 1): False,"), controls, selected), "--baseline-solver was not passed"),
         ("BATCH 76 loses its CONCURRENCY 1 forcing", lambda: check_launches(
-            _replace_all(cell, "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 76: 1, 77: 1, 78: 1}", "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 77: 1, 78: 1}", 1), controls, selected),
+            _replace_all(cell, "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 76: 1, 77: 1, 78: 1, 79: 1}", "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 77: 1, 78: 1, 79: 1}", 1), controls, selected),
          "CONCURRENCY must be 1"),
         ("the baseline tag is not its digest's prefix", lambda: check_launches(
             mutate(cell, r"^BASELINE_TAG = 'digest-[0-9a-f]{12}'$", "BASELINE_TAG = 'digest-000000000000'"), controls, selected),
@@ -497,12 +502,33 @@ def negatives(cell: str, controls: Path = CONTROLS, selected: int = 72) -> list:
             _replace_all(cell, "78: ('baseline', BASELINE_TAG, BASELINE_REPO_DIGEST,", "78: ('baseline', S22REF_TAG, S22REF_REPO_DIGEST,", 1), controls, selected),
          "must be the baseline library"),
         ("BATCH 78 loses its CONCURRENCY 1 forcing", lambda: check_launches(
-            _replace_all(cell, "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 76: 1, 77: 1, 78: 1}", "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 76: 1, 77: 1}", 1), controls, selected),
+            _replace_all(cell, "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 76: 1, 77: 1, 78: 1, 79: 1}", "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 76: 1, 77: 1, 79: 1}", 1), controls, selected),
          "CONCURRENCY must be 1"),
         ("BATCH 78 names a child the controls do not define", lambda: check_launches(
             cell, _controls_without(controls, "B78_CTL_2"), selected), "not child_ids in mainCaseControls.json"),
+        # BATCH 79, the Y-bifurcation gate: ONE session, ONE child, the 1-core runtime, no LAUNCHES entry, no reference library
+        ("BATCH 79 names a child the controls do not define", lambda: check_launches(
+            cell, _controls_without(controls, "B79_Y_GATE"), selected), "not child_ids in mainCaseControls.json"),
+        ("BATCH 79 runs a second child", lambda: check_launches(
+            _replace_all(cell, '79: ("B79_Y_GATE", 9.4,', '79: ("B79_Y_GATE B78_CTL_1", 9.4,', 1), controls, selected), "in this order"),
+        ("BATCH 79 split into two launches", lambda: check_launches(
+            mutate(cell, r"^LAUNCHES = \{", 'LAUNCHES = {\n    79: {1: ("B79_Y_GATE", 9.4), 2: ("B79_Y_GATE", 0.1)},'), controls, selected),
+         "must have no LAUNCHES entry"),
+        ("BATCH 79 at LAUNCH 2", lambda: fn_launch73(cell, 2, controls, concurrency=1, batch=79), "no launch split"),
+        ("BATCH 79 forced to CONCURRENCY 2", lambda: check_launches(
+            _replace_all(cell, "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 76: 1, 77: 1, 78: 1, 79: 1}", "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 76: 1, 77: 1, 78: 1, 79: 2}", 1), controls, selected),
+         "CONCURRENCY must be 1"),
+        ("BATCH 79 given a reference library by launch", lambda: check_launches(
+            mutate(cell, r"^    \(78, 1\): True,", "    (78, 1): True,\n    (79, 1): True,"), controls, selected),
+         "which REFERENCE_LIBRARY_BY_BATCH does not"),
+        ("BATCH 79 loses its CONCURRENCY 1 forcing", lambda: check_launches(
+            _replace_all(cell, "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 76: 1, 77: 1, 78: 1, 79: 1}", "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 76: 1, 77: 1, 78: 1}", 1), controls, selected),
+         "CONCURRENCY must be 1"),
+        ("BATCH 79 dropped from the 1-core batches (it would run with six MKL threads)", lambda: check_launches(
+            mutate(cell, r"^ONE_CORE_BATCHES = \(76, 77, 78, 79\)$", "ONE_CORE_BATCHES = (76, 77, 78)"), controls, selected),
+         "lacks it"),
         ("BATCH 75 declared a 1-core batch (its branch needs CONCURRENCY 2)", lambda: check_launches(
-            mutate(cell, r"^ONE_CORE_BATCHES = \(76, 77, 78\)$", "ONE_CORE_BATCHES = (75, 76, 77, 78)"), controls, selected),
+            mutate(cell, r"^ONE_CORE_BATCHES = \(76, 77, 78, 79\)$", "ONE_CORE_BATCHES = (75, 76, 77, 78, 79)"), controls, selected),
          "CONCURRENCY must be 1"),
         ("a multi-core batch whose argv carries the 1-core pin", lambda: check_launches(
             _replace_all(cell, "'library': library, 'runner_args': runner_args}",
@@ -589,7 +615,7 @@ def fn_launch73(cell: str, launch: int, controls: Path, concurrency: int = 2, ba
 def main() -> int:
     if "--self-test" in sys.argv[1:]:
         try:
-            for label, line in negatives(launch_cell(), CONTROLS, 78):
+            for label, line in negatives(launch_cell(), CONTROLS, 79):
                 print(f"   refused: {label} -> {line}")
         except (LaunchError, AssertionError) as error:
             fail(f"self-test: {error}")

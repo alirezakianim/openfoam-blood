@@ -84,9 +84,18 @@ run_child() {
         ( cd "$case" && python3 "$gate/scripts/apply_throat.py" . constant/throatProfile.json > log.applyThroat 2>&1 ) || setup_code=$?
     fi
     [ "$setup_code" -eq 0 ] && ( cd "$case" && checkMesh > log.checkMesh 2>&1 ) || setup_code=$?
+    # THE Y-BIFURCATION GATE'S MESH-ONLY PRE-STEP (design 2026-10-14-case-y-bifurcation-gate.md rev. 2.1, gate 1). checkMesh exits 0 even when it
+    # reports failed checks, so this reads its log, the polyMesh files and the points; any mismatch exits non-zero, setup_code stops the chain, and
+    # foamRun is never started: a wrong mesh costs minutes, not a session. Only a child that carries constant/yGate.json runs it.
+    if [ "$setup_code" -eq 0 ] && [ -f "$case/constant/yGate.json" ]; then
+        ( cd "$case" && python3 "$gate/scripts/y_gate/y_mesh_gate.py" . --blockmesh-exit "$setup_code" > log.yMeshGate 2>&1 ) || setup_code=$?
+    fi
     [ "$setup_code" -eq 0 ] && ( cd "$case" && postProcess -func writeCellCentres -time 0 > log.writeCellCentres 2>&1 ) || setup_code=$?
     [ "$setup_code" -eq 0 ] && ( cd "$case" && postProcess -func writeCellVolumes -time 0 > log.writeCellVolumes 2>&1 ) || setup_code=$?
-    [ "$setup_code" -eq 0 ] && ( cd "$case" && python3 "$initialiser" . > log.initialise 2>&1 ) || setup_code=$?
+    # The Y gate has no clot: its own initialiser (c = +1 everywhere); every other child runs the mural gate's.
+    case_initialiser="$initialiser"
+    if [ -f "$case/constant/yGate.json" ]; then case_initialiser="$gate/scripts/y_gate/y_initialise.py"; fi
+    [ "$setup_code" -eq 0 ] && ( cd "$case" && python3 "$case_initialiser" . > log.initialise 2>&1 ) || setup_code=$?
     # STAGE 2 CONTENT TRIPLE, AFTER the initialiser and never before it.
     # thetaC and thetaH are functions of c and shell, which the initialiser
     # writes; create_cases.py runs earlier and can only write 0/nP. The

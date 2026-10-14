@@ -5481,6 +5481,45 @@ def finite(values) -> bool:
     return all(math.isfinite(v) for v in values)
 
 
+Y_GATE_SERIES_NAME = "s25_ygate"
+
+
+def y_gate_child(case: Path, spec: dict, text: str, exit_code, wall_seconds, concurrency, times: list, watcher_stop,
+                 watcher_verdict, stopped_by_watcher: bool) -> dict:
+    """THE Y-BIFURCATION GEOMETRY GATE (design 2026-10-14-case-y-bifurcation-gate.md rev. 2.2, section 4): gates 1-7 by
+    scripts/y_gate/y_gate_report.py, ONLY for that series, so no other child's report changes. The generic report assesses a clot on
+    a channel (c bounds, tear, transport); this child has neither. `completed` allows the end to land within one step of end_time_s:
+    the child writes at writeControl runTime (tau1) and does not adjust dt, so OF-13 ends the run when time passes endTime - dt/2
+    (Time::run), not exactly at endTime; endTime is 18 tau1 + 2e-5 s so that the 18th write has happened before that stop. `admissible` = the child completed (the measurement exists); the gates' verdicts are
+    in `y_gate` (READY only if all seven PASS)."""
+    end = spec["end_time_s"]
+    dt_last = (times[-1] - times[-2]) if len(times) >= 2 else 0.0
+    completed = bool(
+        exit_code == 0 and any(k in text for k in COMPLETED) and times and dt_last > 0
+        and abs(max(times) - end) <= dt_last and watcher_stop is None and not stopped_by_watcher
+    )
+    # The Y-bifurcation geometry gate's gates and flux instrument (pure python, scripts/y_gate/y_gate_report.py), imported HERE and not at module level: only the
+    # Y child needs them, so every other use of this file (a copy in another package, an exec of its source under a mutation) stays standalone.
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "y_gate"))
+    import y_gate_report
+    gates = y_gate_report.assess(case, spec["y_gate"], spec["plasma"]["nu_m2_s"], completed)
+    reason = None if completed else (
+        "the mesh-only pre-step failed or did not run; foamRun never started" if gates["g1"]["verdict"] != "PASS"
+        else f"did not complete: exit code {exit_code}, last logged time {max(times) if times else None}, end time {end}")
+    return {
+        "child_id": spec["child_id"], "series": spec["series"],
+        "wall_shear_rate_1_s": spec["wall_shear_rate_1_s"], "mean_velocity_m_s": spec["mean_velocity_m_s"],
+        "G_pa": spec["G_pa"], "k0p_m2": spec["k0p_m2"], "Gc_j_m2": spec["Gc_j_m2"], "core_shell": False,
+        "growth": spec["growth"], "wall_condition": spec["wall_condition"], "adhesive_strength_pa": spec["adhesive_strength_pa"],
+        "exit_code": exit_code, "wall_seconds": wall_seconds, "concurrency": concurrency,
+        "step_count": len(times), "final_log_time_s": max(times) if times else None,
+        "completed": completed, "watcher_stop": watcher_stop, "watcher_verdict": None,
+        "status": "COMPLETE" if completed else "INCOMPLETE", "verdict_note": None, "ran": len(times) > 0,
+        "cohesive_release_cells": 0, "admissible": completed, "bounded": completed, "bounds_reason": reason,
+        "y_gate": gates, "y_gate_verdict": gates["verdict"],
+    }
+
+
 def assess_child(case: Path, spec: dict, controls: dict) -> dict:
     log = case / "log.phaseClotAxisymmetricFluid"
     text = log.read_text(errors="replace") if log.is_file() else ""
@@ -5545,6 +5584,10 @@ def assess_child(case: Path, spec: dict, controls: dict) -> dict:
                           not in ("PASS", "NOT_REACHED"))
     if stopped_by_watcher:
         completed = False
+
+    if spec.get("series") == Y_GATE_SERIES_NAME:
+        return y_gate_child(case, spec, text, exit_code, wall_seconds, concurrency, times, watcher_stop,
+                            watcher_verdict, stopped_by_watcher)
 
     sweeps = [
         {"iterations": int(m[1]), "residual": float(m[3]),
@@ -6510,6 +6553,10 @@ def assess_child(case: Path, spec: dict, controls: dict) -> dict:
 
 def growth_table(children: dict, controls: dict) -> dict:
     rows, excluded = [], []
+    # The growing-face area comes from the matrix's geometry reference, which is None when no child carries a
+    # clot (clot_reference); a growth child there is refused in main(), and cannot be scored here either.
+    if controls["_geometry"] is None and any(c["series"] == "growth" for c in children.values()):
+        raise ValueError("growth_table: growth children but no clot reference")
     for c in sorted(children.values(), key=lambda r: r["wall_shear_rate_1_s"]):
         if c["series"] != "growth":
             continue
@@ -6729,13 +6776,25 @@ def deformation_table(children: dict, controls: dict) -> dict:
     and `trustworthy` is false when the solve did not settle -- rather than
     reporting a large strain and leaving the caveat to prose nobody reads.
     """
-    clot_height = controls["_clot"]["height_m"]
-    cell = controls["_geometry"]["h_m"]
+    # BATCH 79 (the Y gate, no clot): main() sets the clot reference to None when NO child of the
+    # matrix carries a clot (clot_reference), and a deformation child without one is refused there
+    # (clot_reference_refusal). So a no-clot matrix never reads a clot height: the height and the cell
+    # are taken from the reference only when it exists, and the table keeps its schema (empty rows) for
+    # the notebook's report cell. With a reference (every clot matrix) nothing below changed.
+    reference_clot, reference_geometry = controls["_clot"], controls["_geometry"]
+    scored = [c for c in children.values() if c["series"] == "deformation"]
+    if reference_clot is None:
+        if scored:
+            raise ValueError("deformation_table: deformation children but no clot reference")
+        clot_height = cell = None
+    else:
+        clot_height = reference_clot["height_m"]
+        cell = reference_geometry["h_m"]
     predicted = controls["deformation_axis"]["predicted_strain_percent"]
 
     rows, excluded = [], []
     for c in sorted(
-        (c for c in children.values() if c["series"] == "deformation"),
+        scored,
         key=lambda c: c["wall_shear_rate_1_s"],
     ):
         if not c["admissible"]:
@@ -7175,6 +7234,44 @@ def cohesive_margin(children: dict, controls: dict) -> dict:
     }
 
 
+def has_clot(spec: dict) -> bool:
+    """A child carries a clot unless its generated spec says so: clot shape "none" (create_cases.py, the Y gate's
+    `clot` block) is the one declared no-clot marker."""
+    return spec["clot"].get("shape") != "none"
+
+
+def clot_reference(matrix: list, own_geometry: set):
+    """The child that fixes the growth and deformation tables' geometry and clot height: the first CLOT child of a
+    series with the case's own geometry, else the first clot child; None when no child of the matrix has a clot.
+    On a matrix whose every child has a clot this is exactly the former `next(first non-own-geometry, matrix[0])`."""
+    clot_children = [s for s in matrix if has_clot(s)]
+    return next(
+        (s for s in clot_children if s["series"] not in own_geometry),
+        clot_children[0] if clot_children else None,
+    )
+
+
+def clot_reference_refusal(matrix: list, reference) -> None:
+    """Growth and deformation children are scored against the reference (their cell and clot height must equal it).
+    A child of those series with no clot, or any of them with no reference, is refused by name."""
+    for s in matrix:
+        if s["series"] not in ("growth", "deformation"):
+            continue
+        if reference is None or not has_clot(s):
+            raise ValueError(
+                f"{s['child_id']}: a {s['series']} child is scored against the matrix's clot reference "
+                f"and needs a clot (reference: {None if reference is None else reference['child_id']})"
+            )
+        if (
+            s["geometry"]["h_m"] != reference["geometry"]["h_m"]
+            or s["clot"]["height_m"] != reference["clot"]["height_m"]
+        ):
+            raise ValueError(
+                f"{s['child_id']}: its geometry differs from the reference "
+                f"used to score the growth and deformation tables"
+            )
+
+
 def main() -> int:
     case_root = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path.cwd()
     controls = json.loads(
@@ -7203,21 +7300,14 @@ def main() -> int:
         name for name, spec in controls["series"].items()
         if spec.get("geometry_override")
     }
-    reference = next(
-        (s for s in matrix if s["series"] not in own_geometry),
-        matrix[0],
-    )
-    controls["_geometry"] = reference["geometry"]
-    controls["_clot"] = reference["clot"]
-    for s in matrix:
-        if s["series"] in ("growth", "deformation") and (
-            s["geometry"]["h_m"] != reference["geometry"]["h_m"]
-            or s["clot"]["height_m"] != reference["clot"]["height_m"]
-        ):
-            raise ValueError(
-                f"{s['child_id']}: its geometry differs from the reference "
-                f"used to score the growth and deformation tables"
-            )
+    # THE CLOT REFERENCE IS TAKEN FROM CHILDREN THAT HAVE A CLOT (BATCH 79, docket 20261013-2314 report 14: a one-child
+    # matrix whose only child is the clot-free Y gate made that child the reference, and deformation_table read
+    # its clot height). A child with clot shape "none" is never a candidate, so a no-clot matrix has no reference
+    # (None) rather than a wrong one, and every table that scores against the reference is gated on it.
+    reference = clot_reference(matrix, own_geometry)
+    controls["_geometry"] = reference["geometry"] if reference is not None else None
+    controls["_clot"] = reference["clot"] if reference is not None else None
+    clot_reference_refusal(matrix, reference)
 
     children = {
         s["child_id"]: assess_child(runs / s["child_id"], s, controls)
@@ -7245,6 +7335,7 @@ def main() -> int:
     s25_pairs = s25_pair_report(children, controls)
     s25_rt1 = s25_rt1_report(runs, children, controls)
     s25_stab = {cid: (c.get("s25_stability") or {}).get("verdict") for cid, c in children.items() if c.get("s25_stability")}
+    y_gate = {cid: {"verdict": c["y_gate_verdict"], "failing": c["y_gate"]["failing"]} for cid, c in children.items() if c.get("y_gate")}
 
     result = {
         "case": "AM2020_planar_mural_detachment",
@@ -7258,6 +7349,7 @@ def main() -> int:
         "s25_paired": s25_pairs,
         "s25_rt1": s25_rt1,
         "s25_stability_gate": s25_stab,
+        "y_gate": y_gate,
         "s25_stability_failures": sorted(cid for cid, v in s25_stab.items() if v == "FAIL"),
         "growth_vs_flow": growth_table(children, controls),
         "required_strength": required_strength_table(children),
@@ -7298,6 +7390,7 @@ def main() -> int:
         "s25_paired": {p["pair_id"]: p["status"] for p in s25_pairs},
         "s25_rt1": {p["pair_id"]: p["status"] for p in s25_rt1},
         "s25_stability": s25_stab,
+        "y_gate": y_gate,
         "growth_exponent": result["growth_vs_flow"]["flow_dependence"]["exponent"],
         "required_strength_rows": len(result["required_strength"]["rows"]),
         "demonstration": [

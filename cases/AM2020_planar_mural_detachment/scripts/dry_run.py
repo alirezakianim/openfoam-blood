@@ -115,6 +115,26 @@ def write_vector(path: Path, values: list[tuple]) -> None:
     )
 
 
+def synthesise_y_child(case: Path, spec: dict, exit_code: int = 0, short: bool = False, **options) -> None:
+    """The Y-bifurcation gate's returned child (BATCH 79): the log, the exit code and the wall time, then the fields scripts/y_gate/y_synth.py lays on the replica's
+    real cell and face positions (phi, p, U, be, q, thetaNetRef at the 18 runTime writes k tau1; the logged inletFlux / outletFlux; gate1.json). The same fixture whatever
+    the phase-field convention (`theta_native` is the channel clot's): the Y report reads q, be and thetaNetRef only. The log runs to the step that passes endTime - dt/2
+    (Time::run), as the solver's does without an adjustable write time. `short` stops it at a third of the steps (the INCOMPLETE negative)."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "y_gate"))
+    import y_synth
+    g6 = spec["y_gate"]["gate6"]
+    dt, end = g6["dt_est_s"], spec["end_time_s"]
+    n_steps = int(math.ceil((end - 0.5 * dt) / dt - 1e-9))              # Time::run() is true while t < endTime - dt/2: the step that first reaches it is the last
+    if short:
+        n_steps = max(1, n_steps // 3)
+    lines = [f"Time = {k * dt:.10g}s\n" for k in range(1, n_steps + 1)]
+    lines.append("ExecutionTime = 500 s  ClockTime = 510 s\n\nEnd\n" if exit_code == 0 else "Foam::sigFpe::sigHandler(int) at ??:?\n")
+    (case / "log.phaseClotAxisymmetricFluid").write_text("".join(lines))
+    (case / "run-exit-code.txt").write_text(f"{exit_code}\n")
+    (case / "log.wallTime").write_text("WALL_SECONDS=510\n")
+    y_synth.build_case(case, spec["y_gate"], spec["plasma"]["nu_m2_s"], **options)
+
+
 def synthesise_child(
     case: Path,
     spec: dict,
@@ -211,7 +231,12 @@ def synthesise_child(
     # "activeFaces=56369 limitedFaces=10111 lambdaMin=0 lambdaFluxMean=0.99982924806
     # negAfter=0"). Step 1 is idle (activeFaces=0, lambdaFluxMean=1), as that log's was.
     fct: tuple | None = None,
+    # BATCH 79 (the Y gate's child only): options for scripts/y_gate/y_synth.py build_case, each planting ONE defect (split=, q0_scale=, last_k=, content=, ...)
+    y_options: dict | None = None,
 ) -> None:
+    if spec.get("y_gate"):
+        return synthesise_y_child(case, spec, exit_code=exit_code, short=short, **(y_options or {}))
+    assert not y_options, f"{spec['child_id']}: y_options is read only by the Y child"
     dt = spec["delta_t_s"]
 
     nx_cells = spec["geometry"]["nx"]
@@ -1239,6 +1264,120 @@ S23_REFUSALS = (
 
 
 S23_SOLVER_C = Path(__file__).resolve().parents[3] / "user-applications" / "phaseClotAxisymmetricFluid" / "phaseClotAxisymmetricFluid.C"
+
+
+# ---- THE Y-BIFURCATION GATE (BATCH 79; design 2026-10-14-case-y-bifurcation-gate.md rev. 2.2; case-engineer 12 and 13) ----
+#
+# One negative per generator refusal of the Y series' keys, module-level so each can be run alone
+# (y_gate_generator_negatives(only=<label part>)): `y_gate` and `non_orthogonal_correctors` are read ONLY for the Y series, the mesh files are
+# pinned by sha256, the keys that mean nothing on an unstructured mesh must be null, the write schedule is runTime tau1 with endTime 18 tau1 + [3 dt_est, 0.1 tau1]
+# (rev. 2.2), `write_every_n_steps` (rev. 2.1) is read by nothing, and a Y child carries no run-control key of its own.
+def _y_series(c: dict) -> dict:
+    return c["series"]["s25_ygate"]
+
+
+def _y_edit(c: dict, path: tuple, value) -> None:
+    d = _y_series(c)
+    for k in path[:-1]:
+        d = d[k]
+    if value is None:
+        d.pop(path[-1], None)
+    else:
+        d[path[-1]] = value
+
+
+Y_GATE_REFUSALS = (
+    ("y_gate block on another series", lambda c: c["series"]["s25_5a"].update({"y_gate": _y_series(c)["y_gate"]}),
+     "y_gate is read only for the Y series s25_ygate; here it would be silently inert"),
+    ("non_orthogonal_correctors on another series", lambda c: c["series"]["s25_5a"].update({"non_orthogonal_correctors": 2}),
+     "non_orthogonal_correctors is read only for the Y series s25_ygate; here it would be silently inert"),
+    ("the Y series without non_orthogonal_correctors", lambda c: _y_edit(c, ("non_orthogonal_correctors",), None),
+     "non_orthogonal_correctors is required by the Y series"),
+    ("write_every_n_steps (the rev. 2.1 step schedule) on the Y child", lambda c: _s16(c, "B79_Y_GATE", write_every_n_steps=163),
+     "write_every_n_steps is read by nothing"),
+    ("write_every_n_steps on a non-Y child", lambda c: _s16(c, "S25_5a_tan", write_every_n_steps=163),
+     "write_every_n_steps is read by nothing"),
+    ("write_every_n_steps left in the gate-6 block", lambda c: _y_edit(c, ("y_gate", "gate6", "write_every_n_steps"), 163),
+     "gate6.write_every_n_steps was the rev. 2.1 step schedule"),
+    ("write_interval_s the rev. 2.1 time equivalent (163 dt_est) instead of tau1", lambda c: _y_edit(c, ("write_interval_s",), 0.0005083644),
+     "write_interval_s 0.0005083644 != gate6.tau1_s 0.00050976"),
+    ("end_time_s exactly 18 tau1 (no margin for the 18th write)", lambda c: _y_edit(c, ("end_time_s",), 0.00917568),
+     "must be in [3 dt_est"),
+    ("end_time_s the rev. 2.1 value 9.176e-3 (0.5 dt_est past 18 tau1)", lambda c: _y_edit(c, ("end_time_s",), 0.009176),
+     "must be in [3 dt_est"),
+    ("end_time_s 19 tau1 (a 19th write, a tail that buys nothing)", lambda c: _y_edit(c, ("end_time_s",), 0.00968544 + 2e-5),
+     "must be in [3 dt_est"),
+    ("a Y child with its own end_time_s", lambda c: _s16(c, "B79_Y_GATE", end_time_s=0.0092),
+     "end_time_s is not a Y-child key"),
+    ("a Y child with its own write_interval_s", lambda c: _s16(c, "B79_Y_GATE", write_interval_s=0.0005),
+     "write_interval_s is not a Y-child key"),
+    ("a Y child with a wall budget above one session", lambda c: _s16(c, "B79_Y_GATE", wall_budget_h=12.0),
+     "needs wall_budget_h in (0, 11] h"),
+    ("the dictionary is not the pinned file", lambda c: _y_edit(c, ("y_gate", "mesh", "blockMeshDict_sha256"), "0" * 64),
+     "is not the pinned file"),
+    ("a stale geometry key (nx) on an unstructured mesh", lambda c: _y_edit(c, ("geometry_override", "nx"), 448),
+     "have no meaning on an unstructured mesh"),
+    ("the expected cell count is not the dictionary's", lambda c: _y_edit(c, ("geometry_override", "expected_cell_count"), 78913),
+     "expected_cell_count 78913 != the mesh's 78912"),
+    ("the step-1 watcher on a clot-free run", lambda c: _y_edit(c, ("step1_watcher",), True),
+     "step1_watcher must be off"),
+    ("a velocity drive instead of the pressure drive", lambda c: _y_edit(c, ("pressure_driven",), False),
+     "pressure_driven must be True"),
+    ("a clot on the Y mesh", lambda c: _y_edit(c, ("clot_override", "shape"), "semisphere"),
+     "clot_override.shape must be 'none'"),
+    ("the outlet split does not add up", lambda c: _y_edit(c, ("y_gate", "mesh", "outlet_faces", "d1_y_positive"), 89),
+     "does not add up to the outlet patch"),
+    ("the cells across the daughters are not 100, 88, 60", lambda c: _y_edit(c, ("y_gate", "geometry_sim", "N"), [100, 88, 59]),
+     "geometry_sim.N"),
+    ("d2 at sqrt(0.3815) D0 instead of the pinned 0.618 D0", lambda c: _y_edit(c, ("y_gate", "geometry_sim", "widths_m"), [5.833333333333333e-05, 5.833333333333333e-05, 0.6177 * 5.833333333333333e-05]),
+     "are not D0, d1 x D0, d2 x D0"),
+    ("the drive's mean velocity is not centreline / 1.5 / (S_t / S_L)", lambda c: _y_edit(c, ("y_gate", "gate5", "u_mean_sim_m_s"), 0.00125),
+     "gate5.u_mean_sim_m_s"),
+    ("tau1 is not D0^2 / (pi^2 nu)", lambda c: _y_edit(c, ("y_gate", "gate6", "tau1_s"), 0.0005),
+     "gate6.tau1_s 0.0005 != D0^2/(pi^2 nu)"),
+)
+
+
+def y_gate_generator_negatives(only: str | None = None) -> None:
+    """Each Y-series generator refusal, seen to fire for its stated reason on a fresh copy (all of them, or the one whose label contains `only`); then the positive
+    side: the pristine controls generate, and the Y child's controlDict, fvSolution and child.json carry exactly the schedule the refusals protect."""
+    import copy
+    ran = 0
+    with tempfile.TemporaryDirectory(prefix="am2020-y-neg-") as tmp:
+        root = build_case(Path(tmp))
+        shutil.rmtree(root / "runs")
+        controls_path = root / "constant" / "mainCaseControls.json"
+        pristine = controls_path.read_text()
+        for label, mutate, expected in Y_GATE_REFUSALS:
+            if only is not None and only not in label:
+                continue
+            broken = copy.deepcopy(json.loads(pristine))
+            mutate(broken)
+            assert broken != json.loads(pristine), f"{label}: the mutation changed nothing"
+            controls_path.write_text(json.dumps(broken, indent=1))
+            done = subprocess.run([sys.executable, "-B", str(root / "scripts" / "create_cases.py")], capture_output=True, text=True)
+            said = (done.stdout + done.stderr).strip().splitlines()
+            last = said[-1] if said else ""
+            if done.returncode == 0:
+                raise AssertionError(f"the generator ACCEPTED {label}; it must refuse")
+            if expected not in last:
+                raise AssertionError(f"the generator refused {label} for the WRONG reason: {last}")
+            print(f"generator refuses: {label:<66} -> {last[:96]}")
+            shutil.rmtree(root / "runs", ignore_errors=True)
+            ran += 1
+        controls_path.write_text(pristine)
+        done = subprocess.run([sys.executable, "-B", str(root / "scripts" / "create_cases.py")], capture_output=True, text=True)
+        assert done.returncode == 0, f"the pristine controls were refused: {(done.stdout + done.stderr)[-300:]}"
+        y = root / "runs" / "B79_Y_GATE"
+        cd = (y / "system" / "controlDict").read_text()
+        top = cd.split("functions", 1)[0]
+        assert re.findall(r"(?m)^writeControl\s+(\S+);", top) == ["runTime"] and re.findall(r"(?m)^writeInterval\s+(\S+);", top) == ["0.00050976"], top
+        assert re.findall(r"(?m)^endTime\s+(\S+);", top) == ["0.009196"] and "adjustableRunTime" not in cd
+        j = json.loads((y / "child.json").read_text())
+        assert j["write_interval_s"] == 0.00050976 and j["end_time_s"] == 0.009196 and "write_every_n_steps" not in j and j["non_orthogonal_correctors"] == 2
+        shutil.rmtree(root / "runs", ignore_errors=True)
+    assert ran > 0, f"no Y-gate negative matches {only!r}"
+    print(f"   {ran} Y-gate generator negatives refused; the pristine controls write runTime / tau1 / endTime 9.196e-3")
 
 
 def s23_solver_would_refuse(props_text: str):
@@ -2399,7 +2538,7 @@ def _s25_5a_gen_section() -> None:
         # --- negatives
         refusal_call = "        s25_5a_refusal(child, spec)\n"
         floor_bot, floor_top = "elif _bot / _eps < 3.0:", "if _top / _eps < 3.0:"
-        gc_guard = 'if child.get("Gc_j_m2") is not None and child["series"] not in ("cohesive_tear",) + S25_5A_SERIES:'
+        gc_guard = 'if child.get("Gc_j_m2") is not None and child["series"] not in ("cohesive_tear",) + S25_5A_SERIES + Y_GATE_SERIES:'
         gamma_guard = 'if child.get("wall_shear_rate_1_s") != _want_gamma:'
         pair_row = '    ("S25_5a_tan_half", "S25_5a_tan", {"elastic_courant"}, set()),\n'
         negatives = (
@@ -3565,12 +3704,23 @@ def s23_generator_negatives(only: str | None = None) -> None:
         assert not [c for c in every if "volumetricTearRatio" in props(c)], "volumetricTearRatio written for a child that does not name it"
         # S25: every legacy child states S_t = 1.0, writes it, and writes 17 digits (the grid is not a filter: all of them)
         # the legacy children (every child outside the S25 5a series, whose six children (two smoke, the RT-1 pair, BATCH 78's RT-1 pair) state S_t = 25/3 on purpose)
-        legacy = [c for c in every if json.loads((root / "runs" / c / "child.json").read_text())["series"] != "s25_5a"]
-        assert len(legacy) == KEPT_CHILDREN - 6, (len(legacy), KEPT_CHILDREN)
+        # (B79_Y_GATE is the 49th child: series s25_ygate, the 5a dictionary at S_t = 25/3 on the Y mesh, so it is outside "legacy" too)
+        legacy = [c for c in every if json.loads((root / "runs" / c / "child.json").read_text())["series"] not in ("s25_5a", "s25_ygate")]
+        assert len(legacy) == KEPT_CHILDREN - 7, (len(legacy), KEPT_CHILDREN)
         assert all("\ntimeScale 1.0;\n" in props(c) for c in legacy), "a child's dictionary lacks timeScale 1.0"
         assert all(json.loads((root / "runs" / c / "child.json").read_text())["time_scale"] == 1.0 for c in legacy)
-        assert [c for c in every if c not in legacy] == ["B78_RT_5a_A", "B78_RT_5a_B", "RT_5a_A", "RT_5a_B", "S25_5a_tan", "S25_5a_tan_half"]
-        assert all("\ntimeScale 8.333333333333334;\n" in props(c) for c in ("B78_RT_5a_A", "B78_RT_5a_B", "RT_5a_A", "RT_5a_B", "S25_5a_tan", "S25_5a_tan_half"))
+        assert [c for c in every if c not in legacy] == ["B78_RT_5a_A", "B78_RT_5a_B", "B79_Y_GATE", "RT_5a_A", "RT_5a_B", "S25_5a_tan", "S25_5a_tan_half"]
+        assert all("\ntimeScale 8.333333333333334;\n" in props(c) for c in ("B78_RT_5a_A", "B78_RT_5a_B", "B79_Y_GATE", "RT_5a_A", "RT_5a_B", "S25_5a_tan", "S25_5a_tan_half"))
+        # BATCH 79 (design 2026-10-14-case-y-bifurcation-gate.md rev. 2.2): the Y child writes at runTime tau1 and stops at 18 tau1 + 2e-5 s, with 2 non-orthogonal correctors,
+        # no child.env and no solver_library; the dictionary is S25_5a_tan's (the clot children inherit it)
+        _y = root / "runs" / "B79_Y_GATE"
+        _cd = (_y / "system" / "controlDict").read_text()
+        for _pat in (r"(?m)^writeControl\s+runTime;", r"(?m)^writeInterval\s+0\.00050976;", r"(?m)^endTime\s+0\.009196;", r"(?m)^purgeWrite\s+0;"):
+            assert re.search(_pat, _cd), ("B79_Y_GATE controlDict", _pat)
+        assert "timeStep" not in re.sub(r"(?s)functions.*", "", _cd), "B79_Y_GATE writes by timeStep outside its function objects"
+        assert re.findall(r"(?m)^\s*nNonOrthogonalCorrectors\s+(\S+);", (_y / "system" / "fvSolution").read_text()) == ["2"]
+        assert not (_y / "child.env").exists() and "solver_library" not in json.loads((_y / "child.json").read_text())
+        assert "write_every_n_steps" not in json.loads((_y / "child.json").read_text())
         # B76-RT (case-engineer 09d): the RT-1 children carry their parents' phaseClotProperties exactly (only the run controls differ), A = B, no library pin
         assert props("RT_P73_A") == props("RT_P73_B") == props("P73_G4_r3_40"), "an RT_P73 child's phaseClotProperties drifted from its parent"
         assert props("RT_5a_A") == props("RT_5a_B") == props("S25_5a_tan"), "an RT_5a child's phaseClotProperties drifted from its parent"
@@ -3583,7 +3733,7 @@ def s23_generator_negatives(only: str | None = None) -> None:
             assert (root / "runs" / "B78_OFF_A" / _f).read_bytes() == (root / "runs" / "B78_OFF_B" / _f).read_bytes(), _f
             assert (root / "runs" / "B78_CTL_1" / _f).read_bytes() == (root / "runs" / "B78_CTL_2" / _f).read_bytes(), _f
         assert (root / "runs" / "B78_CTL_1" / "child.json").read_text().replace("B78_CTL_1", "B78_CTL_2") == (root / "runs" / "B78_CTL_2" / "child.json").read_text()
-        for c in ("RT_P73_A", "RT_P73_B", "RT_5a_A", "RT_5a_B", "B78_RT_5a_A", "B78_RT_5a_B"):
+        for c in ("RT_P73_A", "RT_P73_B", "RT_5a_A", "RT_5a_B", "B78_RT_5a_A", "B78_RT_5a_B", "B79_Y_GATE"):
             assert not (root / "runs" / c / "child.env").exists() and "solver_library" not in json.loads((root / "runs" / c / "child.json").read_text()), c
         assert all(re.search(r"(?m)^writePrecision\s+17;", (root / "runs" / c / "system" / "controlDict").read_text())
                    for c in every), "a controlDict is not at writePrecision 17"
@@ -3736,6 +3886,66 @@ def launch_filters_generate(nbsel, batch: int, generate) -> None:
               f"{', in the notebook order' if batch in names['ONE_CORE_BATCHES'] else ''} ({last})")
 
 
+def y_gate_only_matrix() -> None:
+    """BATCH 79 AS THE NOTEBOOK LAUNCHES IT: create_cases.py with the batch's own filter builds ONE child, the clot-free Y gate, and assess_case.main runs
+    on that one-child matrix (docket 20261013-2314 report 14: the Y child became the clot reference, deformation_table read its clot height, the
+    assessor exited 1 after the 9 h run and wrote no result.json; every earlier Y scenario ran the full 49-child matrix, whose reference is a clot child).
+    Clean y_synth data must give result.json, exit 0, READY; a planted wrong split (the rejected network's 0.809042) must give NOT_READY by gate 2 alone.
+    The reference rule itself is exercised on literal matrices: a clot child is the reference even when the Y child sorts first, no clot child means
+    no reference, and a growth or deformation child with no clot is refused by name."""
+    import importlib.util
+    root_repo = Path(__file__).resolve().parents[3]
+    nb = root_repo / "notebooks" / "AM2020_main_case_colab.ipynb"
+    nbs = importlib.util.spec_from_file_location("nbsel_yonly", root_repo / "scripts" / "check_notebook_batch_selector.py")
+    nbsel = importlib.util.module_from_spec(nbs)
+    nbs.loader.exec_module(nbsel)
+    filt = nbsel.notebook_names(nbsel.launch_cell(nb))["BATCHES"][79][0].split()
+    assert filt == ["B79_Y_GATE"], filt
+    for label, y_options, verdict, failing in (
+            ("clean", {}, "READY", []),
+            ("wrong split 0.809042", dict(split=0.809042), "NOT_READY", ["g2"])):
+        with tempfile.TemporaryDirectory(prefix="am2020-yonly-") as tmp:
+            root = build_case(Path(tmp))
+            shutil.rmtree(root / "runs")
+            done = subprocess.run([sys.executable, "-B", str(root / "scripts" / "create_cases.py")] + filt, capture_output=True, text=True)
+            assert done.returncode == 0, (done.stdout + done.stderr)[-600:]
+            matrix = json.loads((root / "runs" / "matrix.json").read_text())
+            assert [m["child_id"] for m in matrix] == filt, [m["child_id"] for m in matrix]
+            assert matrix[0]["clot"].get("shape") == "none" and "height_m" not in matrix[0]["clot"], matrix[0]["clot"]
+            (root / "log.Allwmake").write_text(GOOD_BUILD)
+            synthesise_child(root / "runs" / filt[0], matrix[0], y_options=y_options)
+            code, result = run_assessor(root)             # raises when no result.json: the pre-fix failure
+            assert code == 0, f"{label}: assess_case exited {code}"
+            assert result["children_total"] == 1 and result["children_admissible"] == 1 and not result["inadmissible"], (label, result["inadmissible"])
+            y = result["children"][filt[0]]
+            assert y["y_gate_verdict"] == verdict and y["y_gate"]["failing"] == failing, (label, y["y_gate_verdict"], y["y_gate"]["failing"])
+            assert result["y_gate"] == {filt[0]: {"verdict": verdict, "failing": failing}}, result["y_gate"]
+            d = result["deformation"]                     # the notebook's report cell reads these keys: the schema stays, with no clot height
+            assert d["rows"] == [] and d["excluded"] == [] and d["clot_height_m"] is None and d["deforms_visibly"] is False, d
+            assert result["growth_vs_flow"]["rows"] == [] and result["growth_vs_flow"]["flow_dependence"]["exponent"] is None
+            print(f"   batch 79's one-child matrix, {label}: result.json written, exit 0, {filt[0]} {verdict} {failing}")
+    sp = importlib.util.spec_from_file_location("assess_case_yonly", Path(__file__).resolve().parent / "assess_case.py")
+    ac = importlib.util.module_from_spec(sp)
+    sp.loader.exec_module(ac)
+    y = {"child_id": "Y", "series": "s25_ygate", "geometry": {"h_m": 1e-6}, "clot": {"shape": "none"}}
+    d1 = {"child_id": "D1", "series": "deformation", "geometry": {"h_m": 2e-6}, "clot": {"shape": "disc", "height_m": 3e-5}}
+    g1 = {"child_id": "G1", "series": "growth", "geometry": {"h_m": 2e-6}, "clot": {"shape": "disc", "height_m": 3e-5}}
+    assert ac.clot_reference([y], set()) is None
+    assert ac.clot_reference([y, d1], set()) is d1, "a clot child must be the reference even when the clot-free child sorts first"
+    assert ac.clot_reference([d1, y], set()) is d1
+    assert ac.clot_reference([y, d1, g1], {"deformation"}) is g1 and ac.clot_reference([y, g1, d1], {"growth"}) is d1, "own-geometry series are skipped"
+    assert ac.clot_reference([y, d1], {"deformation"}) is d1, "only own-geometry clot children: the first clot child"
+    for bad_matrix, why in (([y, dict(d1, clot={"shape": "none"})], "deformation child with no clot"),
+                            ([g1, dict(d1, geometry={"h_m": 9e-6})], "geometry differs")):
+        try:
+            ac.clot_reference_refusal(bad_matrix, ac.clot_reference(bad_matrix, set()))
+        except ValueError as error:
+            print(f"   refused ({why}): {str(error)[:110]}")
+        else:
+            raise AssertionError(f"{why}: ACCEPTED")
+    ac.clot_reference_refusal([y, d1, g1], ac.clot_reference([y, d1, g1], set()))
+
+
 def reference_library_wiring() -> None:
     """The reference-library arm (S22 arm A0 and S23 arm (1')), offline: the notebook's pins and
     batch table agree with the generator's solver_library children, the build script's two release
@@ -3749,7 +3959,7 @@ def reference_library_wiring() -> None:
     spec.loader.exec_module(nbsel)
     text = nbsel.source_of(root / "notebooks" / "AM2020_main_case_colab.ipynb")
     batch, batches = nbsel.parse(text)
-    assert batch == max(batches) == 78, (batch, max(batches))
+    assert batch == max(batches) == 79, (batch, max(batches))
     # the build script re-pins by exactly these two patterns; a second match would break the release
     assert len(re.findall(r"EXPECTED_REPO_DIGEST = '[0-9a-f]{64}'", text)) == 1
     assert len(re.findall(r"EXPECTED_TAG = 'digest-[0-9a-f]{12}'", text)) == 1
@@ -3865,6 +4075,13 @@ def reference_library_wiring() -> None:
     assert "--mkl-cbwr" not in a78 and a78[a78.index("--mkl-threads") + 1] == "1" and "--baseline-solver" in a78 and "--s22-solver" not in a78 and "--p2prime-solver" not in a78, a78
     refused(need(" ".join(by[(78, 1)]["children"]), controls), {"p2prime": "", "s22": "", "baseline": ""}, "--baseline-solver was not passed")
     check(need(" ".join(by[(78, 1)]["children"]), controls), {"p2prime": "", "s22": "", "baseline": "/x"})
+    # BATCH 79 (the Y-bifurcation gate) is ONE session, ONE child, on the 1-core runtime, and clones NO reference library (it runs on the package's S25.1 build): --mkl-threads 1, no --mkl-cbwr, no library flag
+    assert [k for k in by if k[0] == 79] == [(79, 1)], sorted(by)
+    assert by[(79, 1)]["children"] == ["B79_Y_GATE"], by[(79, 1)]["children"]
+    assert need("B79_Y_GATE", controls) == set() and by[(79, 1)]["library_passed"] == []
+    a79 = by[(79, 1)]["argv"]
+    assert "--mkl-cbwr" not in a79 and a79[a79.index("--mkl-threads") + 1] == "1" and not any(f in a79 for f in ("--baseline-solver", "--s22-solver", "--p2prime-solver")), a79
+    refused(need("B79_Y_GATE", controls), {"p2prime": "", "s22": "", "baseline": "/x"}, "built for nothing")
     assert "--s22-solver" in by[(72, 1)]["argv"] and "--s22-solver" not in by[(72, 2)]["argv"]
     # the same two negatives on this function's own exec'd runner functions
     check(need(" ".join(by[(72, 1)]["children"]), controls), {"p2prime": "", "s22": "/x"})
@@ -4449,10 +4666,10 @@ S21_GENERATOR_NEGATIVES = (
 # The number of children the generator emits: the 18 kept + the 8 S22 validation
 # twins of BATCH 71 + the 4 S23 twins of BATCH 72 + the 2 production children of BATCH 73 + the 1 diagnostic child of BATCH 74
 # (D74_refI, the passive intact-network reference) + the 1 re-run child of BATCH 75 (D75_refI, the same measurement on rev. 3.1) + the 2 B76-5a
-# smoke children (S25_5a_tan, S25_5a_tan_half; case-engineer 09b) + the 2 B76-OFF children (B76_OFF_A on the baseline binary, B76_OFF_B on the S25 build; case-engineer 09c) + the 4 B76-RT children (RT_P73_A/B, RT_5a_A/B) + the 6 BATCH 78 children (B78_OFF_A/B, B78_CTL_1/2, B78_RT_5a_A/B; case-engineer 06). ONE pin, read by
+# smoke children (S25_5a_tan, S25_5a_tan_half; case-engineer 09b) + the 2 B76-OFF children (B76_OFF_A on the baseline binary, B76_OFF_B on the S25 build; case-engineer 09c) + the 4 B76-RT children (RT_P73_A/B, RT_5a_A/B) + the 6 BATCH 78 children (B78_OFF_A/B, B78_CTL_1/2, B78_RT_5a_A/B; case-engineer 06) + the 1 BATCH 79 child (B79_Y_GATE, the Y-bifurcation geometry gate; case-engineer 12 and 13). ONE pin, read by
 # s21_generator_negatives, s23_generator_negatives and main(): BATCH 72 updated main's copy and left this
 # function's at 26, and release 2026-10-07 died on it ten minutes into the build.
-KEPT_CHILDREN = 48
+KEPT_CHILDREN = 49
 
 
 def s21_generator_negatives() -> None:
@@ -4624,6 +4841,24 @@ def main() -> int:
              every_child={"theta_native": True})
     exercise("out_of_bounds_phase_is_excluded",
              variant(fsb_ctl_r3=dict(c_extreme=1.5)), only("fsb_ctl_r3", "phase out of bounds"))
+    # BATCH 79, the Y gate's child, end to end through assess_case.main on the synthetic returned case (y_synth on the replica's real cells): READY when clean (the healthy
+    # scenario above), a run that stopped early is INCOMPLETE and named, a planted defect makes the child NOT_READY by the gate it names (never inadmissible: the measurement exists).
+    exercise("y_gate_child_stopped_early_is_excluded_and_named",
+             variant(B79_Y_GATE=dict(short=True)), only("B79_Y_GATE", "did not complete"))
+
+    def y_not_ready(gate):
+        def check(r, code):
+            assert code == 0 and not r["inadmissible"], (code, r["inadmissible"])
+            y = r["children"]["B79_Y_GATE"]
+            assert y["y_gate_verdict"] == "NOT_READY" and y["y_gate"]["failing"] == [gate], (y["y_gate_verdict"], y["y_gate"]["failing"])
+        return check
+    exercise("y_gate_child_with_a_wrong_split_is_not_ready_by_gate_2",
+             variant(B79_Y_GATE=dict(y_options=dict(split=0.809042))), y_not_ready("g2"))
+    exercise("y_gate_child_with_a_misset_drive_is_not_ready_by_gate_5",
+             variant(B79_Y_GATE=dict(y_options=dict(q0_scale=1.01))), y_not_ready("g5"))
+    exercise("y_gate_child_with_a_step_3pct_high_is_still_ready",
+             variant(B79_Y_GATE=dict(y_options=dict(dt=1.03 * 3.1188e-06))), healthy)
+    run_direct("y_gate_one_child_matrix_is_assessed_ready_and_a_wrong_split_not_ready", y_gate_only_matrix)
     # MISSING FIELDS MUST NOT PASS VACUOUSLY.
     exercise("missing_fields_are_inadmissible",
              variant(em79_G4_s18p_Cnp=dict(omit_fields=True)), only("em79_G4_s18p_Cnp"))
@@ -4650,6 +4885,7 @@ def main() -> int:
         exercise(g3l_label, variant(fsf_G4_kxu_v250=dict(fct=g3l_fct)), g3l_kept)
     run_direct("s21_generator_refuses_built_in_and_deleted_keys", s21_generator_negatives)
     run_direct("s22_generator_refuses_bad_solver_keys", s22_generator_negatives)
+    run_direct("y_gate_generator_refuses_bad_y_keys_and_schedule", y_gate_generator_negatives)
     run_direct("s23_generator_refuses_bad_tear_ratio", s23_generator_negatives)
     run_direct("s25_build1_refusals_gamma_scaling_and_assessor_fields", s25_build1_checks)
     run_direct("s25_build2_lt_refusals_generator_and_assessor_gates", s25_build2_checks)
@@ -5451,8 +5687,12 @@ def main() -> int:
         # BATCH 75's one-session filter stays exercised while a later batch is the default
         run_direct("batch_75_launch_filters_generate", lambda: launch_filters_generate(nbsel, 75, _filtered_generation))
     if _batch != 76:
-        # BATCH 76's three launches (1-core: each filter generates by itself and in the notebook's order) stay exercised while BATCH 78 is the default
+        # BATCH 76's three launches (1-core: each filter generates by itself and in the notebook's order) stay exercised while a later batch is the default
         run_direct("batch_76_launch_filters_generate", lambda: launch_filters_generate(nbsel, 76, _filtered_generation))
+
+    if _batch != 78:
+        # BATCH 78's one-session filter (1-core, the baseline library) stays exercised while BATCH 79 is the default
+        run_direct("batch_78_launch_filters_generate", lambda: launch_filters_generate(nbsel, 78, _filtered_generation))
 
     def one_core_launch():
         # S25 (the 1-core runtime batches 76/77): BATCHES[77] has no entry until its children are written, so the
@@ -5460,7 +5700,7 @@ def main() -> int:
         # carries --mkl-threads 1 and NO --mkl-cbwr, design section 12.1), and that filter generates by itself, as the cell hands it to Allrun.
         argvs = nbsel.check_one_core(nbsel.launch_cell(
             Path(__file__).resolve().parents[3] / "notebooks" / "AM2020_main_case_colab.ipynb"), nbsel.CONTROLS)
-        assert sorted(argvs) == [76, 77, 78], sorted(argvs)
+        assert sorted(argvs) == [76, 77, 78, 79], sorted(argvs)
         filt = ["P73_G4_r3_40"]
         rc, built, last = _filtered_generation(filt)
         assert rc == 0, f"the 1-core stand-in filter was refused: {last}"

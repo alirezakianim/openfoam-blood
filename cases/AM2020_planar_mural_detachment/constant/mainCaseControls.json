@@ -440,6 +440,180 @@
    "_why_children_2": "S25_5a_tan (elasticCourant 0.5, tangent) and S25_5a_tan_half (0.25): the B76-5a Richardson pair.",
    "_why_children_4": "The two B76-5a smoke children (S25_5a_tan, S25_5a_tan_half) plus the RT-1 restart pair RT_5a_A and RT_5a_B (the 5a smoke child restarted from step 42 where Vs != 0; B76-RT, case-engineer 09d). A comment key only: the series question is child.json's `role` and is left unchanged so the older children stay byte-identical.",
    "_why_children_6": "6 = the four of BATCH 76 + B78_RT_5a_A and B78_RT_5a_B: RT_5a_A / RT_5a_B's dictionaries under new ids, the RT-1 pair on S25.1 (design 2026-10-13-S25.1 section D item 3)."
+  },
+  "s25_ygate": {
+   "children": 1,
+   "question": "THE Y-BIFURCATION GEOMETRY GATE (flow only, no clot). Is the order-4 asymmetric planar Y (D0 35 um, d1 1.000 D0 at +27 deg, d2 0.618 D0 at -56 deg, fillets 1.0 D0, apex radius 0.25 D0) a real mesh in OpenFOAM-13 (gate 1), and does the S25.1 solver give, on it, the flow split, mass balance, Poiseuille gradients, drive calibration and steady state of the reference (gates 2-6), with the wall network unstretched and nothing deposited (gate 7)? It is a mesh and flow gate: the clot children come after it and after S26.",
+   "_the_request": "Alireza 2026-10-13/14, 'Gate first + speed-up fix (Recommended)'; approved as designed 2026-10-14 ('Approve as designed (Recommended)'). Design: research/designs/2026-10-14-case-y-bifurcation-gate.md rev. 2.2 (CE; red team 08, numerics 09, librarian 10, red team 11 changes A-F; rev. 2.2 = the runTime write schedule and nNonOrthogonalCorrectors 2 confirmed). Docket: research/investigations/20261013-2314-case-y-bifurcation-clog/ (case-engineer 12).",
+   "_design": "research/designs/2026-10-14-case-y-bifurcation-gate.md rev. 2.2",
+   "_docket": "research/investigations/20261013-2314-case-y-bifurcation-clog/",
+   "core_shell": false,
+   "growth": false,
+   "adjust_time_step": true,
+   "max_co": 0.5,
+   "delta_t_s": 5e-06,
+   "max_delta_t_s": 5e-05,
+   "end_time_s": 0.009196,
+   "write_interval_s": 0.00050976,
+   "steps": "adaptive",
+   "wall_condition": "clotWallAdhesion",
+   "wall_bond_free": true,
+   "top_wall_adhesion": false,
+   "step1_watcher": false,
+   "pressure_driven": true,
+   "inlet_pressure_m2_s2": 0.00122185,
+   "rho_kg_m3": 1050.0,
+   "nu_m2_s": 6.7636023629e-07,
+   "non_orthogonal_correctors": 2,
+   "_why_non_orthogonal_correctors": "2 = the number create_cases.py writes for every bent mesh (the throat children: 'This case ships ZERO ... correct for the orthogonal Cartesian block every other child runs on, and a divergence risk on a bent mesh', the fvSolution edit under `if g.get(\"throat_height_m\")`). The Y mesh is bent: max non-orthogonality 24.41 deg (avg 6.21), skewness 0.657. NOT in the design: a case-engineer choice by that rule, flagged to the CE (report 12 Hand-offs). The numerics 09 references are FE (P2-P1), so they do not decide it.",
+   "geometry_override": {
+    "_why": "THE Y MESH IS EXTERNAL. expected_cell_count 78912 is the dictionary's cell count (checked against y_gate.mesh.counts by y_gate_series_refusal); h_m 7.5e-7 is the eps/h = 4 floor's HF (probes/na09_ymesh.py L18: 0.75 um sim), interface_width_m 3e-6 and ell_m 1.5e-6 are the 5a series' (the S25 build), depth_m 1e-6 is the dictionary's z extent. The keys with no meaning on an unstructured mesh are NULL on purpose (the generator refuses a non-null one): the Y path reads none of them.",
+    "expected_cell_count": 78912,
+    "h_m": 7.5e-07,
+    "interface_width_m": 3e-06,
+    "ell_m": 1.5e-06,
+    "depth_m": 1e-06,
+    "nz": 1,
+    "nx": null,
+    "ny": null,
+    "channel_length_m": null,
+    "channel_height_m": null,
+    "injury_length_m": null,
+    "injury_centre_x_m": null,
+    "diameter_status": "Order-4 arteriole, D0 35 um physical = 58.333 um sim (design section 1).",
+    "source": "Not a channel: the order-4 planar Y of design 2026-10-14-case-y-bifurcation-gate.md section 1 (D0 35 um, d1 1.000 D0 at +27 deg, d2 0.618 D0 at -56 deg; source 131 p225, source 132 Fig 7, source 133 Table 3 p8); the mesh is constant/yGate/na09_blockMeshDict.",
+    "full_height_note": "Planar 2-D with empty front and back (depth 1 um sim): the solver's planar mode, as the 5a series."
+   },
+   "clot_override": {
+    "_why": "NO CLOT: c = +1 in every cell (scripts/y_gate/y_initialise.py). The mural clot's keys remain in the merged dict and are read by nothing on this path.",
+    "shape": "none"
+   },
+   "y_gate": {
+    "_why": "The gate's whole pre-registration as NUMBERS (design 2026-10-14-case-y-bifurcation-gate.md rev. 2.2 section 4, copied into the child's `expectation` verbatim). The generator pins the mesh files by sha256 and writes this block to constant/yGate.json (the setup scripts) and child.json (the assessor). scripts/y_gate/y_gate_report.py is the only reader of the gate numbers; create_cases.py y_gate_series_refusal cross-checks the ones that exist twice.",
+    "mesh": {
+     "_why": "Design section 2 (numerics 09, mesh C) and section 4 gate 1. The counts are parsed from the dictionary text and reproduced by the replica (probes/na09_roundtrip_C.txt): nPoints 159952, nCells 78912, nFaces 316711, nInternalFaces 156761, inlet 100, outlet 148 (d1 88 faces with y > 0, d2 60 with y < 0), wall 1878, front and back 78912 each. Non-orthogonality 24.4074 (avg 6.21), skewness 0.6572 (replica). The two files are the docket's probes/na09_blockMeshDict and probes/na09_points_ref_2d.npy, copied byte for byte.",
+     "blockMeshDict": "constant/yGate/na09_blockMeshDict",
+     "blockMeshDict_sha256": "ae3454af9997c7c3b68086df26182a14089ab945a828986c80d45ebb840190e4",
+     "points_ref": "constant/yGate/na09_points_ref_2d.npy",
+     "points_ref_sha256": "eb1d10a034caf962ee1ac6800f14e0ee2726436f82bced56eec4c6be954bb0b3",
+     "points_ref_n": 79976,
+     "points_tol_m": 1e-09,
+     "plane_z_m": 0.0,
+     "counts": {
+      "nPoints": 159952,
+      "nCells": 78912,
+      "nFaces": 316711,
+      "nInternalFaces": 156761
+     },
+     "patches": {
+      "inlet": 100,
+      "outlet": 148,
+      "wall": 1878,
+      "front": 78912,
+      "back": 78912
+     },
+     "outlet_faces": {
+      "d1_y_positive": 88,
+      "d2_y_negative": 60
+     },
+     "non_orth_max_deg": 24.41,
+     "non_orth_tol_deg": 0.01,
+     "skew_max": 0.657,
+     "skew_tol": 0.01
+    },
+    "geometry_sim": {
+     "_why": "Design section 1 (sim units S_L 5/3). D0 = 35 um x 5/3 = 58.333 um; d1 = 1.000 D0 and d2 = 0.618 D0 (source 131 p225, order 4); axes +27 and -56 deg from the parent axis (+x), the node at the origin (the dictionary's inlet is at x = -4 D0 and each outlet end is 4 D0 along its axis, verified on the dictionary's vertices). The widths are PINNED at the mesh values (red team 11 change D: d2 is 0.618 D0, NOT sqrt(0.3815) = 0.6177); N = 100, 88, 60 cells across.",
+     "D0_m": 5.833333333333333e-05,
+     "d1_over_D0": 1.0,
+     "d2_over_D0": 0.618,
+     "widths_m": [
+      5.833333333333333e-05,
+      5.833333333333333e-05,
+      3.605e-05
+     ],
+     "N": [
+      100,
+      88,
+      60
+     ],
+     "depth_m": 1e-06,
+     "axes_deg": {
+      "parent": 0.0,
+      "d1": 27.0,
+      "d2": -56.0
+     },
+     "node_m": [
+      0.0,
+      0.0
+     ]
+    },
+    "gate2": {
+     "_why": "q1/q0 = 0.79590 +- 7e-4 (design gate 2): the NS split 0.795946 (Stokes 0.796066, inertia -1.80e-4 at Re 0.162 scaled to -1.20e-4 at Re 0.108) less the +2/N^2 bias -4.8e-5; tolerance = FE 1.3e-6 + bias 4.8e-5 + inertia/upwind 1.2e-4 + junction 5.3e-4 = 6.99e-4.",
+     "expected": 0.7959,
+     "tol": 0.0007
+    },
+    "gate3": {
+     "_why": "|q1 + q2 - q0| / q0 <= 1e-9 (design gate 3); the floors are the instrument's <= 5e-13 and the solver's ~3.2e-13 (SUSPECTED).",
+     "tol": 1e-09
+    },
+    "gate4": {
+     "_why": "Design gate 4: G_FV (1 + 2/N^2) = 12 nu Ubar / W^2 to 1e-3 in each window, Ubar = q/(W depth) of that section's own measured flux; windows from the centreline node in D0 (parent x in [-3.5, -1.7], d1 s in [2.0, 3.5], d2 s in [1.6, 3.5]), band |n| <= 0.25 W; the same fit as probes/na06_stokes.py grad_fit.",
+     "windows_D0": {
+      "parent": [
+       -3.5,
+       -1.7
+      ],
+      "d1": [
+       2.0,
+       3.5
+      ],
+      "d2": [
+       1.6,
+       3.5
+      ]
+     },
+     "band_fraction": 0.25,
+     "tol": 0.001
+    },
+    "gate5": {
+     "_why": "Design gate 5: the parent mean q0/(W0 depth) = (0.94 cm/s centreline / the measured u_max/u_mean 1.500000) x (S_L/S_t = 0.2) sim, x (1 + 2.5e-4) (the FV conductance bias at fixed p), +- 2.1e-3 relative (FE 7.7e-6 + bias 2.5e-4 + inertia 4.7e-4 at Re 0.108 + junction 1.3e-3 = 2.03e-3). The centreline maximum of the parent window is REPORTED, not gated.",
+     "centreline_phys_m_s": 0.0094,
+     "u_max_over_u_mean": 1.5,
+     "sim_to_phys_velocity": 5.0,
+     "u_mean_sim_m_s": 0.0012533333333333333,
+     "fv_bias": 0.00025,
+     "tol": 0.0021
+    },
+    "gate6": {
+     "_why": "Design gate 6 (rev. 2.2): 18 tau1 = 9.1757e-3 s sim (tau1 = D0^2/(pi^2 nu) = 5.0976e-4 s sim); the controlDict writes at writeControl runTime, writeInterval = tau1 (the series' write_interval_s), and endTime is the series' end_time_s = 9.196e-3 s = 18 tau1 + 2.03e-5 s (6.5 dt_est). OF-13 Time.C L1196-1208 writes at the step whose t + dt/2 crosses k tau1 for ANY dt and does not adjust dt (only adjustableRunTime does, L1056), so the 18 tau1 write always happens before the stop at endTime - dt/2 provided the margin is at least dt (the generator requires 3 dt_est <= margin <= 0.1 tau1). dt_est_s = dtWave(be = I) = 3.1188e-6 s (probes/na09_gate.txt) is now used ONLY for that margin and the expected step count. The last FOUR written times T_a..T_d must have T_d >= 17.9 tau1, T_a >= 14.5 tau1 and each interval in [0.8, 1.25] tau1 (else INSTRUMENT_FAIL; the limits are unchanged from rev. 2.1); q0, q1, q2 change < 1e-6 per interval, and max|U(T_d) - U(T_c)|/max|U(T_d)| < 1e-6.",
+     "tau1_s": 0.00050976,
+     "end_tau1": 18.0,
+     "dt_est_s": 3.1188e-06,
+     "t_d_min_tau1": 17.9,
+     "t_a_min_tau1": 14.5,
+     "interval_tau1": [
+      0.8,
+      1.25
+     ],
+     "tol": 1e-06
+    },
+    "gate7": {
+     "_why": "Design gate 7: max(lambda1) - 1 <= 2e-2 (the EMPIRICAL expectation is 1.5e-3, the limit is x13 above it and x50 below the failure value ~1), max thetaNetRef = 0 exactly, max content (1 - q) <= 1e-12. lambda1 = sqrt(largest eigenvalue of be det(be)^(-1/3)), the replay of probes/na03_gtan.py.",
+     "lambda1_minus_1_max": 0.02,
+     "content_max": 1e-12
+    }
+   },
+   "measures": "Per step: PHASE_CLOT_DT, inletFlux, outletFlux (orientedSum of phi), inletP, outletP (areaAverage of p). At the written times (runTime, every tau1 = 5.0976e-4 s): phi, p, U, be, q, thetaNetRef; the per-daughter fluxes q1 and q2 from phi on the outlet patch split by face-centre y; gate 1's record postProcessing/yGate/gate1.json.",
+   "_every_number_and_its_source": {
+    "inlet_pressure_m2_s2": "1.22185e-3 m2/s2 kinematic sim = 1.28295 Pa sim = 32.074 Pa physical: the drive at which the parent CENTRELINE velocity is 0.94 cm/s physical (design section 3: Stokes 51.2055 Pa phys per cm/s of parent MEAN, +4.71e-4 inertia at Re 0.108, divided by the measured u_max/u_mean 1.5; red team 11 change E recomputed 1.22186e-3 independently). Alireza 2026-10-14 'Centreline = 0.94 (Recommended)'.",
+    "rho_kg_m3 / nu_m2_s": "1050 and 6.7636023629e-7 m2/s sim = the 5a series' plasma (mu 2.1305 mPa s = plasma 1.20 x eta_rel 1.775 at 30 um; 4% below Pries at 35 um, a recorded limit, design section 1).",
+    "end_time_s": "9.196e-3 s sim = 18 tau1 (9.1757e-3) + 2e-5 s (about 6 dt): design gate 6, rev. 2.2. y_gate_series_refusal requires the margin past 18 tau1 to lie in [3 dt_est = 9.4e-6, 0.1 tau1 = 5.1e-5] s, so the 18th write precedes the stop at endTime - dt/2.",
+    "write_interval_s": "5.0976e-4 s = tau1 = D0^2/(pi^2 nu) (design gate 6, rev. 2.2). The controlDict writes writeControl runTime; writeInterval 5.0976e-4, i.e. the generic main-loop write, read back by y_gate_controldict_apply. y_gate_series_refusal requires it equal gate6.tau1_s to 1e-9.",
+    "delta_t_s / max_delta_t_s / max_co / adjust_time_step": "5e-6 / 5e-5 / 0.5 / yes: the 5a series' (09 table, kept). The first step is a few percent above dtWave 3.1188e-6 and the solver shortens it, as S25_5a_tan's did.",
+    "geometry": "see geometry_override._why and y_gate.mesh/geometry_sim _why.",
+    "non_orthogonal_correctors": "see _why_non_orthogonal_correctors."
+   },
+   "_why_children_1": "1 = B79_Y_GATE, the Y gate's one child (ONE session, 1 core, ~8.0-9.4 h)."
   }
  },
  "children": [
@@ -3572,6 +3746,63 @@
    "stop_after_step": 47,
    "restart_from_child": "B78_RT_5a_A",
    "restart_index": 42
+  },
+  {
+   "adhesive_strength_pa": 0.468,
+   "be_div_scheme": "Gauss upwind",
+   "bond_hold_dilation": 4,
+   "bond_hold_penalty": 10000000.0,
+   "clot_erosion_rate": 0.0,
+   "platelet_bind_rate": 5.04,
+   "platelet_diffusivity": 0.0,
+   "platelet_inlet_density_m3": 0.0,
+   "platelet_number_density_m3": 250000000000000.0,
+   "platelet_yield_m3": 4.6296e-17,
+   "release_support_limit": 0.5,
+   "residual_chi": 0.00022222,
+   "skeleton_dilute_drag_rate": 0.0,
+   "skeleton_volume_fraction": 0.45,
+   "platelet_adhesion_speed": 0.001209,
+   "network_pressure_weight": "networkPresence",
+   "network_damage_onset_stretch": 2.105,
+   "network_damage_stretch_scale": 1.0,
+   "network_critical_stretch": 2.8,
+   "network_release_time_s": 0.00033,
+   "final_relaxation_unity": true,
+   "n_correctors": 6,
+   "proj_site_log": "yes",
+   "platelet_transport_only": true,
+   "material_label_basis": "transportedLabel",
+   "k0p_m2": 9.7222222e-14,
+   "momentum_pressure_coupling": "blockCoupled",
+   "network_viscosity": "kelvinVoigt",
+   "tau_v_s": 0.001474,
+   "time_scale": 8.333333333333334,
+   "Gc_j_m2": 0.3698,
+   "v_p_m3": 4.6296e-17,
+   "clot_erosion_tau_pa": 0.12,
+   "skeleton_law": "valanisLandelTrilinear",
+   "skeleton_law_coeffs": {
+    "E1_pa": 9.36,
+    "E2_pa": 232.8,
+    "D1": 0.107,
+    "D2": 0.574,
+    "kappa": 0.98
+   },
+   "elastic_courant_modulus": "tangent",
+   "elastic_courant": 0.5,
+   "series": "s25_ygate",
+   "child_id": "B79_Y_GATE",
+   "wall_budget_h": 10.0,
+   "_every_number_and_its_source": {
+    "inherited": "EVERY key not named below is S25_5a_tan's, unchanged (B76-5a, the S25 build at S25's units S_L 5/3, S_t 25/3, S_P 0.04): the LT skeleton law, time_scale 25/3, k0p, Gc, tau_v, the platelet keys (passive: platelet_transport_only, inlet density 0), adhesive_strength_pa 0.468 (UNSOURCED; INERT here: Us has injury 0 and bonded 0, so no face is bonded), the bond-hold keys, elastic_courant 0.5 tangent. The Y gate has no clot, so the clot keys do nothing; they are kept so the DICTIONARY is the one the clot children will run (design section 3: 'as the 5a series').",
+    "dropped from S25_5a_tan": "wall_shear_rate_1_s and mean_velocity_m_s (the flow is the series' pressure drive; the generator refuses them on a Y child), frame_interval_s and frame_fields (frames are written at adjustableRunTime, which this child does not use), end_time_s and write_interval_s (the series' pre-registered schedule).",
+    "wall_budget_h": "10.0 h = the stopAtClockTime backstop: the gate's cost is 8.0-9.4 h (design section 5: 2,943 steps at 9.8-11.5 s/step, SUSPECTED, scaled from the 5a clot run by cell count N^1-N^1.5) inside one Colab session of ~11 h usable less ~0.7 h notebook set-up and ~0.05 h child set-up. At the budget the solver writes and stops (the assessor then reports gate 6 NOT_RUN: the run did not reach its end time).",
+    "output": "18 full writes (k = 1..18, at runTime tau1) of 78,912 cells: 18 x 19.5 MB x 1.274 (writePrecision 17) x 78,912/31,360 = 1.10 GB projected by the generator's guard against OUTPUT_BUDGET_GB 8.0 (design section 5: 'small overall').",
+    "write schedule (series keys end_time_s, write_interval_s)": "writeControl runTime; writeInterval 5.0976e-4 (= tau1, the series' write_interval_s); endTime 9.196e-3 (the series'): design rev. 2.2, after case-engineer 12 flagged that the rev. 2.1 'timeStep 163' met T_d >= 17.9 tau1 only for dt in [3.1100, 3.1188]e-6. OF-13 Time.C L1196-1208 writes at the step whose t + dt/2 crosses k tau1 for any dt, so 18 writes (k = 1..18) happen whatever dt is; NOT adjustableRunTime (that would change dt; OI-80 is the writeAlign path). The child carries no write_interval_s or end_time_s of its own (the generator refuses them on a Y child)."
+   },
+   "expectation": "PRE-REGISTRATION. COPIED VERBATIM from research/designs/2026-10-14-case-y-bifurcation-gate.md rev. 2.2 (CE, 2026-10-14; red team 11's changes A-F applied; APPROVED by Alireza 2026-10-14 as rev. 2.1, 'Approve as designed (Recommended)'; rev. 2.2 = the runTime write schedule and nNonOrthogonalCorrectors 2 confirmed, no gate or tolerance changed), section 4 below this line, taken from the file by its headings and not retyped. THE CHILD: the order-4 asymmetric planar Y on the external mesh constant/yGate/na09_blockMeshDict (byte for byte), flow only (c = +1 everywhere), pressure drive p_in 1.22185e-3 m2/s2 kinematic, solver 1a94473d (S25.1), ONE session on the 1-core runtime, ~8.0-9.4 h. The gates are scored by scripts/y_gate/y_gate_report.py (gates 2-7 and the per-daughter flux instrument) and scripts/y_gate/y_mesh_gate.py (gate 1, the mesh-only pre-step that aborts the child before foamRun).\n\n## 4. Pre-registration (the gate is READY only if ALL pass)\n\nExpected values are at Re 0.108. Every tolerance is a derived budget (SUSPECTED: derived, not measured). Numerics 09 rows are cited as #n.\n\n### 1. The mesh is real\n\nThis is a MESH-ONLY step. blockMesh + checkMesh run first, and the child aborts before `foamRun` on any mismatch, so a failure costs minutes, not a session.\n\n- blockMesh exits 0, and checkMesh reports 0 negative volumes.\n- The \u00a72 counts match EXACTLY: points, cells, faces, internal faces and every patch.\n- Max non-orthogonality is 24.41 \u00b1 0.01\u00b0, and skewness is 0.657 \u00b1 0.01.\n- **The points:** the reference is `na09_points_ref_2d.npy` (the z = 0 plane, metres sim, 79,976 points). The comparison is a two-way KD-tree max distance, so the point order does not matter. The replica's own round trip is 1.3e-10 m. The check is a WRAPPER around `na09_roundtrip.py`, shipped with `na06_ymesh.py` and scipy (red team 11 change B). It exits NON-ZERO unless all three hold:\n  - the `points` header says `format ascii`, and no `points.gz` exists;\n  - n on z = 0 is 79,976 in both sets;\n  - both directed max distances are **\u2264 1e-9 m**.\n\n  An unreadable file is a FAIL, never a crash that reads as a pass.\n\n**A FAIL is** any mismatch. It means the replica, and so every reference below, is wrong for the real mesh.\n\n### 2. The flow split\n\nq1/q0 (large daughter / parent) at the end time = **0.79590 \u00b1 7e-4**.\n- **The expected value** is the NS split, 0.795946: Stokes 0.796066, then the inertia \u22121.80e-4 at Re 0.162, scaled linearly to \u22121.20e-4 at Re 0.108 (#17). Subtract the +2/N\u00b2 bias, \u22124.8e-5.\n- **The tolerance** is FE 1.3e-6 + bias 4.8e-5 + inertia/upwind 1.2e-4 (100% of the effect) + the junction allowance 5.3e-4 (|J|\u00b7(h_J/ra)\u00b7skew, first order in skewness; #15) = 6.99e-4.\n- **A FAIL looks like:**\n  - a junction-blind (network) result of 0.809042, 18.8\u00d7 the tolerance away;\n  - a d2 width error of \u2265 0.25%. The sensitivity is \u22120.53 per unit width.\n- The gate cannot detect missing inertia (0.17\u00d7 the tolerance), and does not claim to.\n\n### 3. Mass\n\n|q1 + q2 \u2212 q0| / q0 \u2264 **1e-9** at the end time, from the gate-2 instrument plus `inletFlux`.\n- **The floors:** the instrument's is \u2264 5e-13 (writePrecision 12); the solver's is about 3.2e-13 at this drive's q0 of 7.31e-14 m\u00b3/s sim (sumLocal transferred from the 5a log; SUSPECTED; red team 11 N5). Both are about 3,000\u00d7 under the limit.\n- **A FAIL looks like:** a missing or duplicated outlet face is \u2265 7e-3.\n\n### 4. The Poiseuille gradients\n\nThe windows are measured from the centreline node, with the band |n| \u2264 0.25 w:\n- parent x \u2208 [\u22123.5, \u22121.7] D0;\n- d1 s \u2208 [2.0, 3.5] D0 (moved from 1.7 because d1 is now 1.0 D0 wide);\n- d2 s \u2208 [1.6, 3.5] D0.\n\nIn each window the test is G_FV\u00b7(1 + 2/N\u00b2) = 12\u03bc\u016a/W\u00b2, **to 1e-3**, where \u016a is that section's own measured mean.\n- **The sign:** FV conductance reads high (q0 at fixed p is +2.51e-4), so the FV gradient at a given flow reads low.\n- **The widths are pinned at the mesh values** (red team 11 change D): W = 58.333, 58.333 and 36.050 \u00b5m sim (d2 = 0.618 D0, NOT \u221a0.3815 = 0.6177). N = 100, 88 and 60.\n- **The negatives:** W2 = 0.6177 must FAIL d2 (an error of 1.67e-3), and so must the flipped bias sign (1.11e-3).\n- The contamination is \u2264 8e-7 (#20), and the largest bias correction is 5.6e-4 (#22).\n- **A FAIL looks like:** a \u03bd error of > 1e-3, or a section that is not developed.\n\n### 5. The drive calibration\n\nThe parent mean q0/(W0\u00b7depth) = 0.62667 cm/s physical \u00d7 (1 + 2.5e-4), **\u00b1 2.1e-3 relative**. That mean is the 0.94 cm/s centreline \u00f7 the measured 1.500000. The centre and p_in now cite the same Re, 0.108 (change E).\n- **The tolerance** is FE 7.7e-6 + bias 2.5e-4 + inertia 4.7e-4 (at Re 0.108) + junction 1.3e-3 = 2.03e-3 (#24, rescaled to Re 0.108).\n- The centreline maximum of the parent window is REPORTED alongside it, against 0.94 cm/s. It is not gated, because the nearest cell centre sits h/2 off the axis.\n- **A FAIL looks like:** a p_in mis-set or a \u03bd error above 0.2%. The inverted-ratio p_in (72.15 Pa) would read 2.25\u00d7 high, \u00d7600 the tolerance.\n\n### 6. Steady state\n\n- **The run length:** 18\u03c41 = 9.1757e-3 s sim, which is \u2265 2,943 steps at dt 3.1188e-6; endTime is 9.196e-3 (see the writes). \u03c41 = 5.0976e-4 s sim.\n- **The writes (change A):** q1 and q2 are not logged per step; they come from the written `phi`.\n  - The child writes with `writeControl runTime; writeInterval 5.0976e-4` (= \u03c41). This is CE ruling rev. 2.2, after case-engineer 12 flagged the dt risk.\n    - OF-13 Time.C L1196-1208 writes at the step whose t + dt/2 crosses k\u00b7\u03c41, for ANY dt, and does not adjust dt; only adjustableRunTime does (L1056). The writeAlign path is OI-80.\n    - The rev. 2.1 `timeStep 163` met T_d \u2265 17.9\u03c41 only for dt in [3.1100, 3.1188]e-6.\n    - endTime = **9.196e-3** (18\u03c41 + 2e-5, about 6 dt), so the 18\u03c41 write always happens before the stop at endTime \u2212 dt/2.\n  - The template's `timeStep 1` is overridden for this child only.\n- **The window:** the last four written times T_a < T_b < T_c < T_d.\n  - **The instrument requirements:** T_d \u2265 17.9\u03c41, T_a \u2265 14.5\u03c41, and each interval is in [0.8, 1.25]\u03c41. Any of these unmet is a FAIL on the instrument, labelled as such.\n  - **Why the limits are safe:** a dt off by \u00b110% moves the expected change to at most 3.4e-7.\n- **The criterion:** for each of q0 (`inletFlux` at the written step), q1 and q2 (the instrument), the change over each of the three intervals, divided by the value at T_d, is **< 1e-6**. The gate takes the maximum over the intervals.\n- **The full field:** max|U(T_d) \u2212 U(T_c)| / max|U(T_d)| < 1e-6.\n- **The expected change** comes from red team 11 N4 (`probes/rt11_eig.py`, an FE eigenproblem):\n  - the slowest unsteady-Stokes mode is 9.7303 \u03bd/D0\u00b2, so \u03c4_slow = 1.0143\u03c41;\n  - the change in the first interval at 18\u03c41 is 2.37e-7, a 4.2\u00d7 margin, and the full field changes by 3.3e-8;\n  - passing needs at least 16.54\u03c41; a run truncated at 16.4\u03c41 reads 1.15e-6 and FAILS.\n  - The mode amplitude of 1 is SUSPECTED.\n- **The solver noise is far below the limit:** p's tolerance is 1e-10 absolute against p_in of 1.22e-3, and U's is 1e-12.\n- **A FAIL looks like:** a junction mode slower than \u03c41. That would itself be a finding about the geometry.\n\n### 7. No clot, so no clot gates\n\n- **Expected (ONE number, change C):** \u03bb1 \u2212 1 \u2248 **1.5e-3** at the wall, the EMPIRICAL value. It is the 5a content-free far-upstream wall reading (1.4e-3, `na06_bloodbe.txt` L7), scaled to this drive (\u00d7~2/3, giving 0.9-1.5e-3); the upper end is used.\n  - The relaxation formula (wall Wi = 6\u016a/W / 1e6 = 1.29e-4) is 11\u00d7 lower. **That gap is UNEXPLAINED** and is recorded as a question for the clot children, where \u03bb1 is the wall-adhesion input.\n  - The apex shear may be 2-3\u00d7 the wall value, giving up to about 4.5e-3.\n- **What failure looks like:** broken or absent relaxation gives \u03bb1 \u2212 1 ~ \u03b3\u0307t \u2248 1; a deposited \u03b8NetRef gives a stretched network.\n- **The limits:**\n  - max(\u03bb1) \u2212 1 \u2264 **2e-2**. That is \u00d713 above the empirical expectation, \u00d74.4 above the apex estimate, and \u00d750 below the failure value. 5e-3 would have left only \u00d73.4, with a false-FAIL risk at the apex;\n  - max \u03b8NetRef = 0 exactly;\n  - max content \u2264 **1e-12**. The 5a run's far upstream reached 3.7e-15.\n- **A FAIL looks like:** deposited network, or broken relaxation.",
+   "_what_a_failing_run_looks_like": "THE GATE IS NOT READY (and the CHILD FAILS) on any of: gate 1 (any mismatch of the mesh: blockMesh or checkMesh not clean, a count off, non-orthogonality outside 24.41 +- 0.01 deg, skewness outside 0.657 +- 0.01, the points file not ascii or any point farther than 1e-9 m from the reference, the outlet not split 88/60) -- the child then aborts BEFORE foamRun and costs minutes; gate 2 (q1/q0 outside 0.79590 +- 7e-4: a junction-blind 0.809042 is 18.8x the tolerance away; a d2 width error >= 0.25%); gate 3 (|q1+q2-q0|/q0 > 1e-9: a missing or duplicated outlet face is >= 7e-3); gate 4 (a window gradient off 12 nu Ubar/W^2 by more than 1e-3 after the (1 + 2/N^2) bias: a nu error above 1e-3, an undeveloped section, W2 = 0.6177 on d2, a flipped bias sign on d2); gate 5 (the parent mean off 0.62667 cm/s x (1 + 2.5e-4) by more than 2.1e-3: a mis-set p_in, a nu error above 0.2%); gate 6 (a flux changing by 1e-6 or more over an interval, the U field changing by 1e-6 or more between T_c and T_d: a junction mode slower than tau1, which would itself be a finding); gate 7 (max lambda1 - 1 above 2e-2: broken relaxation gives ~1; any thetaNetRef above 0; content above 1e-12). AN INSTRUMENT FAILURE IS LABELLED AS SUCH (INSTRUMENT_FAIL, not FAIL): the per-daughter sum differing from the logged outletFlux by more than 1e-10 relative, the outlet not split 88/60 in 0/C, fewer than four written times with phi, T_d < 17.9 tau1 (writes are at runTime tau1 now, so this means a truncated run), T_a < 14.5 tau1 or an interval outside [0.8, 1.25] tau1, a file that cannot be read. The run itself fails on: a FatalError, a NaN, the 10 h clock stop before 9.196 ms, or an exit code other than 0. Read run-exit-code.txt, log.yMeshGate, postProcessing/yGate/gate1.json, log.checkMesh and log.phaseClotAxisymmetricFluid first."
   }
  ],
  "s25_paired_comparisons": [

@@ -160,6 +160,8 @@ import initialise_cases as mural_init  # noqa: E402
 # runs, against the SAME formula rather than a transcription of it.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import apply_throat  # noqa: E402
+# The Y-bifurcation gate's readers (pure python), imported so the generator's read-back of the written 0/ fields uses the assessor's own parser.
+sys.path.insert(0, str(Path(__file__).resolve().parent / "y_gate"))
 
 
 
@@ -948,9 +950,9 @@ def s25_5a_refusal(child: dict, series: dict) -> None:
     its parent by exactly this key. The 5a series is the LT series at the S25 units: a child must name LT, and the series
     must declare its plasma (rho_kg_m3 and nu_m2_s), which the writer copies into physicalProperties as well."""
     cid = child["child_id"]
-    in5a = child["series"] in S25_5A_SERIES
+    in5a = child["series"] in S25_5A_SERIES + Y_GATE_SERIES
     if "elastic_courant" in child and not in5a:
-        raise ValueError(f"{cid}: elastic_courant is read only for the series {', '.join(S25_5A_SERIES)}; in "
+        raise ValueError(f"{cid}: elastic_courant is read only for the series {', '.join(S25_5A_SERIES + Y_GATE_SERIES)}; in "
                          f"'{child['series']}' it would be silently inert.")
     if not in5a:
         return
@@ -969,6 +971,8 @@ def s25_5a_refusal(child: dict, series: dict) -> None:
                          f"series' nu into constant/physicalProperties, which the momentum equation reads.")
     wi = child.get("write_interval_s", series["write_interval_s"])
     end = child.get("end_time_s", series["end_time_s"])
+    if child["series"] in Y_GATE_SERIES:
+        return          # the Y child writes at runTimes k x tau1 with endTime 18 tau1 + a margin; y_gate_series_refusal checks that schedule
     if not _is_multiple(end, wi):
         raise ValueError(f"{cid}: end_time_s {end} is not a whole number of write intervals ({wi}); OpenFOAM-13 would "
                          f"end the run without a full write.")
@@ -977,7 +981,7 @@ def s25_5a_refusal(child: dict, series: dict) -> None:
 def s25_5a_write(case: Path, props: Path, child: dict, series: dict) -> None:
     """The 5a-only entry: elasticCourant in phaseClotProperties. (The plasma's nu in constant/physicalProperties is now
     written for every series that declares one, by series_plasma_write: OI-76.)"""
-    if child["series"] not in S25_5A_SERIES:
+    if child["series"] not in S25_5A_SERIES + Y_GATE_SERIES:
         return
     add_or_replace_entry(props, "elasticCourant", repr(float(child["elastic_courant"])))
 
@@ -992,7 +996,7 @@ def _scalar_entry(path: Path, key: str, cid: str) -> float:
 
 def s25_5a_readback(case: Path, props: Path, child: dict, series: dict) -> None:
     """Read the 5a-only entry back from the WRITTEN file (not from the expression that wrote it)."""
-    if child["series"] not in S25_5A_SERIES:
+    if child["series"] not in S25_5A_SERIES + Y_GATE_SERIES:
         return
     if _scalar_entry(props, "elasticCourant", child["child_id"]) != float(child["elastic_courant"]):
         raise ValueError(f"{child['child_id']}: elasticCourant written as {_scalar_entry(props, 'elasticCourant', child['child_id'])!r}, "
@@ -2087,7 +2091,7 @@ def validate_stage2_platelet(child: dict, content_operator: str) -> None:
     end_time = float(child.get("end_time_s", 0.0))
 
 
-def write_platelet_number_density(case: Path, value: float, inlet_value: float) -> None:
+def write_platelet_number_density(case: Path, value: float, inlet_value: float, wall_patches: tuple = ("bottom", "top")) -> None:
     """Write 0/nP with the PLANAR patch names this case's mesh actually has.
 
     WHY THIS EXISTS AND WHY IT REFUSES A MISSING VALUE. nP is READ_IF_PRESENT
@@ -2120,12 +2124,269 @@ def write_platelet_number_density(case: Path, value: float, inlet_value: float) 
     target = case / "0" / "nP"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(text)
+    walls = "".join(f"    {w} {{ type zeroGradient; }}\n" for w in wall_patches)
     mural_gen.field_boundary(target, f"""    inlet {{ type fixedValue; value uniform {inlet_value!r}; }}
     outlet {{ type zeroGradient; }}
-    bottom {{ type zeroGradient; }}
-    top {{ type zeroGradient; }}
-    front {{ type empty; }}
+{walls}    front {{ type empty; }}
     back {{ type empty; }}""")
+
+
+# =====================================================================================================================
+# THE Y-BIFURCATION GEOMETRY GATE (design research/designs/2026-10-14-case-y-bifurcation-gate.md rev. 2.1; Route B, flow only;
+# Alireza approved it as designed 2026-10-14). ONE child on an EXTERNAL mesh: the 15-block blockMeshDict of docket probes/na09_blockMeshDict,
+# copied BYTE FOR BYTE (constant/yGate/na09_blockMeshDict, pinned by sha256 in the series' y_gate block) instead of the structured
+# nx x ny block mural_gen.planar_mesh() writes. Everything else is this pipeline's: the template's dictionaries, the S25 5a dictionary keys,
+# mural_gen.field_boundary() for the boundary conditions, the solver, the runner, the assessor and the package.
+#
+# WHAT IT REPLACES FOR THIS SERIES ONLY (every other child's generation is untouched; tests/negatives in dry_run.py `ygen`):
+#   the structured-geometry checks (nx*ny*nz, h = channel/ny), the gamma-dot/U check, mural_gen.configure_fields (patch names top/bottom),
+#   nP's patch names, the mural clot initialiser (no clot), seed_stage2_content's patch names, the function objects (flux objects only: no
+#   stopWatcher, no probes at channel coordinates), the write schedule (runTime at tau1, not adjustableRunTime) and nNonOrthogonalCorrectors.
+# =====================================================================================================================
+Y_GATE_SERIES = ("s25_ygate",)
+Y_GATE_STALE_GEOMETRY = ("nx", "ny", "channel_length_m", "channel_height_m", "injury_length_m", "injury_centre_x_m")
+Y_GATE_BLOCKS = ("mesh", "geometry_sim", "gate2", "gate3", "gate4", "gate5", "gate6", "gate7")
+PER_TIME_DIR_CELLS = 31360          # the mesh behind PER_TIME_DIR_GB (run 20260906-004750)
+Y_GATE_PATCHES = ("inlet", "outlet", "wall", "front", "back")
+# THE PATCH x FIELD TABLE (design section 3), the types the generator writes and reads back. Anything beyond fixedValue, zeroGradient,
+# noSlip and empty was read in /Volumes/OpenFOAM-13/source (pressureInletOutletVelocity: phi default "phi", tangentialVelocity optional,
+# `value` required) or in the project's own clotWallAdhesionFvPatchVectorField.C L50-L135 (adhesiveStrength > 0 required, sigma, q,
+# injury, bonded optional, `value` optional; the keys c and clotThreshold are REFUSED by it).
+_ZG = {"inlet": "zeroGradient", "outlet": "zeroGradient", "wall": "zeroGradient", "front": "empty", "back": "empty"}
+Y_GATE_BCS = {
+    "U": {"inlet": "zeroGradient", "outlet": "pressureInletOutletVelocity", "wall": "noSlip", "front": "empty", "back": "empty"},
+    "p": {"inlet": "fixedValue", "outlet": "fixedValue", "wall": "zeroGradient", "front": "empty", "back": "empty"},
+    "Us": {"inlet": "zeroGradient", "outlet": "zeroGradient", "wall": "clotWallAdhesion", "front": "empty", "back": "empty"},
+    "w": {"inlet": "fixedValue", "outlet": "zeroGradient", "wall": "zeroGradient", "front": "empty", "back": "empty"},
+    "nP": {"inlet": "fixedValue", "outlet": "zeroGradient", "wall": "zeroGradient", "front": "empty", "back": "empty"},
+    "c": dict(_ZG), "Dg": dict(_ZG), "H": dict(_ZG), "muC": dict(_ZG), "thetaC": dict(_ZG), "thetaH": dict(_ZG),
+}
+
+
+def _sha256_file(path: Path) -> str:
+    import hashlib
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def y_gate_series_refusal(name: str, series: dict) -> None:
+    """Every way the Y series' keys could be silently inert, stale or inconsistent, on the CONTROLS entry. `y_gate` and
+    `non_orthogonal_correctors` are read ONLY for the Y series, and required there."""
+    is_y = name in Y_GATE_SERIES
+    for key in ("y_gate", "non_orthogonal_correctors"):
+        if (key in series) != is_y:
+            raise ValueError(
+                f"series {name}: {key} is "
+                + ("required by the Y series (it is read by the generator and the assessor)" if is_y else
+                   "read only for the Y series " + ", ".join(Y_GATE_SERIES) + "; here it would be silently inert"))
+    if not is_y:
+        return
+    y = series["y_gate"]
+    missing = [b for b in Y_GATE_BLOCKS if not isinstance(y.get(b), dict)]
+    if missing:
+        raise ValueError(f"series {name}: y_gate lacks the blocks {missing}")
+    n = series["non_orthogonal_correctors"]
+    if isinstance(n, bool) or not isinstance(n, int) or n < 0:
+        raise ValueError(f"series {name}: non_orthogonal_correctors {n!r} must be an integer >= 0")
+    for key, want in (("pressure_driven", True), ("adjust_time_step", True), ("wall_bond_free", True), ("growth", False),
+                      ("core_shell", False)):
+        if bool(series.get(key)) != want:
+            raise ValueError(f"series {name}: {key} must be {want} (a flow-only, pressure-driven, content-free-wall gate)")
+    if series.get("step1_watcher"):
+        raise ValueError(f"series {name}: step1_watcher must be off: clot_free_watcher.py waits for a clot's V1 key and would "
+                         f"either stop a clot-free run or wait on a log line that never comes")
+    if series.get("wall_condition") != "clotWallAdhesion":
+        raise ValueError(f"series {name}: wall_condition must be clotWallAdhesion (design section 3: Us on the wall)")
+    m = y["mesh"]
+    for rel_key, sha_key in (("blockMeshDict", "blockMeshDict_sha256"), ("points_ref", "points_ref_sha256")):
+        f = CASE / m[rel_key]
+        if not f.is_file():
+            raise ValueError(f"series {name}: y_gate.mesh.{rel_key} {m[rel_key]!r} is not in the case ({f})")
+        if _sha256_file(f) != m[sha_key]:
+            raise ValueError(f"series {name}: {m[rel_key]} is not the pinned file (sha256 {_sha256_file(f)} != {m[sha_key]}); the "
+                             f"dictionary is copied byte for byte and never regenerated")
+    geo = series["geometry_override"]
+    if geo.get("expected_cell_count") != m["counts"]["nCells"]:
+        raise ValueError(f"series {name}: geometry_override.expected_cell_count {geo.get('expected_cell_count')!r} != the mesh's "
+                         f"{m['counts']['nCells']}")
+    stale = [k for k in Y_GATE_STALE_GEOMETRY if geo.get(k) is not None]
+    if stale:
+        raise ValueError(f"series {name}: geometry_override sets {stale}, which have no meaning on an unstructured mesh and are read by "
+                         f"nothing in the Y path; they must be null")
+    if set(m["patches"]) != set(Y_GATE_PATCHES):
+        raise ValueError(f"series {name}: y_gate.mesh.patches {sorted(m['patches'])} != {sorted(Y_GATE_PATCHES)}")
+    sc = series["clot_override"]
+    if sc.get("shape") != "none":
+        raise ValueError(f"series {name}: clot_override.shape must be 'none' (no clot)")
+    # ONE number, two readers: the end time, the write interval and the step-count schedule agree with the gate's own constants.
+    g6, geo_s = y["gate6"], y["geometry_sim"]
+    nu = series["nu_m2_s"]
+    tau1 = geo_s["D0_m"] ** 2 / (math.pi ** 2 * nu)
+    if not math.isclose(tau1, g6["tau1_s"], rel_tol=2e-4):
+        raise ValueError(f"series {name}: gate6.tau1_s {g6['tau1_s']} != D0^2/(pi^2 nu) = {tau1:.6e}")
+    # The write schedule (design rev. 2.2): writeControl runTime, writeInterval = tau1, endTime = 18 tau1 + a margin of 3 dt_est .. 0.1 tau1.
+    # OF-13 Time.C L1196-1208 writes at the step whose t + dt/2 crosses k tau1 for ANY dt, so the 18th write always comes; the run stops at
+    # endTime - dt/2, so endTime must be at least 18 tau1 + dt (3 dt_est here) for that write to happen before the stop.
+    if "write_every_n_steps" in g6:
+        raise ValueError(f"series {name}: gate6.write_every_n_steps was the rev. 2.1 step schedule (timeStep); rev. 2.2 writes at runTime tau1")
+    if not math.isclose(series["write_interval_s"], g6["tau1_s"], rel_tol=1e-9):
+        raise ValueError(f"series {name}: write_interval_s {series['write_interval_s']} != gate6.tau1_s {g6['tau1_s']} "
+                         f"(design rev. 2.2: writeControl runTime, writeInterval tau1)")
+    margin = series["end_time_s"] - g6["end_tau1"] * g6["tau1_s"]
+    if not (3 * g6["dt_est_s"] <= margin <= 0.1 * g6["tau1_s"]):
+        raise ValueError(f"series {name}: end_time_s {series['end_time_s']} is {margin:.4e} s past {g6['end_tau1']} tau1; it must be in "
+                         f"[3 dt_est = {3 * g6['dt_est_s']:.4e}, 0.1 tau1 = {0.1 * g6['tau1_s']:.4e}] s (the 18th write must precede the stop at "
+                         f"endTime - dt/2; a longer tail buys nothing)")
+    g5 = y["gate5"]
+    want_u = g5["centreline_phys_m_s"] / g5["u_max_over_u_mean"] / g5["sim_to_phys_velocity"]
+    if not math.isclose(want_u, g5["u_mean_sim_m_s"], rel_tol=1e-6):
+        raise ValueError(f"series {name}: gate5.u_mean_sim_m_s {g5['u_mean_sim_m_s']} != centreline/1.5/(S_t/S_L) = {want_u!r}")
+    w = geo_s["widths_m"]
+    if not (math.isclose(w[0], geo_s["D0_m"], rel_tol=1e-12) and math.isclose(w[1], geo_s["D0_m"] * geo_s["d1_over_D0"], rel_tol=1e-12)
+            and math.isclose(w[2], geo_s["D0_m"] * geo_s["d2_over_D0"], rel_tol=1e-12)):
+        raise ValueError(f"series {name}: geometry_sim.widths_m {w} are not D0, d1 x D0, d2 x D0 (pinned at the mesh values, red team 11 D)")
+    if not (len(geo_s["N"]) == 3 and geo_s["N"] == [100, 88, 60]):
+        raise ValueError(f"series {name}: geometry_sim.N {geo_s['N']} != [100, 88, 60] (the cells across the parent, d1 and d2)")
+    ob = m["outlet_faces"]
+    if ob["d1_y_positive"] + ob["d2_y_negative"] != m["patches"]["outlet"]:
+        raise ValueError(f"series {name}: the outlet split {ob} does not add up to the outlet patch's {m['patches']['outlet']} faces")
+
+
+def y_gate_child_refusal(child: dict, series: dict) -> None:
+    cid = child["child_id"]
+    is_y = child["series"] in Y_GATE_SERIES
+    if "write_every_n_steps" in child:
+        raise ValueError(f"{cid}: write_every_n_steps is read by nothing (it was the Y gate's rev. 2.1 step schedule; rev. 2.2 writes at "
+                         f"runTime tau1 from the series' write_interval_s)")
+    if not is_y:
+        return
+    y = series["y_gate"]
+    for key in ("wall_shear_rate_1_s", "mean_velocity_m_s", "frame_interval_s", "frame_fields", "write_every_step", "stop_after_step",
+                "restart_from_child", "restart_index", "write_interval_s", "end_time_s"):
+        if key in child:
+            raise ValueError(f"{cid}: {key} is not a Y-child key (the flow comes from the series' pressure drive, the schedule from the "
+                             f"series' write_interval_s and end_time_s); here it would be silently inert or would override the pre-registration")
+    wh = child.get("wall_budget_h")
+    if isinstance(wh, bool) or not isinstance(wh, (int, float)) or not 0 < wh <= 11.0:
+        raise ValueError(f"{cid}: a Y child needs wall_budget_h in (0, 11] h (the stopAtClockTime backstop inside one Colab session); got {wh!r}")
+
+
+def y_gate_install_mesh(case: Path, ext: dict) -> None:
+    """The mesh: the pinned dictionary BYTE FOR BYTE, then the y_gate block as constant/yGate.json (read by the setup scripts)."""
+    src = CASE / ext["mesh"]["blockMeshDict"]
+    dst = case / "system" / "blockMeshDict"
+    shutil.copyfile(src, dst)
+    if dst.read_bytes() != src.read_bytes() or _sha256_file(dst) != ext["mesh"]["blockMeshDict_sha256"]:
+        raise ValueError(f"{dst} is not byte-identical to {src}")
+    (case / "constant" / "yGate.json").write_text(json.dumps(ext, indent=1) + "\n")
+
+
+def y_gate_configure_fields(case: Path, u_mean: float, spec: dict) -> None:
+    """The 0/ boundaryField of every field on every patch (design section 3), through the mural gate's field_boundary(). Same signature as
+    mural_gen.configure_fields. The patch names are the Y mesh's (inlet, outlet, wall, front, back), never the template's or the channel's."""
+    if not spec.get("pressure_driven"):
+        raise ValueError("the Y gate is pressure-driven: a fixed inlet velocity would force the flow through anything (design section 3)")
+    dp = spec["inlet_pressure_m2_s2"]
+    fb = mural_gen.field_boundary
+    empties = "    front { type empty; }\n    back { type empty; }"
+    fb(case / "0" / "U", "    inlet { type zeroGradient; }\n"
+       "    outlet { type pressureInletOutletVelocity; value uniform (0 0 0); }\n    wall { type noSlip; }\n" + empties)
+    fb(case / "0" / "p", f"    inlet {{ type fixedValue; value uniform {dp:.12g}; }}\n"
+       "    outlet { type fixedValue; value uniform 0; }\n    wall { type zeroGradient; }\n" + empties)
+    wall_entry = mural_gen.us_bottom_entry({"wall_condition": spec["wall_condition"], "adhesive_strength_pa": spec["adhesive_strength_pa"],
+                                            "eulerian_solid": spec["eulerian_solid"], "wall_bond_free": spec["wall_bond_free"]})
+    if not wall_entry.startswith("    bottom\n"):
+        raise ValueError("mural_gen.us_bottom_entry no longer starts with `    bottom`; the wall entry cannot be renamed")
+    fb(case / "0" / "Us", "    inlet { type zeroGradient; }\n    outlet { type zeroGradient; }\n"
+       + wall_entry.replace("    bottom\n", "    wall\n", 1) + "\n" + empties)
+    fb(case / "0" / "w", "    inlet { type fixedValue; value uniform 1; }\n    outlet { type zeroGradient; }\n"
+       "    wall { type zeroGradient; }\n" + empties)
+    for name in ("c", "Dg", "H", "muC"):
+        fb(case / "0" / name, "    inlet { type zeroGradient; }\n    outlet { type zeroGradient; }\n    wall { type zeroGradient; }\n" + empties)
+
+
+def y_gate_readback_fields(case: Path, child_id: str) -> None:
+    """Every generated 0/ field read back from the WRITTEN file against Y_GATE_BCS: exactly the five patches, each with the declared type;
+    the Us wall carries adhesiveStrength > 0, sigma sigmaElastic, q, and injury and bonded uniform 0 (no bond: no clot)."""
+    import y_gate_report as yr
+    for field, want in Y_GATE_BCS.items():
+        f = case / "0" / field
+        if not f.is_file():
+            if field in ("thetaC", "thetaH"):
+                continue                           # written by seed_stage2_content.py at setup, read back there and by the dry run
+            raise ValueError(f"{child_id}: 0/{field} is absent")
+        text = re.sub(r"//[^\n]*", "", f.read_text())
+        body = yr._brace_block(text, text.find("boundaryField"))
+        got = {}
+        for m in re.finditer(r"(?m)^\s*(\w+)\s*\{", body):
+            blk = yr._brace_block(body, m.start())
+            t = re.search(r"\btype\s+(\w+)\s*;", blk)
+            got[m.group(1)] = (t.group(1) if t else None, blk)
+        if set(got) != set(want):
+            raise ValueError(f"{child_id}: 0/{field} names the patches {sorted(got)}, the mesh has {sorted(want)}")
+        for patch, ty in want.items():
+            if got[patch][0] != ty:
+                raise ValueError(f"{child_id}: 0/{field} patch {patch} is {got[patch][0]!r}, the table says {ty!r}")
+        if field == "Us":
+            blk = got["wall"][1]
+            for k in ("adhesiveStrength", "sigma", "q", "injury", "bonded", "value"):
+                if not re.search(rf"\b{k}\b", blk):
+                    raise ValueError(f"{child_id}: 0/Us wall lacks {k}")
+            if not (re.search(r"injury\s+uniform\s+0\s*;", blk) and re.search(r"bonded\s+uniform\s+0\s*;", blk)):
+                raise ValueError(f"{child_id}: 0/Us wall: injury and bonded must be `uniform 0` (no clot, no bond)")
+            if not re.search(r"sigma\s+sigmaElastic\s*;", blk) or not float(re.search(r"adhesiveStrength\s+([-+0-9.eE]+)", blk).group(1)) > 0:
+                raise ValueError(f"{child_id}: 0/Us wall: sigma must be sigmaElastic and adhesiveStrength > 0")
+        if field == "p":
+            v = float(re.search(r"inlet\s*\{[^}]*value\s+uniform\s+([-+0-9.eE]+)", body).group(1))
+            if v <= 0:
+                raise ValueError(f"{child_id}: 0/p inlet {v!r} must be positive")
+
+
+def y_gate_function_objects() -> str:
+    """The flux objects only (the per-step series gates 2, 3, 5 and 6 read): inletFlux/outletFlux (orientedSum of phi) and inletP/outletP
+    (areaAverage of p). The same OF-13 form as the step1_watcher series' (surfaceFieldValue.C L617-619: the `patch` key), without the
+    stopWatcher and the probes at channel coordinates, which do not exist on this mesh."""
+    s = ""
+    for name, patch, op, fld in (("inletFlux", "inlet", "orientedSum", "phi"), ("outletFlux", "outlet", "orientedSum", "phi"),
+                                 ("inletP", "inlet", "areaAverage", "p"), ("outletP", "outlet", "areaAverage", "p")):
+        s += (f"    {name}\n    {{\n"
+              "        type            surfaceFieldValue;\n"
+              "        libs            (\"libfieldFunctionObjects.so\");\n"
+              "        writeControl    timeStep;\n"
+              "        writeInterval   1;\n"
+              "        writeFields     no;\n"
+              f"        patch           {patch};\n"
+              f"        operation       {op};\n"
+              f"        fields          ({fld});\n"
+              "    }\n")
+    return s
+
+
+def y_gate_controldict_apply(control: Path, child_id: str, child: dict, series: dict, ext: dict | None) -> None:
+    """The write schedule (design rev. 2.2): writeControl runTime, writeInterval = tau1 (the series' write_interval_s), endTime = the series'
+    end_time_s, NOT adjustableRunTime (the solver sets its own dt; OF-13 Time.C L1196-1208 writes at the step whose t + dt/2 crosses k tau1 for
+    any dt and does not adjust dt; the writeAlign path is OI-80). The main loop has already written these three; this READS THEM BACK from the
+    file and refuses any other, and sets purgeWrite 0."""
+    if ext is None:
+        return
+    wi = float(child.get("write_interval_s", series["write_interval_s"]))
+    et = float(child.get("end_time_s", series["end_time_s"]))
+    replace_entry(control, "writeControl", "runTime")
+    replace_entry(control, "writeInterval", wi)
+    replace_entry(control, "endTime", et)
+    replace_entry(control, "purgeWrite", 0)
+    text = re.sub(r"//[^\n]*", "", control.read_text())
+    top = text.split("functions", 1)[0]
+    got = (re.findall(r"(?m)^\s*writeControl\s+([^;\s]+)\s*;", top), re.findall(r"(?m)^\s*writeInterval\s+([^;\s]+)\s*;", top),
+           re.findall(r"(?m)^\s*endTime\s+([^;\s]+)\s*;", top), re.findall(r"(?m)^\s*purgeWrite\s+([^;\s]+)\s*;", top))
+    if (got[0], got[3]) != (["runTime"], ["0"]) or [float(v) for v in got[1]] != [wi] or [float(v) for v in got[2]] != [et]:
+        raise ValueError(f"{child_id}: Y controlDict writes {got!r}, not runTime / {wi!r} / endTime {et!r} / purgeWrite 0")
+    if "adjustableRunTime" in text:
+        raise ValueError(f"{child_id}: Y controlDict still carries adjustableRunTime")
+    if "stopWatcher" in text or "probesPU" in text or "frames" in text:
+        raise ValueError(f"{child_id}: Y controlDict carries a watcher, probe or frame object of the clot series")
+    for name in ("inletFlux", "outletFlux", "inletP", "outletP"):
+        if len(re.findall(rf"(?m)^\s*{name}\s*\{{", text)) != 1:
+            raise ValueError(f"{child_id}: Y controlDict must hold exactly one {name} function object")
 
 
 def main() -> int:
@@ -2180,6 +2441,7 @@ def main() -> int:
     cohesive_bound = controls["adhesive_strength"]["upper_bound_pa"]
     for _name, _spec in series_spec.items():
         series_plasma_refusal(_name, _spec)
+        y_gate_series_refusal(_name, _spec)
     s25_pairs_refusal(controls)
     # S25 B76-RT: every child's RT-1 keys first (the specific refusals), then the registry that scores them.
     _children_by_id = {c["child_id"]: c for c in controls["children"]}
@@ -2212,6 +2474,7 @@ def main() -> int:
         s25_time_scale_refusal(child)
         s25_skeleton_law_refusal(child, spec)
         s25_5a_refusal(child, spec)
+        y_gate_child_refusal(child, spec)
         s23_build_refusal(child)
 
         # Only the cohesive-tear series may set its own toughness, and it is
@@ -2220,7 +2483,7 @@ def main() -> int:
         # under a published result -- and in the source-33 child it would be
         # the difference between reproducing a mechanism and manufacturing
         # one.
-        if child.get("Gc_j_m2") is not None and child["series"] not in ("cohesive_tear",) + S25_5A_SERIES:
+        if child.get("Gc_j_m2") is not None and child["series"] not in ("cohesive_tear",) + S25_5A_SERIES + Y_GATE_SERIES:
             raise ValueError(
                 f"{child['child_id']}: only the cohesive_tear series and the S25 5a series (Gc in S25's units) may "
                 f"override Gc; this child is in '{child['series']}'. If the "
@@ -2488,7 +2751,8 @@ def main() -> int:
                   if not k.startswith("_")})
         clot.update({k: v for k, v in child.get("clot_override", {}).items()
                      if not k.startswith("_")})
-        cells = g["nx"] * g["ny"] * g["nz"]
+        ext = series.get("y_gate")          # the Y series' external mesh and gate (None for every other series)
+        cells = g["nx"] * g["ny"] * g["nz"] if ext is None else ext["mesh"]["counts"]["nCells"]
         if cells != g["expected_cell_count"]:
             raise ValueError(
                 f"{child_id}: geometry declares {g['expected_cell_count']} "
@@ -2560,11 +2824,11 @@ def main() -> int:
                 f"{g['h_m']} is {cells_across:.2f} cells across the interface; "
                 f"four is the floor this project has held to"
             )
-        if not math.isclose(g["h_m"], g["channel_height_m"] / g["ny"],
-                            rel_tol=1e-9):
+        if ext is None and not math.isclose(g["h_m"], g["channel_height_m"] / g["ny"],
+                                            rel_tol=1e-9):
             raise ValueError(f"{child_id}: h_m disagrees with channel_height/ny")
-        if not math.isclose(g["h_m"], g["channel_length_m"] / g["nx"],
-                            rel_tol=1e-9):
+        if ext is None and not math.isclose(g["h_m"], g["channel_length_m"] / g["nx"],
+                                            rel_tol=1e-9):
             raise ValueError(f"{child_id}: h_m disagrees with channel_length/nx")
 
         # A THROAT CHILD KEEPS BOTH INVARIANTS ABOVE. The mesh blockMesh
@@ -2738,86 +3002,93 @@ def main() -> int:
             disc_margins = {"bottom_gap_m": _bot, "bottom_gap_interface_widths": _bot / _eps,
                             "top_gap_m": _top, "top_gap_interface_widths": _top / _eps}
 
-        gamma = child["wall_shear_rate_1_s"]
-        u_mean = gamma * g["channel_height_m"] / 6.0
-        override = series.get("geometry_override", {})
-        # A SERIES WITH ITS OWN FLOW AXIS (the Xu series, 2026-09-30): each
-        # child declares its OWN inlet velocity, and both the rate and the
-        # velocity must sit on the series' axis. Numerics 02 Q4's trap: one
-        # series-level velocity would run all four Xu children at the 1000
-        # 1/s inlet. The check moves to the series' axis; it does not weaken
-        # -- the geometry check below still binds U = gammaDot H / 6.
-        series_axis = series.get("flow_axis")
-        if series_axis:
-            table = dict(zip(series_axis["wall_shear_rate_1_s"],
-                             series_axis["mean_velocity_m_s"]))
-            if len(table) != len(series_axis["wall_shear_rate_1_s"]) or len(
-                    series_axis["wall_shear_rate_1_s"]) != len(
-                    series_axis["mean_velocity_m_s"]):
-                raise ValueError(
-                    f"{child_id}: series '{child['series']}' flow_axis must "
-                    f"pair each shear rate with one velocity")
-            if gamma not in table:
-                raise ValueError(
-                    f"{child_id}: wall shear rate {gamma} 1/s is not on series "
-                    f"'{child['series']}''s flow_axis "
-                    f"{series_axis['wall_shear_rate_1_s']}; declare it or fix "
-                    f"the typo")
-            if "mean_velocity_m_s" in override:
-                raise ValueError(
-                    f"{child_id}: series '{child['series']}' declares a "
-                    f"flow_axis AND a series-level mean_velocity_m_s; one "
-                    f"inlet velocity for every child is the trap the axis "
-                    f"exists to close")
-            if "mean_velocity_m_s" not in child:
-                raise ValueError(
-                    f"{child_id}: series '{child['series']}' declares its own "
-                    f"flow_axis, so each child must declare its "
-                    f"mean_velocity_m_s; a missing one must not fall back to "
-                    f"any other child's inlet")
-            if not math.isclose(child["mean_velocity_m_s"], table[gamma],
-                                rel_tol=1e-9):
-                raise ValueError(
-                    f"{child_id}: mean_velocity_m_s "
-                    f"{child['mean_velocity_m_s']} is not the flow_axis value "
-                    f"{table[gamma]} for gammaDot {gamma}")
-            expected = child["mean_velocity_m_s"]
+        if ext is not None:
+            # The Y mesh has no channel height: the parent mean is the gate-5 drive (0.94 cm/s centreline / 1.5, in sim units) and the
+            # wall shear rate is the planar Poiseuille value in the parent, BOOKKEEPING (child.json); nothing reads either as an input.
+            u_mean = ext["gate5"]["u_mean_sim_m_s"]
+            gamma = 6.0 * u_mean / ext["geometry_sim"]["widths_m"][0]
         else:
-            # Both axes are consulted: the venous flow_axis and the arterial
-            # deformation_axis. A shear rate on NEITHER is a typo, not a new
-            # operating point, and must not be silently accepted.
-            declared = {}
-            for axis in ("flow_axis", "deformation_axis"):
-                a = controls[axis]
-                declared.update(
-                    dict(zip(a["wall_shear_rate_1_s"], a["mean_velocity_m_s"]))
-                )
-            if gamma not in declared:
+            gamma = child["wall_shear_rate_1_s"]
+            u_mean = gamma * g["channel_height_m"] / 6.0
+        if ext is None:
+            override = series.get("geometry_override", {})
+            # A SERIES WITH ITS OWN FLOW AXIS (the Xu series, 2026-09-30): each
+            # child declares its OWN inlet velocity, and both the rate and the
+            # velocity must sit on the series' axis. Numerics 02 Q4's trap: one
+            # series-level velocity would run all four Xu children at the 1000
+            # 1/s inlet. The check moves to the series' axis; it does not weaken
+            # -- the geometry check below still binds U = gammaDot H / 6.
+            series_axis = series.get("flow_axis")
+            if series_axis:
+                table = dict(zip(series_axis["wall_shear_rate_1_s"],
+                                 series_axis["mean_velocity_m_s"]))
+                if len(table) != len(series_axis["wall_shear_rate_1_s"]) or len(
+                        series_axis["wall_shear_rate_1_s"]) != len(
+                        series_axis["mean_velocity_m_s"]):
+                    raise ValueError(
+                        f"{child_id}: series '{child['series']}' flow_axis must "
+                        f"pair each shear rate with one velocity")
+                if gamma not in table:
+                    raise ValueError(
+                        f"{child_id}: wall shear rate {gamma} 1/s is not on series "
+                        f"'{child['series']}''s flow_axis "
+                        f"{series_axis['wall_shear_rate_1_s']}; declare it or fix "
+                        f"the typo")
+                if "mean_velocity_m_s" in override:
+                    raise ValueError(
+                        f"{child_id}: series '{child['series']}' declares a "
+                        f"flow_axis AND a series-level mean_velocity_m_s; one "
+                        f"inlet velocity for every child is the trap the axis "
+                        f"exists to close")
+                if "mean_velocity_m_s" not in child:
+                    raise ValueError(
+                        f"{child_id}: series '{child['series']}' declares its own "
+                        f"flow_axis, so each child must declare its "
+                        f"mean_velocity_m_s; a missing one must not fall back to "
+                        f"any other child's inlet")
+                if not math.isclose(child["mean_velocity_m_s"], table[gamma],
+                                    rel_tol=1e-9):
+                    raise ValueError(
+                        f"{child_id}: mean_velocity_m_s "
+                        f"{child['mean_velocity_m_s']} is not the flow_axis value "
+                        f"{table[gamma]} for gammaDot {gamma}")
+                expected = child["mean_velocity_m_s"]
+            else:
+                # Both axes are consulted: the venous flow_axis and the arterial
+                # deformation_axis. A shear rate on NEITHER is a typo, not a new
+                # operating point, and must not be silently accepted.
+                declared = {}
+                for axis in ("flow_axis", "deformation_axis"):
+                    a = controls[axis]
+                    declared.update(
+                        dict(zip(a["wall_shear_rate_1_s"], a["mean_velocity_m_s"]))
+                    )
+                if gamma not in declared:
+                    raise ValueError(
+                        f"{child_id}: wall shear rate {gamma} 1/s is on neither "
+                        f"flow_axis nor deformation_axis; declare it or fix the typo"
+                    )
+                expected = declared[gamma]
+            # A SERIES WITH ITS OWN CHANNEL HEIGHT HAS ITS OWN U_mean. flow_axis
+            # tabulates U against a 60 um channel; the cohesive-tear series runs a
+            # 45 um one, so comparing against the tabulated value would refuse a
+            # correct case. It must declare the velocity its own geometry implies,
+            # and that declaration is then checked against the geometry exactly as
+            # before -- the check moves, it does not weaken.
+            if "channel_height_m" in override and not series_axis:
+                if "mean_velocity_m_s" not in override:
+                    raise ValueError(
+                        f"{child_id}: series '{child['series']}' overrides "
+                        f"channel_height_m but does not declare mean_velocity_m_s. "
+                        f"Falling back to the flow_axis value would silently score "
+                        f"this child against a channel height it does not have."
+                    )
+                expected = override["mean_velocity_m_s"]
+            if not math.isclose(u_mean, expected, rel_tol=1e-9):
                 raise ValueError(
-                    f"{child_id}: wall shear rate {gamma} 1/s is on neither "
-                    f"flow_axis nor deformation_axis; declare it or fix the typo"
+                    f"{child_id}: U_mean {u_mean} does not match the declared "
+                    f"{expected} for gammaDot {gamma}"
                 )
-            expected = declared[gamma]
-        # A SERIES WITH ITS OWN CHANNEL HEIGHT HAS ITS OWN U_mean. flow_axis
-        # tabulates U against a 60 um channel; the cohesive-tear series runs a
-        # 45 um one, so comparing against the tabulated value would refuse a
-        # correct case. It must declare the velocity its own geometry implies,
-        # and that declaration is then checked against the geometry exactly as
-        # before -- the check moves, it does not weaken.
-        if "channel_height_m" in override and not series_axis:
-            if "mean_velocity_m_s" not in override:
-                raise ValueError(
-                    f"{child_id}: series '{child['series']}' overrides "
-                    f"channel_height_m but does not declare mean_velocity_m_s. "
-                    f"Falling back to the flow_axis value would silently score "
-                    f"this child against a channel height it does not have."
-                )
-            expected = override["mean_velocity_m_s"]
-        if not math.isclose(u_mean, expected, rel_tol=1e-9):
-            raise ValueError(
-                f"{child_id}: U_mean {u_mean} does not match the declared "
-                f"{expected} for gammaDot {gamma}"
-            )
 
         case = RUNS / child_id
         shutil.copytree(TEMPLATE, case)
@@ -2829,8 +3100,12 @@ def main() -> int:
         # A multi-block taper was built first and discarded: it put a slope
         # discontinuity at each join, which is a salient corner in the one
         # place the measurement is taken.
-        (case / "system" / "blockMeshDict").write_text(mural_gen.planar_mesh(g))
-        mural_gen.configure_fields(case, u_mean, {
+        if ext is not None:
+            y_gate_install_mesh(case, ext)
+        else:
+            (case / "system" / "blockMeshDict").write_text(mural_gen.planar_mesh(g))
+        _configure_fields = mural_gen.configure_fields if ext is None else y_gate_configure_fields
+        _configure_fields(case, u_mean, {
             # Dr Li, 2026-09-01. A fixed inlet velocity pins the flow rate, so
             # an occluding throat cannot show a velocity drop -- the solver
             # raises pressure instead. Only children that ask for it switch;
@@ -2866,7 +3141,7 @@ def main() -> int:
         # ANY of adhesiveStrength/sigma/q/injury/bonded on EITHER wall
         # (design S3b/S7.3). Gated on wall_bond_free so no existing child's
         # build is touched.
-        if series.get("wall_bond_free"):
+        if series.get("wall_bond_free") and ext is None:
             us_text = (case / "0" / "Us").read_text()
             m_bottom = re.search(r"(?s)bottom\s*\{(.*?)\}", us_text)
             m_top = re.search(r"(?s)top\s*\{(.*?)\}", us_text)
@@ -3383,7 +3658,10 @@ def main() -> int:
             float(child.get(
                 "platelet_inlet_density_m3",
                 child["platelet_number_density_m3"])),
+            ("wall",) if ext is not None else ("bottom", "top"),
         )
+        if ext is not None:
+            y_gate_readback_fields(case, child_id)      # every written 0/ field against the patch x field table (nP is written just above)
         # nP IS SOLVED, so it needs a linear solver, and
         # solvePlateletContent calls nEqn.flux() for the boundary
         # inventory, which needs fluxRequired. Neither is in the
@@ -3683,6 +3961,8 @@ def main() -> int:
             projected_writes = min(child["stop_after_step"] + S25_RT1_OVERSHOOT, S25_RT1_PURGE_WRITE)
         projected_gb = (projected_writes * PER_TIME_DIR_GB
                         * S25_WRITE_PRECISION_BYTES_FACTOR)
+        if ext is not None:
+            projected_gb *= cells / PER_TIME_DIR_CELLS      # the Y mesh is 78912 cells; the measured 19.5 MB is for 31360
         if (
             projected_gb > OUTPUT_BUDGET_GB
             and not child.get("accept_large_output", False)
@@ -3836,6 +4116,9 @@ def main() -> int:
                     f"{probe_lines}\n        );\n"
                     "    }\n"
                 )
+            # THE Y GATE'S FLUX OBJECTS (design section 4 gates 2, 3, 5, 6: the per-step inletFlux/outletFlux the instrument is checked against).
+            if ext is not None:
+                functions_body += y_gate_function_objects()
             # THE FRAMES (BATCH 68 design section 3): between the full
             # writes, OF-13's writeObjects (src/functionObjects/utilities/
             # writeObjects, in libutilityFunctionObjects: Make/files L15,
@@ -3906,6 +4189,7 @@ def main() -> int:
                 add_or_replace_entry(control, key, value)
 
         rt1_controldict_apply(control, child_id, child)
+        y_gate_controldict_apply(control, child_id, child, series, ext)
 
         solution = case / "system" / "fvSolution"
 
@@ -3917,6 +4201,8 @@ def main() -> int:
         # corrector the pressure equation carries that error uncorrected.
         # The skew is bounded above at build time (see the taper block); this
         # supplies the correction for what remains.
+        if ext is not None:
+            add_or_replace_entry(solution, "nNonOrthogonalCorrectors", int(series["non_orthogonal_correctors"]))
         if g.get("throat_height_m") is not None:
             add_or_replace_entry(solution, "nNonOrthogonalCorrectors", 2)
             # apply_throat.py reads this, not the controls file: the profile
@@ -4379,6 +4665,10 @@ def main() -> int:
         for _k in S25_RT1_KEYS:
             if _k in child:
                 spec[_k] = child[_k]
+        if ext is not None:
+            spec["y_gate"] = json.loads(json.dumps(ext))
+            spec["non_orthogonal_correctors"] = int(series["non_orthogonal_correctors"])
+            spec["clot"] = {"shape": "none", "why": "flow only: the Y gate carries no clot (c = +1 everywhere, y_initialise.py)"}
         dictionary_key_refusal(case / "constant" / "phaseClotProperties")
         if child.get("solver_library") in SOLVER_LIBRARIES:
             # S22 section 7 arm A0 / S23 section 7 arm (1'): Allrun sources this before foamRun.
@@ -4389,7 +4679,8 @@ def main() -> int:
     order = {'throat_embolus': 21,
     'xu2017_fig5': 22,
     'throat_free_shell': 23,
-    's25_5a': 24}
+    's25_5a': 24,
+    's25_ygate': 25}
     missing = {c["series"] for c in controls["children"]} - set(order)
     if missing:
         raise ValueError(f"no run order declared for series {sorted(missing)}")
