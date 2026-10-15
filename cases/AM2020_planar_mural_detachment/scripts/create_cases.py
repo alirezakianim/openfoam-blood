@@ -1715,8 +1715,10 @@ def y_rt_leg_refusal(child: dict, series: dict) -> None:
     legs = child["stop_after_step"]
     if set(legs) != set(Y_RT_LEG_KEYS) or not all(_plain_int(legs[k]) for k in Y_RT_LEG_KEYS):
         raise ValueError(f"{cid}: stop_after_step {legs!r} must be exactly {{leg1: int, leg2: int}}")
-    if not (legs["leg1"] >= 1 and legs["leg2"] - legs["leg1"] == S25_RT1_STEPS):
-        raise ValueError(f"{cid}: stop_after_step {legs!r}: leg 2 must run {S25_RT1_STEPS} steps after leg 1's stop (leg2 - leg1 == {S25_RT1_STEPS}, leg1 >= 1)")
+    # The window is the child's own (case-engineer 33): Y80_RT_B runs 5 steps after its restart (100 -> 105), Y80_RT86_B 19 (86 -> 105, the confirming test whose leg 1 stops BEFORE the step
+    # at which the reference arm's PARDISO analysis was last refreshed). y_rt_pairs_refusal ties the window to the pair's A arm; here a window shorter than 5 steps is refused.
+    if not (legs["leg1"] >= 1 and legs["leg2"] - legs["leg1"] >= S25_RT1_STEPS):
+        raise ValueError(f"{cid}: stop_after_step {legs!r}: leg 2 must run at least {S25_RT1_STEPS} steps after leg 1's stop (leg2 - leg1 >= {S25_RT1_STEPS}, leg1 >= 1)")
     for k in ("write_every_step", "restart_from_child", "restart_index", "frame_interval_s", "frame_fields"):
         if k in child:
             raise ValueError(f"{cid}: {k} cannot accompany a per-leg stop_after_step (the leg-2 restart is the runner's --restart-from; the writes are the clot child's runTime schedule)")
@@ -1800,6 +1802,7 @@ def s25_rt1_pairs_refusal(controls: dict) -> None:
 
 
 Y_RT_PAIR_KEYS = ("pair_id", "a", "b", "leg1_stop", "leg2_stop", "_why")
+Y_RT_PAIR_OPTIONAL_KEYS = ("a_reference_step",)     # read by assess_case.y_rt_pair: the A write that stands in for step leg1_stop in RT-1a's denominator and the Vs precondition
 
 
 def y_rt_pairs_refusal(controls: dict) -> None:
@@ -1814,10 +1817,10 @@ def y_rt_pairs_refusal(controls: dict) -> None:
         return
     if not isinstance(pairs, list) or not pairs:
         raise ValueError("y_rt_pairs must be a non-empty list")
-    seen, used = set(), []
+    seen, used_a, used_b = set(), [], []
     for i, e in enumerate(pairs):
-        if not isinstance(e, dict) or set(e) != set(Y_RT_PAIR_KEYS):
-            raise ValueError(f"y_rt_pairs[{i}] must hold exactly {', '.join(Y_RT_PAIR_KEYS)}; got {sorted(e) if isinstance(e, dict) else e!r}.")
+        if not isinstance(e, dict) or not set(Y_RT_PAIR_KEYS) <= set(e) <= set(Y_RT_PAIR_KEYS) | set(Y_RT_PAIR_OPTIONAL_KEYS):
+            raise ValueError(f"y_rt_pairs[{i}] must hold exactly {', '.join(Y_RT_PAIR_KEYS)} (and optionally {', '.join(Y_RT_PAIR_OPTIONAL_KEYS)}); got {sorted(e) if isinstance(e, dict) else e!r}.")
         if not isinstance(e["pair_id"], str) or not e["pair_id"] or e["pair_id"] in seen:
             raise ValueError(f"y_rt_pairs[{i}] pair_id {e['pair_id']!r} must be a non-empty string, unique.")
         seen.add(e["pair_id"])
@@ -1831,10 +1834,54 @@ def y_rt_pairs_refusal(controls: dict) -> None:
             raise ValueError(f"y_rt_pairs[{i}] ({e['pair_id']}): {e['a']} must be a cold start with write_every_step true and stop_after_step == leg2_stop {e['leg2_stop']!r}.")
         if b.get("stop_after_step") != {"leg1": e["leg1_stop"], "leg2": e["leg2_stop"]} or "write_every_step" in b:
             raise ValueError(f"y_rt_pairs[{i}] ({e['pair_id']}): {e['b']} must hold stop_after_step {{leg1: {e['leg1_stop']!r}, leg2: {e['leg2_stop']!r}}} and no write_every_step.")
-        used += [e["a"], e["b"]]
+        # A's purgeWrite keeps only the LAST S25_RT1_PURGE_WRITE full writes (steps leg2 - K + 1 .. leg2), so RT-1a's denominator and the Vs precondition can read step leg1_stop only when
+        # it is among them. A pair whose leg 1 stops earlier (Y80_RT86: 86 against 96..105) names the A write that stands in for it, a_reference_step, which must be kept and not
+        # before the restart point; a pair that names none with a purged leg1_stop would read a directory that does not exist (VOID on every returned run).
+        k_kept = S25_RT1_PURGE_WRITE
+        ref = e.get("a_reference_step")
+        if "a_reference_step" in e:
+            if not _plain_int(ref) or not (e["leg1_stop"] <= ref < e["leg2_stop"] and ref >= e["leg2_stop"] - k_kept + 1):
+                raise ValueError(f"y_rt_pairs[{i}] ({e['pair_id']}): a_reference_step {ref!r} must be an integer in [max(leg1_stop {e['leg1_stop']!r}, leg2_stop - {k_kept} + 1), leg2_stop - 1]: "
+                                 f"{e['a']}'s purgeWrite {k_kept} keeps steps {e['leg2_stop'] - k_kept + 1}..{e['leg2_stop']} only.")
+        elif e["leg1_stop"] < e["leg2_stop"] - k_kept + 1:
+            raise ValueError(f"y_rt_pairs[{i}] ({e['pair_id']}): leg1_stop {e['leg1_stop']!r} is before the first write {e['a']}'s purgeWrite {k_kept} keeps (step {e['leg2_stop'] - k_kept + 1}); "
+                             f"name a_reference_step (a kept write at or after leg1_stop) or RT-1a would read a directory that was purged.")
+        used_a.append(e["a"])
+        used_b.append(e["b"])
+    used = used_a + used_b
     unscored = sorted(set(y_rt) - set(used))
-    if unscored or len(used) != len(set(used)):
-        raise ValueError(f"every Y restart-test child is in exactly one y_rt_pairs entry; unscored {unscored}, repeated {sorted({u for u in used if used.count(u) > 1})}.")
+    # one A arm may serve several pairs (Y80_RT_A serves Y80_RT and Y80_RT86: it is deterministic and already returned), but a B arm is in exactly one pair and no child is both an A and a B
+    if unscored or len(used_b) != len(set(used_b)) or set(used_a) & set(used_b):
+        raise ValueError(f"every Y restart-test child is in at least one y_rt_pairs entry and a B arm in exactly one, never also an A arm; unscored {unscored}, "
+                         f"repeated B arms {sorted({u for u in used_b if used_b.count(u) > 1})}, both A and B {sorted(set(used_a) & set(used_b))}.")
+
+
+def y_plug_verdict_refusal(controls: dict) -> None:
+    """The plug assessor's thresholds (top-level `y_plug_verdict`, read by scripts/y_gate/y_plug_assess.py through assess_case.y_plug_child and scripts/y_plug_chain.py;
+    case-engineer 28). The block is validated by the assessor's OWN check_params (so a key nobody reads, a non-number, or a table the verdict cannot use is refused here,
+    not on a returned run), and its per-series entries are cross-checked against the facts the generator holds: each plug series has an entry; the flow-gate series it names
+    has the same mesh and the same gate-5 bias and tolerance (Q0 and FAIL 2's flux limit are formed from them)."""
+    plug_children = [c for c in controls["children"] if c["series"] in Y_PLUG_SERIES and "write_every_step" not in c and not isinstance(c.get("stop_after_step"), dict)]
+    block = controls.get("y_plug_verdict")
+    if block is None:
+        if plug_children:
+            raise ValueError(f"Y plug clot children {sorted(c['child_id'] for c in plug_children)} exist but the controls hold no y_plug_verdict: nothing would score their verdict.")
+        return
+    import y_plug_assess
+    y_plug_assess.check_params(block)
+    for name, e in block["series"].items():
+        flow = controls["series"].get(e["flow_gate_series"])
+        plug = controls["series"].get(name)
+        if flow is None or e["flow_gate_series"] not in Y_GATE_FLOW_SERIES or plug is None:
+            raise ValueError(f"y_plug_verdict.series.{name}: flow_gate_series {e['flow_gate_series']!r} is not one of the flow-gate series {Y_GATE_FLOW_SERIES}")
+        g5 = flow["y_gate"]["gate5"]
+        if (g5["fv_bias"], g5["tol"]) != (e["gate5_fv_bias"], e["gate5_tol"]):
+            raise ValueError(f"y_plug_verdict.series.{name}: gate5_fv_bias/gate5_tol {e['gate5_fv_bias']!r}/{e['gate5_tol']!r} differ from {e['flow_gate_series']}'s gate 5 "
+                             f"({g5['fv_bias']!r}/{g5['tol']!r}): Q0 would not be the drive the flow gate calibrated")
+        if (flow["y_gate"]["mesh"] != plug["y_gate"]["mesh"] or flow["y_gate"]["geometry_sim"] != plug["y_gate"]["geometry_sim"]
+                or flow["inlet_pressure_m2_s2"] != plug["inlet_pressure_m2_s2"]
+                or flow["y_gate"]["gate5"]["u_mean_sim_m_s"] != plug["y_gate"]["drive"]["u_mean_sim_m_s"]):
+            raise ValueError(f"y_plug_verdict.series.{name}: {e['flow_gate_series']} and {name} do not share the mesh, the geometry, the inlet pressure and the mean velocity")
 
 
 # S25 B76-5a (case-engineer 09b; design 2026-10-10-S25-arteriole-bundle rev. 2.2 section 7): the arteriole series, a free-shell
@@ -2656,6 +2703,7 @@ def main() -> int:
         rt1_refusal(_c, series_spec[_c["series"]], _children_by_id)
     s25_rt1_pairs_refusal(controls)
     y_rt_pairs_refusal(controls)
+    y_plug_verdict_refusal(controls)
     for child in controls["children"]:
         spec = series_spec[child["series"]]
         welded = spec["wall_condition"] == "fixedValue"

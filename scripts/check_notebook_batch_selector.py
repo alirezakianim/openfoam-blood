@@ -76,12 +76,26 @@ ONE_CORE_SESSIONS = {76: {1: ("B76_OFF_A",), 2: ("B76_OFF_B",),
                    79: {1: ("B79_Y_GATE",)},
                    # BATCH 80, the symmetric Y (design 2026-10-14-case-symmetric-y-plug.md rev. 2.1 section 5): TWO launches. Launch 1 = the two flow gates, RT_A and RT_B's leg 1 (the generator's matrix order: the series
                    # s25_ys794, s25_ys850, then s25_ys794_plug); launch 2 = RT_B's leg 2 alone, a second runner invocation with --restart-from (RESTART_LAUNCHES). No reference library in either.
-                   80: {1: ("Y80_YS794_FLOW", "Y80_YS850_FLOW", "Y80_RT_A", "Y80_RT_B"), 2: ("Y80_RT_B",)}}
+                   80: {1: ("Y80_YS794_FLOW", "Y80_YS850_FLOW", "Y80_RT_A", "Y80_RT_B"), 2: ("Y80_RT_B",)},
+                   # BATCH 81, the plug chains (design 2026-10-14-case-symmetric-y-plug.md rev. 2.1 section 5; STAGED): TWO launches, ONE CHAIN EACH (launch 1 the YS794 chain, launch 2 the YS850 chain), each its own Colab runtime
+                   # on the 1-core runtime, no reference library; each launch is run once per SESSION of its chain, cold for session 1 and restarted (RESTART_FROM) for every later one (RESTART_OPTIONAL).
+                   81: {1: ("Y81_YS794_PLUG",), 2: ("Y81_YS850_PLUG",)},
+                   # BATCH 82, the confirming restart test (docket 20261015-0757-20261015-b80-rt-restart DECISIONS 2026-10-15; case-engineer 33): TWO launches of ONE child on the 1-core runtime, no reference library.
+                   # Launch 1 = Y80_RT86_B leg 1 (cold, stops after step 86); launch 2 = its leg 2, a second runner invocation with --restart-from (RESTART_LAUNCHES), stops after step 105.
+                   82: {1: ("Y80_RT86_B",), 2: ("Y80_RT86_B",)}}
 ONE_CORE_ONE_SESSION = (78, 79)
-ONE_CORE_LIBRARY_LAUNCHES = {76: {1: ["baseline"], 2: [], 3: []}, 78: {1: ["baseline"]}, 79: {1: []}, 80: {1: [], 2: []}}
+ONE_CORE_LIBRARY_LAUNCHES = {76: {1: ["baseline"], 2: [], 3: []}, 78: {1: ["baseline"]}, 79: {1: []}, 80: {1: [], 2: []}, 81: {1: [], 2: []}, 82: {1: [], 2: []}}
 # A launch that IS a restart (the runner's --restart-from, RESTART_FROM in the notebook): its children are children of an EARLIER launch of the same batch, so it is exempt from "the launches partition the batch".
 # The notebook's own RESTART_LAUNCHES (inside the launch_plan block, where launch_plan reads it) must be this dict.
-RESTART_LAUNCHES = {80: (2,)}
+RESTART_LAUNCHES = {80: (2,), 82: (2,)}
+# STAGED batches (BATCH 81): built into the notebook's BATCHES but NOT selectable as the default. `BATCH` must name the newest entry that is NOT staged, and no staged batch may be the default; a staged batch is packaged
+# only after the batch before it has returned READY (design section 5), so a package built from this notebook cannot start it. The notebook's own STAGED_BATCHES literal must be this tuple (a notebook that empties it
+# would let the newest entry be selected silently, or leave BATCH = 82 refused as stale).
+STAGED = (81,)
+# RESTART_OPTIONAL: the launches of a CHAIN of sessions: each is run once per session, cold (RESTART_FROM empty) for session 1 and restarted for every later one; launch_plan accepts both. The notebook's own
+# RESTART_OPTIONAL (inside the launch_plan block) must be this dict. A launch here is NOT a RESTART_LAUNCH (those are children of an EARLIER launch).
+RESTART_OPTIONAL = {81: (1, 2)}
+RESTART_ASSEMBLY = "(['--restart-from', RESTART_FROM] if RESTART_FROM else [])"      # how the notebook appends the flag after launch_plan; the restarted builds below mirror it
 FAKE_RESTART = "/content/drive/MyDrive/launch1/case-after-run-FAKE.tar.gz"
 FAKE_SOLVER = "/content/openfoam-blood-ref/user-applications/phaseClotAxisymmetricFluid"
 FAKE_BASE = ["--package", "/content/package.zip", "--repo-digest", "0" * 64]
@@ -142,7 +156,7 @@ def launch_cell(notebook: Path = NOTEBOOK) -> str:
 
 NAMES = ("P2PRIME_TAG", "P2PRIME_REPO_DIGEST", "S22REF_TAG", "S22REF_REPO_DIGEST", "BASELINE_TAG", "BASELINE_REPO_DIGEST", "BATCHES", "LAUNCHES", "LAUNCH",
          "LAUNCH_CONCURRENCY", "CONCURRENCY", "REFERENCE_LIBRARY_BY_BATCH", "REFERENCE_LIBRARY_BY_LAUNCH",
-         "ONE_CORE_BATCHES", "ONE_CORE_MKL_THREADS", "RESTART_FROM")
+         "ONE_CORE_BATCHES", "ONE_CORE_MKL_THREADS", "RESTART_FROM", "STAGED_BATCHES")
 
 
 def notebook_names(cell: str) -> dict:
@@ -238,6 +252,12 @@ def check_launches(cell: str, controls: Path = CONTROLS, selected: int | None = 
     one_core = {"batches": names["ONE_CORE_BATCHES"], "threads": names["ONE_CORE_MKL_THREADS"]}
     if fn.get("RESTART_LAUNCHES") != RESTART_LAUNCHES:
         raise LaunchError(f"the notebook's RESTART_LAUNCHES {fn.get('RESTART_LAUNCHES')!r} is not the selector's {RESTART_LAUNCHES!r}: a restart launch would be checked as a cold start (or the reverse)")
+    if tuple(names["STAGED_BATCHES"]) != STAGED:
+        raise LaunchError(f"the notebook's STAGED_BATCHES {tuple(names['STAGED_BATCHES'])!r} is not the selector's STAGED {STAGED!r}: a staged batch could be selected as the default, or an unstaged one held back")
+    if fn.get("RESTART_OPTIONAL") != RESTART_OPTIONAL:
+        raise LaunchError(f"the notebook's RESTART_OPTIONAL {fn.get('RESTART_OPTIONAL')!r} is not the selector's {RESTART_OPTIONAL!r}: a chain launch would be refused a RESTART_FROM, or accept none")
+    if cell.count(RESTART_ASSEMBLY) != 1:
+        raise LaunchError(f"the notebook no longer appends the restart flag as {RESTART_ASSEMBLY!r} exactly once; the restarted builds of the chain launches mirror that line and must be re-read")
     # the baseline release's pin (BATCH 76 launch 1): its own constants, spelt so the release re-pin never touches them
     if not re.fullmatch(r"[0-9a-f]{64}", names["BASELINE_REPO_DIGEST"]) or names["BASELINE_TAG"] != "digest-" + names["BASELINE_REPO_DIGEST"][:12]:
         raise LaunchError(f"BASELINE_TAG {names['BASELINE_TAG']!r} is not 'digest-' + the first 12 hex of BASELINE_REPO_DIGEST {names['BASELINE_REPO_DIGEST']!r}")
@@ -255,7 +275,7 @@ def check_launches(cell: str, controls: Path = CONTROLS, selected: int | None = 
             raise LaunchError(f"BATCH {b} is ONE session and must have no LAUNCHES entry; it has {sorted(launches[b])}")
         if b in batches and batches[b][0].split() != list(pair):
             raise LaunchError(f"BATCH {b} is ONE session of {list(pair)} (its decision); the notebook selects {batches[b][0].split()}")
-    records = []
+    records, restarted = [], []
     # structure of every multi-launch batch: the launches partition the batch, in order 1..n
     for b, parts in sorted(launches.items()):
         if sorted(parts) != list(range(1, len(parts) + 1)):
@@ -309,12 +329,34 @@ def check_launches(cell: str, controls: Path = CONTROLS, selected: int | None = 
                                   f"{'a 1-core runtime batch' if b in one_core['batches'] else 'a multi-core batch'} must pass {_want}")
             passed = [n for n, v in (("p2prime", args.p2prime_solver), ("s22", args.s22_solver), ("baseline", args.baseline_solver)) if v]
             records.append({"batch": b, "launch": lnum, "children": plan["only"].split(), "hours": plan["hours"],
-                            "library_passed": passed, "argv": argv, "printed": lines})
+                            "library_passed": passed, "argv": argv, "printed": lines, "variant": "cold"})
+            if lnum in RESTART_OPTIONAL.get(b, ()):
+                if "--restart-from" in argv or args.restart_from != "":
+                    raise LaunchError(f"BATCH {b} launch {lnum}: the cold build (RESTART_FROM empty) carries --restart-from")
+                if not any("COLD" in line for line in lines):
+                    raise LaunchError(f"BATCH {b} launch {lnum}: the cold build does not say it is a COLD start: {lines}")
+                # the same launch as a LATER session of its chain: RESTART_FROM = the previous session's tarball, appended the way the notebook appends it
+                rlines: list = []
+                try:
+                    rplan = fn["launch_plan"](b, lnum, batches, launches, by_batch, by_launch, concurrency, say=rlines.append, one_core=one_core, restart_from=FAKE_RESTART)
+                except ValueError as error:
+                    raise LaunchError(f"BATCH {b} launch {lnum} with a RESTART_FROM: the notebook refuses it: {error}")
+                if rplan["only"] != plan["only"] or rplan["library"] != plan["library"]:
+                    raise LaunchError(f"BATCH {b} launch {lnum}: the restarted build selects {rplan['only']!r} / {rplan['library']!r}, the cold build {plan['only']!r} / {plan['library']!r}")
+                rargv = fn["runner_argv"]("/content/project/cases/AM2020_planar_mural_detachment/scripts/run_main_case_colab.py",
+                                          "20261008-000000-am2020-main-case", FAKE_BASE + extra + rplan["runner_args"] + ["--restart-from", FAKE_RESTART], rplan["only"])
+                rargs = runner_accepts(rargv, controls)
+                if rargs.restart_from != FAKE_RESTART:
+                    raise LaunchError(f"BATCH {b} launch {lnum}: the runner reads --restart-from {rargs.restart_from!r}, not {FAKE_RESTART!r}")
+                if not any("RESTARTED" in line for line in rlines) or not any(FAKE_RESTART in line for line in rlines):
+                    raise LaunchError(f"BATCH {b} launch {lnum}: the restarted build does not say it is a RESTARTED session from the tarball: {rlines}")
+                restarted.append({"batch": b, "launch": lnum, "children": rplan["only"].split(), "hours": rplan["hours"], "library_passed": passed, "argv": rargv, "printed": rlines, "variant": "restart"})
+    records.extend(restarted)
     # S25 BATCH 76: three sessions, their children in the order they run, the baseline library on launch 1 only
     for b, sessions in ONE_CORE_SESSIONS.items():
         if b not in batches:
             continue
-        got = {r["launch"]: r for r in records if r["batch"] == b}
+        got = {r["launch"]: r for r in records if r["batch"] == b and r.get("variant", "cold") == "cold"}
         if sorted(got) != sorted(sessions):
             raise LaunchError(f"BATCH {b} runs launches {sorted(got)}; its decision is the sessions {sorted(sessions)}")
         for lnum, kids in sessions.items():
@@ -326,6 +368,9 @@ def check_launches(cell: str, controls: Path = CONTROLS, selected: int | None = 
                                   f"its session passes {ONE_CORE_LIBRARY_LAUNCHES[b][lnum]}")
             if "--mkl-cbwr" in got[lnum]["argv"]:
                 raise LaunchError(f"BATCH {b} launch {lnum} passes --mkl-cbwr; a 1-core batch pins no MKL CNR branch (design section 12.1)")
+        for r in (x for x in records if x["batch"] == b and x.get("variant") == "restart"):
+            if tuple(r["children"]) != sessions[r["launch"]] or r["library_passed"] != ONE_CORE_LIBRARY_LAUNCHES[b][r["launch"]] or "--mkl-cbwr" in r["argv"]:
+                raise LaunchError(f"BATCH {b} launch {r['launch']} restarted: runs {r['children']} with libraries {r['library_passed']}; its session is {list(sessions[r['launch']])} with {ONE_CORE_LIBRARY_LAUNCHES[b][r['launch']]}")
         if names["LAUNCH_CONCURRENCY"].get(b) != 1:
             raise LaunchError(f"BATCH {b} must be forced to CONCURRENCY 1 by LAUNCH_CONCURRENCY")
         if b not in names["ONE_CORE_BATCHES"]:
@@ -347,15 +392,16 @@ def check_one_core(cell: str, controls: Path = CONTROLS, concurrency: int = 1) -
     if one_core["threads"] != 1:
         raise LaunchError(f"the 1-core runtime batches run ONE solver thread (S25 section 7) and pin NO MKL_CBWR (section 12.1: the solver's own "
                           f"mkl_cbwr_set(AUTO) overrides it): ONE_CORE_MKL_THREADS must be 1; got {one_core['threads']!r}")
-    if any(names["LAUNCH_CONCURRENCY"].get(_b) != 1 for _b in (76, 77, 78, 79, 80)):
-        raise LaunchError("LAUNCH_CONCURRENCY must force batches 76, 77, 78, 79 and 80 to 1")
+    if any(names["LAUNCH_CONCURRENCY"].get(_b) != 1 for _b in (76, 77, 78, 79, 80, 81, 82)):
+        raise LaunchError("LAUNCH_CONCURRENCY must force batches 76, 77, 78, 79, 80, 81 and 82 to 1")
     child = "P73_G4_r3_40"
     out = {}
     for b in one_core["batches"]:
         batches = {b: (child, 7.5, "S25 synthetic 1-core entry")}
         lines: list = []
         try:
-            plan = fn["launch_plan"](b, 1, batches, {}, {}, {}, concurrency, say=lines.append, one_core=one_core)
+            chain = {b: {1: (child, 7.5), 2: (child, 7.5)}} if b in RESTART_OPTIONAL else {}      # a chain batch (BATCH 81) is refused without its LAUNCHES entry
+            plan = fn["launch_plan"](b, 1, batches, chain, {}, {}, concurrency, say=lines.append, one_core=one_core)
         except ValueError as error:
             raise LaunchError(f"BATCH {b} (1-core): the notebook refuses it: {error}")
         argv = fn["runner_argv"]("/content/project/cases/AM2020_planar_mural_detachment/scripts/run_main_case_colab.py",
@@ -487,7 +533,7 @@ def negatives(cell: str, controls: Path = CONTROLS, selected: int = 72) -> list:
         ("BATCH 76 launch 1 does not clone the baseline library", lambda: check_launches(
             mutate(cell, r"^    \(76, 1\): True,", "    (76, 1): False,"), controls, selected), "--baseline-solver was not passed"),
         ("BATCH 76 loses its CONCURRENCY 1 forcing", lambda: check_launches(
-            _replace_all(cell, "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 76: 1, 77: 1, 78: 1, 79: 1, 80: 1}", "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 77: 1, 78: 1, 79: 1, 80: 1}", 1), controls, selected),
+            _replace_all(cell, "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 76: 1, 77: 1, 78: 1, 79: 1, 80: 1, 81: 1, 82: 1}", "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 77: 1, 78: 1, 79: 1, 80: 1, 81: 1}", 1), controls, selected),
          "CONCURRENCY must be 1"),
         ("the baseline tag is not its digest's prefix", lambda: check_launches(
             mutate(cell, r"^BASELINE_TAG = 'digest-[0-9a-f]{12}'$", "BASELINE_TAG = 'digest-000000000000'"), controls, selected),
@@ -518,7 +564,7 @@ def negatives(cell: str, controls: Path = CONTROLS, selected: int = 72) -> list:
             _replace_all(cell, "78: ('baseline', BASELINE_TAG, BASELINE_REPO_DIGEST,", "78: ('baseline', S22REF_TAG, S22REF_REPO_DIGEST,", 1), controls, selected),
          "must be the baseline library"),
         ("BATCH 78 loses its CONCURRENCY 1 forcing", lambda: check_launches(
-            _replace_all(cell, "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 76: 1, 77: 1, 78: 1, 79: 1, 80: 1}", "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 76: 1, 77: 1, 79: 1, 80: 1}", 1), controls, selected),
+            _replace_all(cell, "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 76: 1, 77: 1, 78: 1, 79: 1, 80: 1, 81: 1, 82: 1}", "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 76: 1, 77: 1, 79: 1, 80: 1, 81: 1}", 1), controls, selected),
          "CONCURRENCY must be 1"),
         ("BATCH 78 names a child the controls do not define", lambda: check_launches(
             cell, _controls_without(controls, "B78_CTL_2"), selected), "not child_ids in mainCaseControls.json"),
@@ -532,16 +578,16 @@ def negatives(cell: str, controls: Path = CONTROLS, selected: int = 72) -> list:
          "must have no LAUNCHES entry"),
         ("BATCH 79 at LAUNCH 2", lambda: fn_launch73(cell, 2, controls, concurrency=1, batch=79), "no launch split"),
         ("BATCH 79 forced to CONCURRENCY 2", lambda: check_launches(
-            _replace_all(cell, "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 76: 1, 77: 1, 78: 1, 79: 1, 80: 1}", "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 76: 1, 77: 1, 78: 1, 79: 2, 80: 1}", 1), controls, selected),
+            _replace_all(cell, "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 76: 1, 77: 1, 78: 1, 79: 1, 80: 1, 81: 1, 82: 1}", "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 76: 1, 77: 1, 78: 1, 79: 2, 80: 1, 81: 1}", 1), controls, selected),
          "CONCURRENCY must be 1"),
         ("BATCH 79 given a reference library by launch", lambda: check_launches(
             mutate(cell, r"^    \(78, 1\): True,", "    (78, 1): True,\n    (79, 1): True,"), controls, selected),
          "which REFERENCE_LIBRARY_BY_BATCH does not"),
         ("BATCH 79 loses its CONCURRENCY 1 forcing", lambda: check_launches(
-            _replace_all(cell, "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 76: 1, 77: 1, 78: 1, 79: 1, 80: 1}", "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 76: 1, 77: 1, 78: 1, 80: 1}", 1), controls, selected),
+            _replace_all(cell, "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 76: 1, 77: 1, 78: 1, 79: 1, 80: 1, 81: 1, 82: 1}", "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 76: 1, 77: 1, 78: 1, 80: 1, 81: 1}", 1), controls, selected),
          "CONCURRENCY must be 1"),
         ("BATCH 79 dropped from the 1-core batches (it would run with six MKL threads)", lambda: check_launches(
-            mutate(cell, r"^ONE_CORE_BATCHES = \(76, 77, 78, 79, 80\)$", "ONE_CORE_BATCHES = (76, 77, 78, 80)"), controls, selected),
+            mutate(cell, r"^ONE_CORE_BATCHES = \(76, 77, 78, 79, 80, 81, 82\)$", "ONE_CORE_BATCHES = (76, 77, 78, 80, 81, 82)"), controls, selected),
          "lacks it"),
         # BATCH 80, the symmetric Y: two launches on the 1-core runtime; launch 2 is RT_B's restart (RESTART_LAUNCHES), the one child in two launches
         ("BATCH 80 names a child the controls do not define", lambda: check_launches(
@@ -564,17 +610,82 @@ def negatives(cell: str, controls: Path = CONTROLS, selected: int = 72) -> list:
             mutate(cell, r"^    \(78, 1\): True,", "    (78, 1): True,\n    (80, 1): True,"), controls, selected),
          "which REFERENCE_LIBRARY_BY_BATCH does not"),
         ("the notebook loses RESTART_LAUNCHES (launch 2 would be checked as a cold start)", lambda: check_launches(
-            _replace_all(cell, "RESTART_LAUNCHES = {80: (2,)}", "RESTART_LAUNCHES = {}", 1), controls, selected), "RESTART_LAUNCHES"),
+            _replace_all(cell, "RESTART_LAUNCHES = {80: (2,), 82: (2,)}", "RESTART_LAUNCHES = {}", 1), controls, selected), "RESTART_LAUNCHES"),
         ("the shipped notebook carries a restart", lambda: check_launches(
             mutate(cell, r"^RESTART_FROM = ''$", "RESTART_FROM = '/content/drive/x.tar.gz'"), controls, selected), "must be a cold start"),
         ("BATCH 80 loses its CONCURRENCY 1 forcing", lambda: check_launches(
-            _replace_all(cell, "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 76: 1, 77: 1, 78: 1, 79: 1, 80: 1}", "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 76: 1, 77: 1, 78: 1, 79: 1}", 1), controls, selected),
+            _replace_all(cell, "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 76: 1, 77: 1, 78: 1, 79: 1, 80: 1, 81: 1, 82: 1}", "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 76: 1, 77: 1, 78: 1, 79: 1, 81: 1}", 1), controls, selected),
          "CONCURRENCY must be 1"),
         ("BATCH 80 dropped from the 1-core batches (it would run with six MKL threads)", lambda: check_launches(
-            mutate(cell, r"^ONE_CORE_BATCHES = \(76, 77, 78, 79, 80\)$", "ONE_CORE_BATCHES = (76, 77, 78, 79)"), controls, selected),
+            mutate(cell, r"^ONE_CORE_BATCHES = \(76, 77, 78, 79, 80, 81, 82\)$", "ONE_CORE_BATCHES = (76, 77, 78, 79, 81, 82)"), controls, selected),
          "lacks it"),
+        # BATCH 81, the plug chains: STAGED (in BATCHES, never the default), two launches = two chains, each cold or restarted, on the 1-core runtime, no library
+        ("BATCH = 81 (a STAGED batch as the default, 82 being the newest entry)", lambda: check_default_batch(mutate(cell, r"^BATCH = 82$", "BATCH = 81")), "is STAGED"),
+        ("BATCH = 80 (the old default) while 82 is the newest entry that is not staged", lambda: check_default_batch(mutate(cell, r"^BATCH = 82$", "BATCH = 80")), "newest entry that is not staged is 82"),
+        ("BATCH = 79 while 82 is the newest entry that is not staged", lambda: check_default_batch(mutate(cell, r"^BATCH = 82$", "BATCH = 79")), "newest entry that is not staged is 82"),
+        ("the staging released (STAGED empty) while BATCH = 81 (the old staged batch selected silently)", lambda: check_default_batch(mutate(cell, r"^BATCH = 82$", "BATCH = 81"), staged=()), "newest entry that is not staged is 82"),
+        ("BATCH = 82 with 82 declared staged (the default would be a staged batch)", lambda: check_default_batch(cell, staged=(81, 82)), "is STAGED"),
+        ("the notebook empties STAGED_BATCHES (81 could be selected silently)", lambda: check_launches(
+            mutate(cell, r"^STAGED_BATCHES = \(81,\)$", "STAGED_BATCHES = ()"), controls, selected), "STAGED_BATCHES"),
+        ("BATCH 81 names a child the controls do not define", lambda: check_launches(
+            cell, _controls_without(controls, "Y81_YS850_PLUG"), selected), "not child_ids in mainCaseControls.json"),
+        ("BATCH 81 launch 1 and 2 swapped (the YS850 chain first)", lambda: check_launches(
+            _replace_all(cell, '81: {1: ("Y81_YS794_PLUG", 10.0), 2: ("Y81_YS850_PLUG", 10.0)}', '81: {1: ("Y81_YS850_PLUG", 10.0), 2: ("Y81_YS794_PLUG", 10.0)}', 1), controls, selected),
+         "in this order"),
+        ("BATCH 81 as ONE launch holding both chains", lambda: check_launches(
+            _replace_all(cell, '81: {1: ("Y81_YS794_PLUG", 10.0), 2: ("Y81_YS850_PLUG", 10.0)}', '81: {1: ("Y81_YS794_PLUG Y81_YS850_PLUG", 10.0)}', 1), controls, selected),
+         "its decision is the sessions"),
+        ("BATCH 81 loses its LAUNCHES entry", lambda: check_launches(
+            mutate(cell, r"^    81: \{1: \(\"Y81_YS794_PLUG\", 10.0\), 2: \(\"Y81_YS850_PLUG\", 10.0\)\},\n", ""), controls, selected), "the notebook refuses it"),
+        ("BATCH 81 loses a child from its BATCHES entry", lambda: check_launches(
+            _replace_all(cell, '81: ("Y81_YS794_PLUG Y81_YS850_PLUG", 10.0,', '81: ("Y81_YS794_PLUG", 10.0,', 1), controls, selected), "do not partition"),
+        ("BATCH 81 at LAUNCH 3", lambda: fn_launch_chain(cell, 81, 3, controls), "has launches"),
+        ("BATCH 81 forced to CONCURRENCY 2", lambda: check_launches(
+            _replace_all(cell, "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 76: 1, 77: 1, 78: 1, 79: 1, 80: 1, 81: 1, 82: 1}", "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 76: 1, 77: 1, 78: 1, 79: 1, 80: 1, 81: 2}", 1), controls, selected),
+         "CONCURRENCY must be 1"),
+        ("BATCH 81 loses its CONCURRENCY 1 forcing", lambda: check_launches(
+            _replace_all(cell, "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 76: 1, 77: 1, 78: 1, 79: 1, 80: 1, 81: 1, 82: 1}", "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 76: 1, 77: 1, 78: 1, 79: 1, 80: 1}", 1), controls, selected),
+         "CONCURRENCY must be 1"),
+        ("BATCH 81 dropped from the 1-core batches (it would run with six MKL threads)", lambda: check_launches(
+            mutate(cell, r"^ONE_CORE_BATCHES = \(76, 77, 78, 79, 80, 81, 82\)$", "ONE_CORE_BATCHES = (76, 77, 78, 79, 80, 82)"), controls, selected), "lacks it"),
+        ("BATCH 81 given a reference library by launch", lambda: check_launches(
+            mutate(cell, r"^    \(78, 1\): True,", "    (78, 1): True,\n    (81, 1): True,"), controls, selected), "which REFERENCE_LIBRARY_BY_BATCH does not"),
+        ("the notebook's RESTART_OPTIONAL drops launch 2 (the YS850 chain could not be restarted)", lambda: check_launches(
+            _replace_all(cell, "RESTART_OPTIONAL = {81: (1, 2)}", "RESTART_OPTIONAL = {81: (1,)}", 1), controls, selected), "RESTART_OPTIONAL"),
+        ("a restarted BATCH 81 launch that does not say it is a restart", lambda: check_launches(
+            _replace_all(cell, "a RESTARTED session from {restart_from}", "a session from {restart_from}", 1), controls, selected), "RESTARTED session from the tarball"),
+        ("a cold BATCH 81 launch that does not say it is a cold start", lambda: check_launches(
+            _replace_all(cell, "'session 1, a COLD start'", "'session 1'", 1), controls, selected), "COLD start"),
+        # BATCH 82, the confirming restart test (case-engineer 33): the DEFAULT; two launches of ONE child (leg 1 cold, leg 2 a restart from launch 1's tarball), on the 1-core runtime, no library
+        ("BATCH 82 names a child the controls do not define", lambda: check_launches(
+            cell, _controls_without(controls, "Y80_RT86_B"), selected), "not child_ids in mainCaseControls.json"),
+        ("BATCH 82 launch 2 without RESTART_FROM (it would run leg 2 as a cold start)", lambda: fn_launch80(cell, 2, controls, restart_from="", batch=82), "needs RESTART_FROM"),
+        ("BATCH 82 launch 1 with a RESTART_FROM (a cold start restarted)", lambda: fn_launch80(cell, 1, controls, restart_from=FAKE_RESTART, batch=82), "cold start must have RESTART_FROM empty"),
+        ("BATCH 82 at LAUNCH 3", lambda: fn_launch80(cell, 3, controls, restart_from="", batch=82), "has launches"),
+        ("BATCH 82 at CONCURRENCY 2", lambda: fn_launch80(cell, 1, controls, restart_from="", batch=82, concurrency=2), "CONCURRENCY must be 1"),
+        ("BATCH 82 launch 2 names a child that no earlier launch ran", lambda: check_launches(
+            _replace_all(cell, '82: {1: ("Y80_RT86_B", 0.2), 2: ("Y80_RT86_B", 0.2)}', '82: {1: ("Y80_RT86_B", 0.2), 2: ("Y80_RT_B", 0.2)}', 1), controls, selected), "restart launch"),
+        ("BATCH 82 as ONE launch (leg 2 would never run)", lambda: check_launches(
+            _replace_all(cell, '82: {1: ("Y80_RT86_B", 0.2), 2: ("Y80_RT86_B", 0.2)}', '82: {1: ("Y80_RT86_B", 0.2)}', 1), controls, selected), "is a restart launch"),
+        ("BATCH 82 loses its LAUNCHES entry", lambda: check_launches(
+            mutate(cell, r"^    82: \{1: \(\"Y80_RT86_B\", 0.2\), 2: \(\"Y80_RT86_B\", 0.2\)\},\n", ""), controls, selected), "its decision is the sessions"),
+        ("BATCH 82 names a second child in its BATCHES entry (the launches no longer partition the batch)", lambda: check_launches(
+            _replace_all(cell, '82: ("Y80_RT86_B", 0.2, "BATCH 82', '82: ("Y80_RT86_B Y80_RT_B", 0.2, "BATCH 82', 1), controls, selected), "do not partition"),
+        ("the notebook's RESTART_LAUNCHES loses BATCH 82 launch 2 (it would be checked as a cold start)", lambda: check_launches(
+            _replace_all(cell, "RESTART_LAUNCHES = {80: (2,), 82: (2,)}", "RESTART_LAUNCHES = {80: (2,)}", 1), controls, selected), "RESTART_LAUNCHES"),
+        ("BATCH 82 loses its CONCURRENCY 1 forcing", lambda: check_launches(
+            _replace_all(cell, "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 76: 1, 77: 1, 78: 1, 79: 1, 80: 1, 81: 1, 82: 1}", "LAUNCH_CONCURRENCY = {69: 1, 71: 1, 76: 1, 77: 1, 78: 1, 79: 1, 80: 1, 81: 1}", 1), controls, selected),
+         "CONCURRENCY must be 1"),
+        ("BATCH 82 dropped from the 1-core batches (it would run with six MKL threads)", lambda: check_launches(
+            mutate(cell, r"^ONE_CORE_BATCHES = \(76, 77, 78, 79, 80, 81, 82\)$", "ONE_CORE_BATCHES = (76, 77, 78, 79, 80, 81)"), controls, selected), "lacks it"),
+        ("BATCH 82 given a reference library by launch", lambda: check_launches(
+            mutate(cell, r"^    \(78, 1\): True,", "    (78, 1): True,\n    (82, 1): True,"), controls, selected), "which REFERENCE_LIBRARY_BY_BATCH does not"),
+        ("the notebook stops being a 1-core batch's STAGED literal: STAGED_BATCHES gains 82 (the default staged)", lambda: check_launches(
+            mutate(cell, r"^STAGED_BATCHES = \(81,\)$", "STAGED_BATCHES = (81, 82)"), controls, selected), "STAGED_BATCHES"),
+        ("the notebook stops appending --restart-from after launch_plan", lambda: check_launches(
+            _replace_all(cell, RESTART_ASSEMBLY, "[]", 1), controls, selected), "no longer appends the restart flag"),
         ("BATCH 75 declared a 1-core batch (its branch needs CONCURRENCY 2)", lambda: check_launches(
-            mutate(cell, r"^ONE_CORE_BATCHES = \(76, 77, 78, 79, 80\)$", "ONE_CORE_BATCHES = (75, 76, 77, 78, 79, 80)"), controls, selected),
+            mutate(cell, r"^ONE_CORE_BATCHES = \(76, 77, 78, 79, 80, 81, 82\)$", "ONE_CORE_BATCHES = (75, 76, 77, 78, 79, 80, 81, 82)"), controls, selected),
          "CONCURRENCY must be 1"),
         ("a multi-core batch whose argv carries the 1-core pin", lambda: check_launches(
             _replace_all(cell, "'library': library, 'runner_args': runner_args}",
@@ -646,6 +757,23 @@ def _controls_without(controls: Path, child_id: str) -> Path:
     return Path(name)
 
 
+def check_default_batch(text: str, staged: tuple = STAGED) -> tuple:
+    """Rule 1 with STAGED entries. `BATCH` must name the NEWEST entry that is not staged, and must not name a staged one: a staged batch (BATCH 81, the plug chains) is in BATCHES so that its launches are built and
+    checked, but a package built from this notebook must not start it. Returns (selected, batches); raises LaunchError."""
+    selected, batches = parse(text)
+    if not batches:
+        raise LaunchError("BATCHES is empty")
+    if selected in staged:
+        raise LaunchError(f"BATCH = {selected} is STAGED {tuple(staged)!r}: it is not the default until its predecessor has returned READY (design section 5); "
+                          f"set BATCH = {max((b for b in batches if b not in staged), default=None)} or release the staging deliberately (STAGED here and STAGED_BATCHES in the notebook, in the same edit)")
+    unstaged = [b for b in batches if b not in staged]
+    newest = max(unstaged) if unstaged else None
+    if selected != newest:
+        raise LaunchError(f"BATCH = {selected} but the newest entry that is not staged is {newest} ({batches.get(newest)!r}). The build re-pins EXPECTED_SHA and does NOT touch BATCH, so this package would "
+                          f"download correctly and then run batch {selected} instead. Set BATCH = {newest}, or remove the {newest} entry if it is not meant to run.")
+    return selected, batches
+
+
 def fn_launch73(cell: str, launch: int, controls: Path, concurrency: int = 2, batch: int = 73) -> None:
     """The notebook's own launch_plan for a ONE_SESSION batch (73, or 74 / 75 with batch=74 / batch=75) at a launch / concurrency
     the decision forbids."""
@@ -658,48 +786,51 @@ def fn_launch73(cell: str, launch: int, controls: Path, concurrency: int = 2, ba
         raise LaunchError(f"BATCH {batch}: the notebook refuses it: {error}")
 
 
-def fn_launch80(cell: str, launch: int, controls: Path, restart_from: str = "", concurrency: int = 1) -> None:
-    """The notebook's own launch_plan for BATCH 80 at a launch / RESTART_FROM the decision forbids."""
+def fn_launch_chain(cell: str, batch: int, launch: int, controls: Path, restart_from: str = "", concurrency: int = 1) -> None:
+    """The notebook's own launch_plan for a chain batch (BATCH 81) at a launch / RESTART_FROM the decision forbids."""
     names = notebook_names(cell)
     fn = launch_functions(cell)
     one_core = {"batches": names["ONE_CORE_BATCHES"], "threads": names["ONE_CORE_MKL_THREADS"]}
     try:
-        fn["launch_plan"](80, launch, names["BATCHES"], names["LAUNCHES"], names["REFERENCE_LIBRARY_BY_BATCH"],
+        fn["launch_plan"](batch, launch, names["BATCHES"], names["LAUNCHES"], names["REFERENCE_LIBRARY_BY_BATCH"],
                           names["REFERENCE_LIBRARY_BY_LAUNCH"], concurrency, say=lambda _line: None, one_core=one_core, restart_from=restart_from)
     except ValueError as error:
-        raise LaunchError(f"BATCH 80: the notebook refuses it: {error}")
+        raise LaunchError(f"BATCH {batch}: the notebook refuses it: {error}")
+
+
+def fn_launch80(cell: str, launch: int, controls: Path, restart_from: str = "", concurrency: int = 1, batch: int = 80) -> None:
+    """The notebook's own launch_plan for BATCH 80 (or, with batch=82, the confirming restart test) at a launch / RESTART_FROM the decision forbids."""
+    names = notebook_names(cell)
+    fn = launch_functions(cell)
+    one_core = {"batches": names["ONE_CORE_BATCHES"], "threads": names["ONE_CORE_MKL_THREADS"]}
+    try:
+        fn["launch_plan"](batch, launch, names["BATCHES"], names["LAUNCHES"], names["REFERENCE_LIBRARY_BY_BATCH"],
+                          names["REFERENCE_LIBRARY_BY_LAUNCH"], concurrency, say=lambda _line: None, one_core=one_core, restart_from=restart_from)
+    except ValueError as error:
+        raise LaunchError(f"BATCH {batch}: the notebook refuses it: {error}")
 
 
 def main() -> int:
     if "--self-test" in sys.argv[1:]:
         try:
-            for label, line in negatives(launch_cell(), CONTROLS, 80):
+            for label, line in negatives(launch_cell(), CONTROLS, 82):
                 print(f"   refused: {label} -> {line}")
         except (LaunchError, AssertionError) as error:
             fail(f"self-test: {error}")
         print("notebook batch selector self-test OK")
         return 0
     text = source_of(NOTEBOOK)
-    selected, batches = parse(text)
-    if not batches:
-        fail("BATCHES is empty")
-
-    newest = max(batches)
+    try:
+        selected, batches = check_default_batch(text)
+    except LaunchError as error:
+        fail(str(error))
     known = {
         c["child_id"]
         for c in json.loads(CONTROLS.read_text())["children"]
         if c.get("child_id")
     }
 
-    # 1. The selector must point at the newest entry.
-    if selected != newest:
-        fail(
-            f"BATCH = {selected} but the newest entry is {newest} "
-            f"({batches[newest]!r}). The build re-pins EXPECTED_SHA and does "
-            f"NOT touch BATCH, so this package would download correctly and "
-            f"then run batch {selected} instead. Set BATCH = {newest}, or "
-            f"remove the {newest} entry if it is not meant to run."
-        )
+    # 1. The selector must point at the newest entry that is not STAGED (check_default_batch, above).
 
     # 2. Every child it names must actually exist, or --only silently matches
     #    nothing and the run returns an empty artefact that reads as success.
@@ -744,7 +875,7 @@ def main() -> int:
     except LaunchError as error:
         fail(str(error))
     for r in records:
-        print(f"  BATCH {r['batch']} launch {r['launch']}: {len(r['children'])} child(ren) {' '.join(r['children'])}; "
+        print(f"  BATCH {r['batch']} launch {r['launch']}{' (as a restarted session)' if r.get('variant') == 'restart' else ''}: {len(r['children'])} child(ren) {' '.join(r['children'])}; "
               f"runner library flags passed: {r['library_passed'] or 'none'}")
 
     try:
@@ -760,7 +891,7 @@ def main() -> int:
         if c.get("child_id") and c["child_id"] not in covered
     ]
     print(
-        f"notebook batch selector OK: BATCH = {selected} (newest), "
+        f"notebook batch selector OK: BATCH = {selected} (newest not staged; staged {STAGED}), "
         f"{len(named)} child(ren), all present in controls; "
         f"{len(unscheduled)} child(ren) declared unscheduled"
     )

@@ -3738,13 +3738,13 @@ def s23_generator_negatives(only: str | None = None) -> None:
         # S25: every legacy child states S_t = 1.0, writes it, and writes 17 digits (the grid is not a filter: all of them)
         # the legacy children (every child outside the S25 5a series, whose six children (two smoke, the RT-1 pair, BATCH 78's RT-1 pair) state S_t = 25/3 on purpose)
         # (B79_Y_GATE is the 49th child: series s25_ygate, the 5a dictionary at S_t = 25/3 on the Y mesh, so it is outside "legacy" too)
-        # (the 5 symmetric-Y children, series s25_ys794 / s25_ys850 / s25_ys794_plug, are likewise the 5a dictionary at S_t = 25/3 on the f = 2 Y meshes)
-        legacy = [c for c in every if json.loads((root / "runs" / c / "child.json").read_text())["series"] not in ("s25_5a", "s25_ygate", "s25_ys794", "s25_ys850", "s25_ys794_plug")]
-        assert len(legacy) == KEPT_CHILDREN - 12, (len(legacy), KEPT_CHILDREN)
+        # (the 6 symmetric-Y children, series s25_ys794 / s25_ys850 / s25_ys794_plug / s25_ys850_plug, are likewise the 5a dictionary at S_t = 25/3 on the f = 2 Y meshes)
+        legacy = [c for c in every if json.loads((root / "runs" / c / "child.json").read_text())["series"] not in ("s25_5a", "s25_ygate", "s25_ys794", "s25_ys850", "s25_ys794_plug", "s25_ys850_plug")]
+        assert len(legacy) == KEPT_CHILDREN - 14, (len(legacy), KEPT_CHILDREN)
         assert all("\ntimeScale 1.0;\n" in props(c) for c in legacy), "a child's dictionary lacks timeScale 1.0"
         assert all(json.loads((root / "runs" / c / "child.json").read_text())["time_scale"] == 1.0 for c in legacy)
         non_legacy = ["B78_RT_5a_A", "B78_RT_5a_B", "B79_Y_GATE", "RT_5a_A", "RT_5a_B", "S25_5a_tan", "S25_5a_tan_half",
-                      "Y80_RT_A", "Y80_RT_B", "Y80_YS794_FLOW", "Y80_YS850_FLOW", "Y81_YS794_PLUG"]
+                      "Y80_RT86_B", "Y80_RT_A", "Y80_RT_B", "Y80_YS794_FLOW", "Y80_YS850_FLOW", "Y81_YS794_PLUG", "Y81_YS850_PLUG"]
         assert [c for c in every if c not in legacy] == non_legacy
         assert all("\ntimeScale 8.333333333333334;\n" in props(c) for c in non_legacy)
         # THE SYMMETRIC Y (design 2026-10-14-case-symmetric-y-plug.md rev. 2.1; case-engineer 27 and 27b): the schedule and the shared dictionaries, read off the generated files
@@ -3754,8 +3754,12 @@ def s23_generator_negatives(only: str | None = None) -> None:
             for _pat in (r"(?m)^writeControl\s+runTime;", r"(?m)^writeInterval\s+0\.00050976;", r"(?m)^endTime\s+0\.00919568;", r"(?m)^purgeWrite\s+0;"):
                 assert re.search(_pat, _top(_g)), (_g, _pat)
         # the plug child: 185 ms + 5e-5 s, NOT a multiple of the 1 ms write interval (CE ruling, DECISIONS 2026-10-14): the 185th write cannot tie with the stop
-        for _pat in (r"(?m)^writeControl\s+runTime;", r"(?m)^writeInterval\s+0\.001;", r"(?m)^endTime\s+0\.18505;", r"(?m)^purgeWrite\s+0;"):
-            assert re.search(_pat, _top("Y81_YS794_PLUG")), ("Y81_YS794_PLUG", _pat)
+        for _g in ("Y81_YS794_PLUG", "Y81_YS850_PLUG"):
+            for _pat in (r"(?m)^writeControl\s+runTime;", r"(?m)^writeInterval\s+0\.001;", r"(?m)^endTime\s+0\.18505;", r"(?m)^purgeWrite\s+0;"):
+                assert re.search(_pat, _top(_g)), (_g, _pat)
+        # the YS850 plug is the YS794 plug's dictionaries on the other mesh (BATCH 81, case-engineer 28): the same controlDict, fvSchemes, fvSolution, phaseClotProperties, physicalProperties and momentumTransport
+        for _f in ("constant/phaseClotProperties", "constant/physicalProperties", "constant/momentumTransport", "system/controlDict", "system/fvSchemes", "system/fvSolution"):
+            assert (root / "runs" / "Y81_YS794_PLUG" / _f).read_bytes() == (root / "runs" / "Y81_YS850_PLUG" / _f).read_bytes(), ("YS850 plug", _f)
         # RT_B and the plug child share every file byte for byte except the controlDict, and the controlDict differs in endTime, the wallBudget stopTime and the stopAfterStep object ONLY
         for _f in ("constant/phaseClotProperties", "constant/physicalProperties", "constant/momentumTransport", "system/fvSchemes", "system/fvSolution", "system/blockMeshDict"):
             assert (root / "runs" / "Y81_YS794_PLUG" / _f).read_bytes() == (root / "runs" / "Y80_RT_B" / _f).read_bytes(), _f
@@ -3770,7 +3774,16 @@ def s23_generator_negatives(only: str | None = None) -> None:
         # RT_A writes every step (timeStep 1, purgeWrite 10) and stops after step 105 through the same object
         for _pat in (r"(?m)^writeControl\s+timeStep;", r"(?m)^writeInterval\s+1;", r"(?m)^purgeWrite\s+10;", r"stopAfterStep"):
             assert re.search(_pat, _ys("Y80_RT_A", "system/controlDict")), ("Y80_RT_A", _pat)
-        for _c in ("Y80_YS794_FLOW", "Y80_YS850_FLOW", "Y80_RT_A", "Y80_RT_B", "Y81_YS794_PLUG"):
+        # Y80_RT86_B (BATCH 82, case-engineer 33) is Y80_RT_B with ONE number moved, the leg-1 stop: EVERY file of the generated child is byte-identical to Y80_RT_B's except child.json, whose
+        # only differences are child_id and stop_after_step.leg1 (86 for 100); the file lists are equal, so no file appears or disappears with the stop
+        _rb, _r86 = root / "runs" / "Y80_RT_B", root / "runs" / "Y80_RT86_B"
+        _fb = sorted(str(p_.relative_to(_rb)) for p_ in _rb.rglob("*") if p_.is_file())
+        assert _fb == sorted(str(p_.relative_to(_r86)) for p_ in _r86.rglob("*") if p_.is_file()) and len(_fb) > 10, "Y80_RT86_B and Y80_RT_B do not hold the same files"
+        assert [f for f in _fb if (_rb / f).read_bytes() != (_r86 / f).read_bytes()] == ["child.json"], "Y80_RT86_B differs from Y80_RT_B in more than child.json"
+        _jb, _j86 = json.loads(_ys("Y80_RT_B", "child.json")), json.loads(_ys("Y80_RT86_B", "child.json"))
+        assert sorted(k_ for k_ in set(_jb) | set(_j86) if _jb.get(k_) != _j86.get(k_)) == ["child_id", "stop_after_step"], "Y80_RT86_B's child.json differs from Y80_RT_B's in more than child_id and the stop"
+        assert _jb["stop_after_step"] == {"leg1": 100, "leg2": 105} and _j86["stop_after_step"] == {"leg1": 86, "leg2": 105}, (_jb["stop_after_step"], _j86["stop_after_step"])
+        for _c in ("Y80_YS794_FLOW", "Y80_YS850_FLOW", "Y80_RT_A", "Y80_RT_B", "Y80_RT86_B", "Y81_YS794_PLUG", "Y81_YS850_PLUG"):
             assert not (root / "runs" / _c / "child.env").exists() and "solver_library" not in json.loads(_ys(_c, "child.json")), _c
             assert re.findall(r"(?m)^\s*nNonOrthogonalCorrectors\s+(\S+);", _ys(_c, "system/fvSolution")) == ["2"], _c
         # BATCH 79 (design 2026-10-14-case-y-bifurcation-gate.md rev. 2.2): the Y child writes at runTime tau1 and stops at 18 tau1 + 2e-5 s, with 2 non-orthogonal correctors,
@@ -4068,9 +4081,9 @@ def s19_source_errors_are_case_relative() -> None:
 
 def y_launch_trees() -> None:
     """THE LAUNCH TREES AS THE NOTEBOOK BUILDS THEM (verification 29, F1): each Colab launch runs create_cases.py with ITS OWN filter and Allrun ends with assess_case.py on that
-    tree, not on the full 54-child matrix the other scenarios score (whose clot reference is an earlier channel disc). BATCH 80 launch 1 and launch 2 are read from the
-    notebook with the selector's parser; the lone Y81 plug child is the first child of BATCH 81's chains (no BATCHES entry yet). Each tree gets every child synthesised as a clean returned run,
-    and assess_case.main must exit 0, write result.json, and carry the y_gate and y_rt blocks. Before the fix a plug became the clot reference and deformation_table read its
+    tree, not on the full 55-child matrix the other scenarios score (whose clot reference is an earlier channel disc). BATCH 80 launch 1 and launch 2, BATCH 81 launch 1 and launch 2
+    (the two plug chains, STAGED) and BATCH 82 launch 1 and launch 2 (the confirming restart test, the default) are read from the notebook with the selector's parser. Each tree gets every child synthesised as a clean returned run,
+    and assess_case.main must exit 0, write result.json, and carry the y_gate and y_rt blocks; a plug child that wrote no full write adds NO y_plug summary (status NO_WRITES). Before the fix a plug became the clot reference and deformation_table read its
     missing height_m: KeyError, no result.json, INVALID / NO_ASSESSOR_RESULT."""
     import importlib.util
     root_repo = Path(__file__).resolve().parents[3]
@@ -4078,8 +4091,11 @@ def y_launch_trees() -> None:
     nbsel = importlib.util.module_from_spec(nbs)
     nbs.loader.exec_module(nbsel)
     names = nbsel.notebook_names(nbsel.launch_cell(root_repo / "notebooks" / "AM2020_main_case_colab.ipynb"))
-    trees = {"BATCH 80 launch 1": names["LAUNCHES"][80][1][0].split(), "BATCH 80 launch 2": names["LAUNCHES"][80][2][0].split(), "a lone Y81 plug child": ["Y81_YS794_PLUG"]}
+    trees = {"BATCH 80 launch 1": names["LAUNCHES"][80][1][0].split(), "BATCH 80 launch 2": names["LAUNCHES"][80][2][0].split(), "BATCH 81 launch 1": names["LAUNCHES"][81][1][0].split(), "BATCH 81 launch 2": names["LAUNCHES"][81][2][0].split(),
+             "BATCH 82 launch 1": names["LAUNCHES"][82][1][0].split(), "BATCH 82 launch 2": names["LAUNCHES"][82][2][0].split()}
     assert trees["BATCH 80 launch 1"] == ["Y80_YS794_FLOW", "Y80_YS850_FLOW", "Y80_RT_A", "Y80_RT_B"] and trees["BATCH 80 launch 2"] == ["Y80_RT_B"], trees
+    assert trees["BATCH 81 launch 1"] == ["Y81_YS794_PLUG"] and trees["BATCH 81 launch 2"] == ["Y81_YS850_PLUG"], trees
+    assert trees["BATCH 82 launch 1"] == ["Y80_RT86_B"] and trees["BATCH 82 launch 2"] == ["Y80_RT86_B"], trees
     for label, filt in trees.items():
         with tempfile.TemporaryDirectory(prefix="am2020-ylaunch-") as tmp:
             root = build_case(Path(tmp))
@@ -4098,9 +4114,102 @@ def y_launch_trees() -> None:
             gates = {c: v["verdict"] for c, v in result["y_gate"].items()}
             assert all(c.endswith("_FLOW") for c in gates) and sorted(gates) == sorted(f for f in filt if f.endswith("_FLOW")), (label, gates)
             assert all(v == "READY" for v in gates.values()), (label, result["y_gate"])
+            assert "y_plug" not in result, (label, "a plug child with no full write must not add a y_plug summary", result.get("y_plug"))
             rt = [(e["pair_id"], e["status"]) for e in result["y_rt"]]
             assert result["deformation"]["rows"] == [] and result["deformation"]["clot_height_m"] is None, result["deformation"]
             print(f"   {label}: {filt} -> exit 0, result.json, y_gate {gates}, y_rt {rt}, {result['children_admissible']}/{result['children_total']} admissible")
+
+
+def y_plug_chain_scenarios() -> None:
+    """BATCH 81'S TWO CHAINS, each of two Colab sessions, END TO END ON RETURNED CASES (case-engineer 28b; the plug assessor, scripts/y_gate/y_plug_assess.py, and its CLI scripts/y_plug_chain.py).
+    For each plug child (Y81_YS794_PLUG, then Y81_YS850_PLUG), generated by the notebook's own launch filter, a returned case of SESSION 1 (0/ and full writes 1..30 ms, then a
+    writeNow at 30.41 ms: not write-aligned) and of SESSION 2 (restart.json, the restart point, then the writes to 4 ms past t_c + 2 tau_A) is laid out from physics 24's STUCK law on the
+    real f = 2 mesh (y_plug_synth: a rigid shift of the C1 plug; the written fields as the solver writes them). Expected, each seen:
+      session 1 alone                  y_plug_chain.py exit 3 (NOT_READABLE_YET: the 2 tau_A read lies past the session), and assess_case.y_plug_session says so
+      session 2 alone                  assess_case.y_plug_session CHAIN_NEEDED (a fragment gives no verdict)
+      the 2-session chain              exit 0, VERDICT STUCK (the model's R = exp(-tau_A/tau) = 0.37 <= 0.5), final, sessions 2, a merged series on the 1 ms grid with the restart point once
+      a cold second session            exit 1, CHAIN_REFUSED (it repeats the chain from t = 0)
+      the chain with a write removed   exit 1, CHAIN_REFUSED (a gap)
+      the chain in swapped order       exit 1, CHAIN_REFUSED
+    Pure python (no numpy): the same under both interpreters."""
+    import importlib.util
+    here = Path(__file__).resolve().parent
+    sys.path.insert(0, str(here / "y_gate"))
+    sys.path.insert(0, str(here))
+    import y_plug_assess as PA
+    import y_plug_synth as PS
+    controls_path = here.parent / "constant" / "mainCaseControls.json"
+    params = json.loads(controls_path.read_text())["y_plug_verdict"]
+    chain_cli = here / "y_plug_chain.py"
+
+    def cli(*dirs):
+        done = subprocess.run([sys.executable, "-B", str(chain_cli), *map(str, dirs), "--controls", str(controls_path)], capture_output=True, text=True)
+        try:
+            out = json.loads(done.stdout)
+        except ValueError:
+            raise AssertionError(f"y_plug_chain.py printed no JSON: {(done.stdout + done.stderr)[-400:]}")
+        return done.returncode, out
+    for tag, child in (("YS794", "Y81_YS794_PLUG"), ("YS850", "Y81_YS850_PLUG")):
+        with tempfile.TemporaryDirectory(prefix="am2020-ychain-") as tmp:
+            tmp = Path(tmp)
+            root = build_case(tmp)
+            shutil.rmtree(root / "runs")
+            done = subprocess.run([sys.executable, "-B", str(root / "scripts" / "create_cases.py"), child], capture_output=True, text=True)
+            assert done.returncode == 0, (done.stdout + done.stderr)[-600:]
+            tpl = root / "runs" / child
+            spec = json.loads((tpl / "child.json").read_text())
+            mesh = PS.Mesh(tag, spec)
+            facts = PS.facts_for(tag)
+            m = PS.model_numbers(tag, "mesh", "cap", 1.0)
+            tau_a = facts["lam"] * facts["D0"] / m["V0"] + facts["tau_v"]
+            k_end = int(math.ceil((m["t_c"] + 2.0 * tau_a + 0.004) / 1e-3))
+            disp_at = PS.model_displacement(m)
+            r_zero = PS.plug_r(mesh, 0.0)
+            join_k, join_dt = 30, 4.1e-4
+
+            def write_for(t, idx):
+                return {"t": t, "r": PS.plug_r(mesh, disp_at(t) / mesh.D0), "index": idx}
+            w1 = [write_for(k * 1e-3, k) for k in range(1, join_k + 1)]
+            t_join = join_k * 1e-3 + join_dt
+            w1.append(write_for(t_join, join_k + 1))
+            s1 = PS.write_session(tmp / "s1", tpl, mesh, w1, zero_r=r_zero)
+            jname = PS.time_name(t_join)
+            w2 = [dict(w1[-1])] + [write_for(k * 1e-3, k + 2) for k in range(join_k + 1, k_end + 1)]
+            s2 = PS.write_session(tmp / "s2", tpl, mesh, w2, zero_r=r_zero, restart=PS.restart_record(s1, jname, w1[-1]["index"]))
+            # session 1 alone: not yet readable
+            rc, out = cli(s1)
+            assert rc == 3 and out["status"] == "NOT_READABLE_YET", (tag, "session 1 alone", rc, out.get("status"), out.get("why"))
+            sess = PA.assess_case_dirs([s1], spec, params, texts=[""], labels=["s1"])
+            assert sess["status"] == "NOT_READABLE_YET", (tag, sess["status"])
+            # session 2 alone: assess_case says it needs the chain
+            spec_ac = importlib.util.spec_from_file_location("assess_case_ychain", here / "assess_case.py")
+            ac = importlib.util.module_from_spec(spec_ac)
+            spec_ac.loader.exec_module(ac)
+            frag = ac.y_plug_session(s2, spec, json.loads(controls_path.read_text()), "")
+            assert frag["status"] == "CHAIN_NEEDED" and frag["verdict"] is None, (tag, frag)
+            # the chain
+            rc, out = cli(s1, s2)
+            assert rc == 0 and out["status"] == "VERDICT" and out["verdict"] == "STUCK" and out["final"] and out["sessions"] == 2, (tag, rc, out.get("status"), out.get("verdict"), out.get("why"))
+            # the STUCK law is laid on BOTH meshes; the YS794 chain is predicted STUCK (agrees), the YS850 chain SQUEEZE (a STUCK there DISAGREES with its prediction and the record says so)
+            assert out["predicted"] == {"YS794": "STUCK", "YS850": "SQUEEZE"}[tag] and out["agrees_with_prediction"] is (tag == "YS794"), (tag, out.get("agrees_with_prediction"), out.get("predicted"))
+            res = PA.assess_case_dirs([s1, s2], spec, params)
+            ts = res["series_columns"]["t"]
+            assert all(abs((b - a) - 1e-3) < 1e-9 for a, b in zip(ts, ts[1:])) and ts[0] == 0.0 and len(ts) == len(set(ts)), (tag, ts[28:34])
+            R = out["reads"][0]["R"]
+            assert abs(R - math.exp(-tau_a / m["tau"])) < 0.05, (tag, R, math.exp(-tau_a / m["tau"]))
+            # refusals
+            shutil.copytree(s2, tmp / "s2_cold")
+            (tmp / "s2_cold" / "restart.json").unlink()
+            rc, out = cli(s1, tmp / "s2_cold")
+            assert rc == 1 and out["status"] == "CHAIN_REFUSED" and "cold start" in out["why"], (tag, rc, out.get("status"), out.get("why"))
+            shutil.copytree(s2, tmp / "s2_gap")
+            shutil.rmtree(tmp / "s2_gap" / PS.time_name(0.034))
+            rc, out = cli(s1, tmp / "s2_gap")
+            assert rc == 1 and out["status"] == "CHAIN_REFUSED" and "gap" in out["why"], (tag, rc, out.get("status"), out.get("why"))
+            rc, out = cli(s2, s1)
+            assert rc == 1 and out["status"] == "CHAIN_REFUSED", (tag, rc, out.get("status"))
+            print(f"   {child}: 2-session chain ({len(w1)} + {len(w2)} writes, join at {t_join:.5f} s) -> exit 0, VERDICT STUCK final, R {R:.3f} (model {math.exp(-tau_a / m['tau']):.3f}); "
+                  f"session 1 alone exit 3, session 2 alone CHAIN_NEEDED, a cold second session / a gap / swapped sessions exit 1 CHAIN_REFUSED")
 
 
 def reference_library_wiring() -> None:
@@ -4116,7 +4225,9 @@ def reference_library_wiring() -> None:
     spec.loader.exec_module(nbsel)
     text = nbsel.source_of(root / "notebooks" / "AM2020_main_case_colab.ipynb")
     batch, batches = nbsel.parse(text)
-    assert batch == max(batches) == 80, (batch, max(batches))
+    # BATCH 82 (the confirming restart test) is the default, the newest entry; BATCH 81 (the plug chains) stays STAGED: built and checked, but never selectable as the default (check_notebook_batch_selector.STAGED)
+    assert batch == 82 and max(batches) == 82 and nbsel.STAGED == (81,), (batch, max(batches), nbsel.STAGED)
+    assert nbsel.check_default_batch(text) == (batch, batches)
     # the build script re-pins by exactly these two patterns; a second match would break the release
     assert len(re.findall(r"EXPECTED_REPO_DIGEST = '[0-9a-f]{64}'", text)) == 1
     assert len(re.findall(r"EXPECTED_TAG = 'digest-[0-9a-f]{12}'", text)) == 1
@@ -4179,7 +4290,8 @@ def reference_library_wiring() -> None:
     # runner's own argparse and accepted by its own start-of-session check.
     cell = nbsel.launch_cell(root / "notebooks" / "AM2020_main_case_colab.ipynb")
     records = nbsel.check_launches(cell, controls, 72)
-    by = {(r["batch"], r["launch"]): r for r in records}
+    by = {(r["batch"], r["launch"]): r for r in records if r.get("variant", "cold") == "cold"}
+    by_restart = {(r["batch"], r["launch"]): r for r in records if r.get("variant") == "restart"}
     assert {(71, 1), (72, 1), (72, 2)} <= set(by), sorted(by)
     assert by[(72, 1)]["children"] == ["S23v_G4_r3", "S23v_G4_r3_S22"], by[(72, 1)]["children"]
     assert by[(72, 2)]["children"] == ["S23v_G4_nor3", "S23v_G40"], by[(72, 2)]["children"]
@@ -4253,6 +4365,33 @@ def reference_library_wiring() -> None:
     assert any("restarted from" in _l and "--restart-from" in _l for _l in by[(80, 2)]["printed"]) and not any("restarted from" in _l for _l in by[(80, 1)]["printed"]), "launch 2 is the restart, launch 1 a cold start"
     refused(need("Y80_RT_B", controls), {"p2prime": "", "s22": "", "baseline": "/x"}, "built for nothing")
     check(need("Y80_RT_B", controls), {"p2prime": "", "s22": "", "baseline": ""})
+    # BATCH 82 (the confirming restart test, case-engineer 33): the same two-launch shape as BATCH 80 for ONE child. Launch 1 is a cold start (leg 1 stops after step 86), launch 2 a SECOND runner invocation
+    # restarted from launch 1's tarball (leg 2, stops after step 105); both on the 1-core runtime, no reference library, --mkl-threads 1, no --mkl-cbwr; Y80_RT86_B is the one child in two launches by design (RESTART_LAUNCHES)
+    assert [k for k in by if k[0] == 82] == [(82, 1), (82, 2)], sorted(by)
+    assert by[(82, 1)]["children"] == ["Y80_RT86_B"] and by[(82, 2)]["children"] == ["Y80_RT86_B"], (by[(82, 1)]["children"], by[(82, 2)]["children"])
+    for _n in (1, 2):
+        assert need("Y80_RT86_B", controls) == set() and by[(82, _n)]["library_passed"] == [], _n
+        _a82 = by[(82, _n)]["argv"]
+        assert "--mkl-cbwr" not in _a82 and _a82[_a82.index("--mkl-threads") + 1] == "1" and not any(f in _a82 for f in ("--baseline-solver", "--s22-solver", "--p2prime-solver")), (_n, _a82)
+        assert _a82[_a82.index("--only") + 1] == "Y80_RT86_B", (_n, _a82)
+    assert any("restarted from" in _l and "--restart-from" in _l for _l in by[(82, 2)]["printed"]) and not any("restarted from" in _l for _l in by[(82, 1)]["printed"]), "BATCH 82 launch 2 is the restart, launch 1 a cold start"
+    assert any("stops after step 86" in _l for _l in by[(82, 1)]["printed"]) and any("stops after step 105" in _l for _l in by[(82, 2)]["printed"]), "BATCH 82 prints the two stops"
+    refused(need("Y80_RT86_B", controls), {"p2prime": "", "s22": "", "baseline": "/x"}, "built for nothing")
+    check(need("Y80_RT86_B", controls), {"p2prime": "", "s22": "", "baseline": ""})
+    # BATCH 81 (the plug chains, STAGED): TWO launches, one chain each, on the 1-core runtime, no reference library. Each launch is built twice: cold (session 1, RESTART_FROM empty) and as a later session of its chain
+    # (RESTART_FROM = the previous session's tarball): the restarted argv carries --restart-from and says RESTARTED, the cold one neither; both pass --mkl-threads 1 and no --mkl-cbwr.
+    assert [k for k in by if k[0] == 81] == [(81, 1), (81, 2)] and sorted(k for k in by_restart if k[0] == 81) == [(81, 1), (81, 2)], (sorted(by), sorted(by_restart))
+    assert by[(81, 1)]["children"] == ["Y81_YS794_PLUG"] and by[(81, 2)]["children"] == ["Y81_YS850_PLUG"], (by[(81, 1)]["children"], by[(81, 2)]["children"])
+    for _n in (1, 2):
+        assert need(" ".join(by[(81, _n)]["children"]), controls) == set() and by[(81, _n)]["library_passed"] == [] and by_restart[(81, _n)]["library_passed"] == [], _n
+        for _rec, _restarted in ((by[(81, _n)], False), (by_restart[(81, _n)], True)):
+            _a81 = _rec["argv"]
+            assert "--mkl-cbwr" not in _a81 and _a81[_a81.index("--mkl-threads") + 1] == "1" and not any(f in _a81 for f in ("--baseline-solver", "--s22-solver", "--p2prime-solver")), (_n, _a81)
+            assert _a81[_a81.index("--only") + 1] == by[(81, _n)]["children"][0], (_n, _a81)
+            assert ("--restart-from" in _a81) == _restarted, (_n, _restarted, _a81)
+            assert any(("RESTARTED" in _l) == _restarted and ("COLD" in _l) != _restarted for _l in _rec["printed"] if "session" in _l and "BATCH 81" in _l), (_n, _restarted, _rec["printed"])
+    refused(need("Y81_YS794_PLUG", controls), {"p2prime": "", "s22": "", "baseline": "/x"}, "built for nothing")
+    check(need("Y81_YS850_PLUG", controls), {"p2prime": "", "s22": "", "baseline": ""})
     assert "--s22-solver" in by[(72, 1)]["argv"] and "--s22-solver" not in by[(72, 2)]["argv"]
     # the same two negatives on this function's own exec'd runner functions
     check(need(" ".join(by[(72, 1)]["children"]), controls), {"p2prime": "", "s22": "/x"})
@@ -4837,10 +4976,10 @@ S21_GENERATOR_NEGATIVES = (
 # The number of children the generator emits: the 18 kept + the 8 S22 validation
 # twins of BATCH 71 + the 4 S23 twins of BATCH 72 + the 2 production children of BATCH 73 + the 1 diagnostic child of BATCH 74
 # (D74_refI, the passive intact-network reference) + the 1 re-run child of BATCH 75 (D75_refI, the same measurement on rev. 3.1) + the 2 B76-5a
-# smoke children (S25_5a_tan, S25_5a_tan_half; case-engineer 09b) + the 2 B76-OFF children (B76_OFF_A on the baseline binary, B76_OFF_B on the S25 build; case-engineer 09c) + the 4 B76-RT children (RT_P73_A/B, RT_5a_A/B) + the 6 BATCH 78 children (B78_OFF_A/B, B78_CTL_1/2, B78_RT_5a_A/B; case-engineer 06) + the 1 BATCH 79 child (B79_Y_GATE, the Y-bifurcation geometry gate; case-engineer 12 and 13) + the 5 symmetric-Y children (Y80_YS794_FLOW, Y80_YS850_FLOW, Y80_RT_A, Y80_RT_B of BATCH 80 and the plug child Y81_YS794_PLUG; case-engineer 27 and 27b). ONE pin, read by
+# smoke children (S25_5a_tan, S25_5a_tan_half; case-engineer 09b) + the 2 B76-OFF children (B76_OFF_A on the baseline binary, B76_OFF_B on the S25 build; case-engineer 09c) + the 4 B76-RT children (RT_P73_A/B, RT_5a_A/B) + the 6 BATCH 78 children (B78_OFF_A/B, B78_CTL_1/2, B78_RT_5a_A/B; case-engineer 06) + the 1 BATCH 79 child (B79_Y_GATE, the Y-bifurcation geometry gate; case-engineer 12 and 13) + the 7 symmetric-Y children (Y80_YS794_FLOW, Y80_YS850_FLOW, Y80_RT_A, Y80_RT_B of BATCH 80, Y80_RT86_B of BATCH 82 and the plug children Y81_YS794_PLUG and Y81_YS850_PLUG of BATCH 81; case-engineer 27, 27b, 28 and 33). ONE pin, read by
 # s21_generator_negatives, s23_generator_negatives and main(): BATCH 72 updated main's copy and left this
 # function's at 26, and release 2026-10-07 died on it ten minutes into the build.
-KEPT_CHILDREN = 54
+KEPT_CHILDREN = 56
 
 
 def s21_generator_negatives() -> None:
@@ -4975,7 +5114,7 @@ def main() -> int:
         assert all(c["status"] == "COMPLETE" for c in r["children"].values()), sorted(
             (k, c["status"]) for k, c in r["children"].items() if c["status"] != "COMPLETE")
         assert r["xu2017_fig5"], "no Xu report"
-        assert [(e["pair_id"], e["status"]) for e in r["y_rt"]] == [("Y80_RT", "PASS")], ("the symmetric Y's restart pair on an exact synthetic restart", r.get("y_rt"))
+        assert [(e["pair_id"], e["status"]) for e in r["y_rt"]] == [("Y80_RT", "PASS"), ("Y80_RT86", "PASS")], ("the symmetric Y's two restart pairs (100 -> 105 and the confirming 86 -> 105, on the same A) on an exact synthetic restart", r.get("y_rt"))
     exercise("healthy", variant(), healthy)
 
     def compile_failed(r, code):
@@ -5032,6 +5171,7 @@ def main() -> int:
              variant(B79_Y_GATE=dict(y_options=dict(dt=1.03 * 3.1188e-06))), healthy)
     run_direct("y_gate_one_child_matrix_is_assessed_ready_and_a_wrong_split_not_ready", y_gate_only_matrix)
     run_direct("y_launch_trees_are_assessed_exit_0_with_y_gate_and_y_rt", y_launch_trees)
+    run_direct("y_plug_chains_of_two_sessions_merge_and_score_both_chains", y_plug_chain_scenarios)
     run_direct("s19_source_errors_are_case_relative_not_the_temporary_directory", s19_source_errors_are_case_relative)
     # THE SYMMETRIC Y (BATCH 80/81; case-engineer 27b), end to end through assess_case.main on y_synth / y_rt_synth cases. The symmetric gates read gate 2 as |q1/q0 - 0.5| <= 1e-7:
     # a 3e-5 split error (the size of a 1e-9 m mirror defect, design 6 A item 2) and one outlet face's flux on the wrong daughter (about 2e-2) are NOT_READY by gate 2.
@@ -5049,16 +5189,23 @@ def main() -> int:
     exercise("ys_gate_child_stopped_early_is_excluded_and_named", variant(Y80_YS850_FLOW=dict(short=True)), only("Y80_YS850_FLOW", "did not complete"))
     # the restart pair: an exact restart PASSES (the healthy scenario); one unit in the last place of one field of RT_B's step-105 directory, or of one logged deltaT, is FAIL
     # (the children are COMPLETE: the measurement exists), and a leg 2 that stopped early is INCOMPLETE and named.
-    def y_rt_status(want):
+    def y_rt_status(want, want86="PASS"):
         def check(r, code):
             assert code == 0 and not r["inadmissible"], (code, r["inadmissible"])
-            assert [(e["pair_id"], e["status"]) for e in r["y_rt"]] == [("Y80_RT", want)], r.get("y_rt")
+            assert [(e["pair_id"], e["status"]) for e in r["y_rt"]] == [("Y80_RT", want), ("Y80_RT86", want86)], r.get("y_rt")
         return check
     exercise("y_rt_one_ulp_in_a_field_is_fail", variant(Y80_RT_B=dict(y_options=dict(ulp="q"))), y_rt_status("FAIL"))
     exercise("y_rt_one_ulp_in_a_logged_dt_is_fail", variant(Y80_RT_B=dict(y_options=dict(dt_ulp=True))), y_rt_status("FAIL"))
     exercise("y_rt_a_cold_leg_2_is_void_not_pass", variant(Y80_RT_B=dict(y_options=dict(cold_b=True))), y_rt_status("VOID"))
     exercise("y_rt_leg_2_stopped_early_is_excluded_and_named", variant(Y80_RT_B=dict(short=True)), only("Y80_RT_B", "did not reach step"))
+    # the confirming pair Y80_RT86 (BATCH 82; A = the same Y80_RT_A): the same planted defects on Y80_RT86_B move ONLY its own pair (the other stays PASS)
+    exercise("y_rt86_one_ulp_in_a_field_is_fail", variant(Y80_RT86_B=dict(y_options=dict(ulp="q"))), y_rt_status("PASS", "FAIL"))
+    exercise("y_rt86_one_ulp_in_a_logged_dt_is_fail", variant(Y80_RT86_B=dict(y_options=dict(dt_ulp=True))), y_rt_status("PASS", "FAIL"))
+    exercise("y_rt86_a_cold_leg_2_is_void_not_pass", variant(Y80_RT86_B=dict(y_options=dict(cold_b=True))), y_rt_status("PASS", "VOID"))
+    exercise("y_rt86_a_b_built_for_another_leg_1_stop_is_void", variant(Y80_RT86_B=dict(y_options=dict(child_json_leg1=90))), y_rt_status("PASS", "VOID"))
+    exercise("y_rt86_leg_2_stopped_early_is_excluded_and_named", variant(Y80_RT86_B=dict(short=True)), only("Y80_RT86_B", "did not reach step"))
     exercise("y_plug_child_stopped_early_is_excluded_and_named", variant(Y81_YS794_PLUG=dict(short=True)), only("Y81_YS794_PLUG", "did not reach the end time"))
+    exercise("y_plug_ys850_child_stopped_early_is_excluded_and_named", variant(Y81_YS850_PLUG=dict(short=True)), only("Y81_YS850_PLUG", "did not reach the end time"))
     # MISSING FIELDS MUST NOT PASS VACUOUSLY.
     exercise("missing_fields_are_inadmissible",
              variant(em79_G4_s18p_Cnp=dict(omit_fields=True)), only("em79_G4_s18p_Cnp"))
@@ -5895,8 +6042,16 @@ def main() -> int:
         run_direct("batch_78_launch_filters_generate", lambda: launch_filters_generate(nbsel, 78, _filtered_generation))
 
     if _batch != 79:
-        # BATCH 79's one-child filter (the Y gate, 1-core) stays exercised while BATCH 80 is the default
+        # BATCH 79's one-child filter (the Y gate, 1-core) stays exercised while a later batch is the default
         run_direct("batch_79_launch_filters_generate", lambda: launch_filters_generate(nbsel, 79, _filtered_generation))
+    if _batch != 80:
+        # BATCH 80's two launches (the flow gates and the restart pair) stay exercised while a later batch is the default
+        run_direct("batch_80_launch_filters_generate", lambda: launch_filters_generate(nbsel, 80, _filtered_generation))
+    if _batch != 82:
+        # BATCH 82's two launches (the confirming restart test: leg 1, then leg 2, the same child) stay exercised while a later batch is the default
+        run_direct("batch_82_launch_filters_generate", lambda: launch_filters_generate(nbsel, 82, _filtered_generation))
+    # BATCH 81 (the plug chains, STAGED: never the default): each chain's filter generates by itself and in the notebook's order, whichever batch BATCH selects
+    run_direct("batch_81_launch_filters_generate", lambda: launch_filters_generate(nbsel, 81, _filtered_generation))
 
     def one_core_launch():
         # S25 (the 1-core runtime batches 76/77): BATCHES[77] has no entry until its children are written, so the
@@ -5904,7 +6059,7 @@ def main() -> int:
         # carries --mkl-threads 1 and NO --mkl-cbwr, design section 12.1), and that filter generates by itself, as the cell hands it to Allrun.
         argvs = nbsel.check_one_core(nbsel.launch_cell(
             Path(__file__).resolve().parents[3] / "notebooks" / "AM2020_main_case_colab.ipynb"), nbsel.CONTROLS)
-        assert sorted(argvs) == [76, 77, 78, 79, 80], sorted(argvs)
+        assert sorted(argvs) == [76, 77, 78, 79, 80, 81, 82], sorted(argvs)
         filt = ["P73_G4_r3_40"]
         rc, built, last = _filtered_generation(filt)
         assert rc == 0, f"the 1-core stand-in filter was refused: {last}"

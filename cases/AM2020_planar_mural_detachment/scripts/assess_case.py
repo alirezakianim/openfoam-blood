@@ -3347,11 +3347,27 @@ def y_rt_pair(a: Path, b: Path, entry: dict, a_log: str = "log.phaseClotAxisymme
       RT-1b  the PHASE_CLOT_DT deltaT of steps S1+1 .. S2 are EQUAL in A's and B's logs (relative difference exactly 0; the log prints 17 digits)
       RT-1c  every field of A's step-S2 directory exists in B's and is EQUAL to it bit for bit
     Preconditions (a failed one is VOID, never a pass): the restart point is step S1 (restart.json chosen_index; B's first PHASE_CLOT_DT is S1 + 1, so leg 1 stopped ON TIME),
-    B reports PHASE_CLOT_S25_RESTART state=restored and A not, both write at precision >= 17, and max|Vs| of A at S1 is not 0 (the moving-skeleton state is exercised)."""
+    B reports PHASE_CLOT_S25_RESTART state=restored and A not, both write at precision >= 17, and max|Vs| of A at S1 is not 0 (the moving-skeleton state is exercised).
+    THE WINDOW (case-engineer 33): S1 and S2 are the pair's, and each case's child.json must say the same (B: stop_after_step {leg1: S1, leg2: S2}; A: stop_after_step S2), else VOID. The pair Y80_RT86 stops
+    leg 1 at S1 = 86 (the window is steps 87..105, 19 records), but A (Y80_RT_A) keeps only its last 10 full writes (96..105), so the entry's optional `a_reference_step` (96) replaces S1 in RT-1a's
+    denominator and in the Vs precondition: the PASS criterion (the numerator, step S2 against step S2) does not depend on it."""
     s1, s2 = int(entry["leg1_stop"]), int(entry["leg2_stop"])
+    ref = int(entry.get("a_reference_step", s1))     # the A write that stands in for step s1 in RT-1a's denominator and the Vs precondition (case-engineer 33: A purges steps before s2 - 9, so a leg 1 that stops earlier names one)
     void: list = []
     fail: list = []
     res: dict = {"pair_id": entry["pair_id"], "a": entry["a"], "b": entry["b"], "leg1_stop": s1, "leg2_stop": s2, "gates": {}}
+    if "a_reference_step" in entry:
+        res["a_reference_step"] = ref
+    # THE WINDOW IS READ FROM THE CASES, not trusted from the pair: B's child.json holds stop_after_step {leg1, leg2} and A's holds write_every_step with stop_after_step == leg2 (the step the case was
+    # built to stop at). A pair that disagrees with them (a stale controls file, B and the pair of different tests) is VOID, never a comparison of a window nobody ran.
+    for what, case_dir, want in (("A", a, s2), ("B", b, {"leg1": s1, "leg2": s2})):
+        try:
+            have = json.loads((case_dir / "child.json").read_text()).get("stop_after_step")
+        except (OSError, ValueError, AttributeError) as error:
+            have = f"unreadable ({error})"
+        res.setdefault("child_json_stop", {})[what] = have
+        if have != want:
+            void.append(f"{what}'s child.json stop_after_step is {have!r}, the pair {entry['pair_id']} registers {want!r}: the window {s1 + 1}..{s2} is not the one this case was built to run")
     da, db = rt1_full_dirs(a), rt1_full_dirs(b)
     dta, dtb = rt1_dt(a / a_log), rt1_dt(b / a_log)
     sa, sb = rt1_restart_state(a / a_log), rt1_restart_state(b / a_log)
@@ -3378,7 +3394,7 @@ def y_rt_pair(a: Path, b: Path, entry: dict, a_log: str = "log.phaseClotAxisymme
         void.append(f"B's restart.json is unreadable ({error}): leg 2 is not evidence of a restart through --restart-from")
     if dtb and min(dtb) != s1 + 1:
         void.append(f"B's first PHASE_CLOT_DT step is {min(dtb)}, not {s1 + 1}")
-    for what, have, need in (("A", da, (s1, s2)), ("B", db, (s2,))):
+    for what, have, need in (("A", da, (ref, s2)), ("B", db, (s2,))):
         missing = [i for i in need if i not in have]
         if missing:
             void.append(f"{what} has no full write at step(s) {missing} (A's purgeWrite keeps the last 10 writes; B writes at its stop)")
@@ -3387,22 +3403,22 @@ def y_rt_pair(a: Path, b: Path, entry: dict, a_log: str = "log.phaseClotAxisymme
         if missing:
             void.append(f"{what}'s log has no PHASE_CLOT_DT record for step(s) {missing}")
     try:
-        vs = rt1_max_abs(rt1_read_field(da[s1] / "Vs")[2]) if s1 in da and (da[s1] / "Vs").is_file() else None
+        vs = rt1_max_abs(rt1_read_field(da[ref] / "Vs")[2]) if ref in da and (da[ref] / "Vs").is_file() else None
     except (OSError, ValueError, TypeError) as error:
         vs = None
-        void.append(f"A's Vs at step {s1} is unreadable ({error})")
+        void.append(f"A's Vs at step {ref} is unreadable ({error})")
     res["vs_max_abs_at_leg1_stop"] = vs
     if vs is None:
-        void.append(f"A's Vs at step {s1} is absent: the precondition Vs != 0 cannot be checked")
+        void.append(f"A's Vs at step {ref} is absent: the precondition Vs != 0 cannot be checked")
     elif not vs > 0.0:
-        void.append(f"max|Vs| of A at step {s1} is 0: the skeleton has not moved, so the test does not exercise the moving-skeleton state")
+        void.append(f"max|Vs| of A at step {ref} is 0: the skeleton has not moved, so the test does not exercise the moving-skeleton state")
     # ---- RT-1a
     g = {"threshold": "numerator == 0 exactly", "denominator_min": RT1_DENOMINATOR_MIN}
     try:
-        if s1 in da and s2 in da and s2 in db:
-            t0, t2, tb = rt1_theta(da[s1]), rt1_theta(da[s2]), rt1_theta(db[s2])
+        if ref in da and s2 in da and s2 in db:
+            t0, t2, tb = rt1_theta(da[ref]), rt1_theta(da[s2]), rt1_theta(db[s2])
             if not len(t0) == len(t2) == len(tb):
-                raise ValueError("theta sizes differ between A(S1), A(S2) and B(S2)")
+                raise ValueError("theta sizes differ between A(ref), A(S2) and B(S2)")
             den = max(abs(y - x) for x, y in zip(t0, t2))
             num = max(abs(y - x) for x, y in zip(t2, tb))
             (ca, ha), (cb, hb) = rt1_theta_parts(da[s2]), rt1_theta_parts(db[s2])
@@ -5690,11 +5706,30 @@ def stop_step_of_child(case: Path, spec: dict):
     return s
 
 
+def y_plug_session(case: Path, spec: dict, controls: dict, text: str) -> dict:
+    """The plug assessor (scripts/y_gate/y_plug_assess.py, design 2026-10-14-case-symmetric-y-plug.md section 6 B) on the writes of THIS session of a clot child.
+    A cold session is scored as a chain of one (its verdict is provisional until the chain's last session: a session ends at its wall budget, usually before the readable
+    time, and then reads NOT_READABLE_YET). A RESTARTED session (restart.json) cannot be scored alone, its t_c, V0 and tau_A live in the earlier sessions: it reports
+    CHAIN_NEEDED, and the chain is scored by scripts/y_plug_chain.py over every session's returned case."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "y_gate"))
+    import y_plug_assess
+    try:
+        if (case / "restart.json").is_file():
+            return {"status": "CHAIN_NEEDED", "verdict": None, "final": False,
+                    "why": "this session is a restart: the verdict needs every session of the chain (python3 -B scripts/y_plug_chain.py <session-1 child dir> <session-2 child dir> ...)"}
+        params = y_plug_assess.load_params(controls)
+        res = y_plug_assess.assess_case_dirs([case], spec, params, texts=[text], labels=[spec["child_id"]], s25_report=s25_report)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        return {"status": "NOT_ASSESSABLE", "verdict": None, "final": False, "why": case_relative_error(error, case)}
+    res["scope"] = "this session's writes only (provisional); the chain is scored by scripts/y_plug_chain.py"
+    return res
+
+
 def y_plug_child(case: Path, spec: dict, text: str, exit_code, wall_seconds, concurrency, times: list, watcher_stop, watcher_verdict,
-                 stopped_by_watcher: bool) -> dict:
+                 stopped_by_watcher: bool, controls: dict | None = None) -> dict:
     """A child of a Y PLUG series (design 2026-10-14-case-symmetric-y-plug.md): the restart-test pair Y80_RT_A / Y80_RT_B (scored by y_rt_report) or a clot child
-    (Y81_*_PLUG; the plug assessor of its verdict is case-engineer 28's and is not built here). `completed` = it reached its stop (RT: the step of its leg; a clot child: its
-    end time within one step); the clot verdict is not computed."""
+    (Y81_*_PLUG; its verdict is the plug assessor's, y_plug_session). `completed` = it reached its stop (RT: the step of its leg; a clot child: its end time within one
+    step; a clot child that a wall budget stopped is INCOMPLETE by this rule, and its chain continues from the restart)."""
     stop = stop_step_of_child(case, spec)
     if stop is not None:
         steps = [int(v) for v in re.findall(r"^PHASE_CLOT_DT step=(\d+) ", text, re.M)]
@@ -5716,8 +5751,16 @@ def y_plug_child(case: Path, spec: dict, text: str, exit_code, wall_seconds, con
         "completed": completed, "watcher_stop": watcher_stop, "watcher_verdict": None,
         "status": "COMPLETE" if completed else "INCOMPLETE", "verdict_note": None, "ran": len(times) > 0,
         "cohesive_release_cells": 0, "admissible": completed, "bounded": completed, "bounds_reason": reason,
-        "y_plug": {"stop_step": stop, "verdict": "NOT_ASSESSED", "why": "the plug verdict (STUCK / SQUEEZE / INDETERMINATE) is scored by the plug assessor of case-engineer 28"},
+        "y_plug": y_plug_block(case, spec, controls, text, stop),
     }
+
+
+def y_plug_block(case: Path, spec: dict, controls, text: str, stop) -> dict:
+    """The child's `y_plug` block: an RT child (stop is a step) is scored by y_rt_report and keeps NOT_ASSESSED; a clot child carries the plug assessor's result."""
+    if stop is not None or controls is None:
+        return {"stop_step": stop, "verdict": "NOT_ASSESSED", "why": "the plug verdict (STUCK / SQUEEZE / INDETERMINATE) is scored by the plug assessor on a clot child (a restart-test child is scored by y_rt)"}
+    res = y_plug_session(case, spec, controls, text)
+    return {"stop_step": None, "verdict": res.get("verdict") or "NOT_ASSESSED", "status": res.get("status"), "assessor": res}
 
 
 def y_gate_child(case: Path, spec: dict, text: str, exit_code, wall_seconds, concurrency, times: list, watcher_stop,
@@ -5826,7 +5869,7 @@ def assess_child(case: Path, spec: dict, controls: dict) -> dict:
                             watcher_verdict, stopped_by_watcher)
     if spec.get("series") in Y_PLUG_SERIES_NAMES:
         return y_plug_child(case, spec, text, exit_code, wall_seconds, concurrency, times, watcher_stop,
-                            watcher_verdict, stopped_by_watcher)
+                            watcher_verdict, stopped_by_watcher, controls)
 
     sweeps = [
         {"iterations": int(m[1]), "residual": float(m[3]),
@@ -7582,6 +7625,10 @@ def main() -> int:
     y_rt = y_rt_report(runs, children, controls)
     s25_stab = {cid: (c.get("s25_stability") or {}).get("verdict") for cid, c in children.items() if c.get("s25_stability")}
     y_gate = {cid: {"verdict": c["y_gate_verdict"], "failing": c["y_gate"]["failing"]} for cid, c in children.items() if c.get("y_gate")}
+    # The plug assessor's one-line summary per clot child that has anything to report (no key, no print, when no clot child wrote a full write: every earlier report is unchanged).
+    y_plug = {cid: {"status": c["y_plug"].get("status"), "verdict": c["y_plug"]["verdict"], "final": (c["y_plug"].get("assessor") or {}).get("final"),
+                    "fired": (c["y_plug"].get("assessor") or {}).get("fired")}
+              for cid, c in children.items() if c.get("y_plug") and c["y_plug"].get("status") not in (None, "NO_WRITES")}
 
     result = {
         "case": "AM2020_planar_mural_detachment",
@@ -7597,6 +7644,7 @@ def main() -> int:
         "y_rt": y_rt,
         "s25_stability_gate": s25_stab,
         "y_gate": y_gate,
+        **({"y_plug": y_plug} if y_plug else {}),
         "s25_stability_failures": sorted(cid for cid, v in s25_stab.items() if v == "FAIL"),
         "growth_vs_flow": growth_table(children, controls),
         "required_strength": required_strength_table(children),
@@ -7639,6 +7687,7 @@ def main() -> int:
         **({"y_rt": {p["pair_id"]: p["status"] for p in y_rt}} if any(p["status"] != "ARMS_NOT_IN_THIS_RUN" for p in y_rt) else {}),
         "s25_stability": s25_stab,
         "y_gate": y_gate,
+        **({"y_plug": y_plug} if y_plug else {}),
         "growth_exponent": result["growth_vs_flow"]["flow_dependence"]["exponent"],
         "required_strength_rows": len(result["required_strength"]["rows"]),
         "demonstration": [

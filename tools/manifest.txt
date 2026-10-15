@@ -43,9 +43,12 @@ cases/AM2020_planar_mural_detachment/scripts/y_gate/y_gate_report.py
 cases/AM2020_planar_mural_detachment/scripts/y_gate/y_initialise.py
 cases/AM2020_planar_mural_detachment/scripts/y_gate/y_mesh_gate.py
 cases/AM2020_planar_mural_detachment/scripts/y_gate/y_plug.py
+cases/AM2020_planar_mural_detachment/scripts/y_gate/y_plug_assess.py
+cases/AM2020_planar_mural_detachment/scripts/y_gate/y_plug_synth.py
 cases/AM2020_planar_mural_detachment/scripts/y_gate/y_plug_tests.py
 cases/AM2020_planar_mural_detachment/scripts/y_gate/y_rt_synth.py
 cases/AM2020_planar_mural_detachment/scripts/y_gate/y_synth.py
+cases/AM2020_planar_mural_detachment/scripts/y_plug_chain.py
 cases/AM2020_planar_mural_detachment/scripts/y_rt_compare.py
 cases/AM2020_planar_mural_detachment/template/0/Dg
 cases/AM2020_planar_mural_detachment/template/0/H

@@ -976,7 +976,7 @@
    "_why_children_1": "1 = Y80_YS850_FLOW, the YS850 flow gate (BATCH 80, ONE session with the other gate and the restart pair, 1 core)."
   },
   "s25_ys794_plug": {
-   "children": 3,
+   "children": 4,
    "question": "THE SYMMETRIC Y, YS794: a FREE occlusive plug in the main passage (research/designs/2026-10-14-case-symmetric-y-plug.md rev. 2.1). Does it stay STUCK against the apex or enter one daughter (SQUEEZE) at d1 = d2 = 0.794 D0, with no lodging and no adhesion? Predicted: STUCK (Lambda/Lambda_crit 0.666). Planar 2-D on the coarse f = 2 mesh; SQUEEZE means ENTRY ONSET within 185 ms.",
    "_the_request": "Alireza 2026-10-14: 'No lodging but make the branches almost equal size so the big clot in the main passage has no option to pass through both, so either stuck or break', 'Two runs: 0.794 and 0.85', 'Price a coarse version first'; 'Approve as designed (Recommended)'. Docket: research/investigations/20261013-2314-case-y-bifurcation-clog/ (case-engineer 27).",
    "_design": "research/designs/2026-10-14-case-symmetric-y-plug.md rev. 2.1",
@@ -1112,10 +1112,10 @@
     "material": "Children: the LT law at real G0 about 300 Pa: E1 23.96, E2 596.0 sim, G = E1/2 = 11.98 (Boodt 2021 Et75 with the Cahalane 2023 shape; physics 17 section 2; design section 4); every other key S25_5a_tan's, unchanged (interfaceWidth 6e-6 and ell 3e-6 are the series' geometry_override).",
     "cost": "per child 2.4-4.4 sessions to readable, about 7 to 185 ms (numerics 25 section 6; SUSPECTED); about 3.7 GB each at 1 ms writes (the generator's guard prices 2.9 GB with the 19.5 MB/31,360-cell constant)."
    },
-   "_why_children_1": "3 = Y80_RT_A, Y80_RT_B (the restart pair of BATCH 80) and Y81_YS794_PLUG (the BATCH 81 clot child, defined now with its final dictionaries, in no batch yet)."
+   "_why_children_1": "4 = Y80_RT_A, Y80_RT_B (the restart pair of BATCH 80), Y80_RT86_B (the confirming restart test of BATCH 82: Y80_RT_B with its leg-1 stop moved to step 86; scored against Y80_RT_A) and Y81_YS794_PLUG (the BATCH 81 clot child, defined now with its final dictionaries, in no batch yet)."
   },
   "s25_ys850_plug": {
-   "children": 0,
+   "children": 1,
    "question": "THE SYMMETRIC Y, YS850: a FREE occlusive plug in the main passage (research/designs/2026-10-14-case-symmetric-y-plug.md rev. 2.1). Does it stay STUCK against the apex or enter one daughter (SQUEEZE) at d1 = d2 = 0.85 D0, with no lodging and no adhesion? Predicted: SQUEEZE (Lambda/Lambda_crit 1.800). Planar 2-D on the coarse f = 2 mesh; SQUEEZE means ENTRY ONSET within 185 ms.",
    "_the_request": "Alireza 2026-10-14: 'No lodging but make the branches almost equal size so the big clot in the main passage has no option to pass through both, so either stuck or break', 'Two runs: 0.794 and 0.85', 'Price a coarse version first'; 'Approve as designed (Recommended)'. Docket: research/investigations/20261013-2314-case-y-bifurcation-clog/ (case-engineer 27).",
    "_design": "research/designs/2026-10-14-case-symmetric-y-plug.md rev. 2.1",
@@ -1251,7 +1251,7 @@
     "material": "Children: the LT law at real G0 about 300 Pa: E1 23.96, E2 596.0 sim, G = E1/2 = 11.98 (Boodt 2021 Et75 with the Cahalane 2023 shape; physics 17 section 2; design section 4); every other key S25_5a_tan's, unchanged (interfaceWidth 6e-6 and ell 3e-6 are the series' geometry_override).",
     "cost": "per child 2.4-4.4 sessions to readable, about 7 to 185 ms (numerics 25 section 6; SUSPECTED); about 3.7 GB each at 1 ms writes (the generator's guard prices 2.8 GB with the 19.5 MB/31,360-cell constant)."
    },
-   "_why_children_1": "0 = the series is defined for its geometry; Y81_YS850_PLUG is case-engineer 28's child."
+   "_why_children_1": "1 = Y81_YS850_PLUG, the BATCH 81 clot child of the YS850 chain (case-engineer 28): the same dictionaries as Y81_YS794_PLUG on the YS850 mesh and drive, in BATCH 81 launch 2 (staged)."
   }
  },
  "children": [
@@ -4727,6 +4727,71 @@
    "elastic_courant_modulus": "tangent",
    "elastic_courant": 0.5,
    "series": "s25_ys794_plug",
+   "child_id": "Y80_RT86_B",
+   "wall_budget_h": 0.5,
+   "_every_number_and_its_source": {
+    "inherited": "EVERY key not named below is Y80_RT_B's, unchanged (this child is Y80_RT_B with ONE number moved, the leg-1 stop: every generated dictionary except child.json is byte-identical to Y80_RT_B's, asserted by scripts/dry_run.py and shown by a file-by-file diff, case-engineer 33). EVERY key not named below is S25_5a_tan's, unchanged (B76-5a, the S25 build at S25's units S_L 5/3, S_t 25/3, S_P 0.04): the LT skeleton law, time_scale 25/3, k0p, Gc, tau_v, the platelet keys (passive: platelet_transport_only, inlet density 0), adhesive_strength_pa 0.468 (UNSOURCED; INERT here: Us has injury 0 and bonded 0, so no face is bonded), the bond-hold keys, elastic_courant 0.5 tangent. The Y gate has no clot, so the clot keys do nothing; they are kept so the DICTIONARY is the one the clot children will run (design section 3: 'as the 5a series').",
+    "dropped": "wall_shear_rate_1_s and mean_velocity_m_s (the flow is the series' pressure drive; the generator refuses them on a Y child), frame_interval_s and frame_fields (frames are written at adjustableRunTime, which this child does not use), end_time_s and write_interval_s (the series' pre-registered schedule).",
+    "skeleton_law_coeffs": "E1_pa 23.96, E2_pa 596.0 (G = E1/2 = 11.98): the LT law at real G0 about 300 Pa (physics 17 section 2; design section 4). D1 0.107, D2 0.574, kappa 0.98 are S25_5a_tan's.",
+    "clot": "the series' clot_override (the C1 plug), drawn by scripts/y_gate/y_plug.py at setup; the 0/ shape tests are scripts/check_y_plug.py (design section 4).",
+    "stop_after_step": "{leg1: 86, leg2: 105}: the leg-1 stop moves from Y80_RT_B's 100 to 86 and leg 2 stays 105 (docket research/investigations/20261015-0757-20261015-b80-rt-restart/: 01-numerics-analyst section 5 'Cheapest discriminating test' and DECISIONS.md 2026-10-15, 'Confirm cause, accept round-off (Recommended)'). WHY 86: the reference arm Y80_RT_A (run 20261015-084423) analysed step 87's matrix FRESH (symbolicCount 10, tSymbolic 0 from step 87 to 105 = the analysis is kept) and Y80_RT_B's leg 2 analysed FRESH at step 101; a restart whose first step is 87 makes BOTH arms run a fresh PARDISO analysis at step 87 and reuse it through 105, so the one in-memory difference that reached a field (the analysis age) is removed and only the restart clock offset (~1e-14 s) remains. S per leg in child.json, which restart_driver does not compare (the two legs run under IDENTICAL dictionaries). The step watcher reads leg1 on a cold start and leg2 when the case holds restart.json. Leg 1 stops at step 86 through stopAfterStep -> stopAt::execute writeNow, 75 steps before the first 1 ms write at step 161 (not write-aligned); leg 2 = a second runner invocation with --restart-from <leg-1 case-after-run tarball>, to step 105: a 19-step window (steps 87-105) where Y80_RT_B's was 5.",
+    "write schedule": "= Y80_RT_B's = Y81_YS794_PLUG's (runTime, 1 ms, purgeWrite 0), so that the stop is not write-aligned (numerics 25 section 5).",
+    "wall_budget_h / end_time_s": "0.5 h / 0.003 s: the backstops, as Y80_RT_B. Legs 1 and 2 are the same child with the same dictionaries. COST (priced on the returned BATCH 80, run_digest of preflight/20261015-084423 and -113011): Y80_RT_B's leg 1 took 263 s of wall for 100 steps (2.63 s/step) and its leg 2 15 s for 5 steps (3 s/step), so leg 1 here is about 86 x 2.63 = 226 s and leg 2 about 19 x 3 = 57 s of child wall time (SUSPECTED: linear in steps; the 19-step leg 2 reuses its analysis from step 87 and pays the fresh one once), plus about 128 s of set-up per launch; the output: `du -sh` of the returned Y80_RT_B (leg 1, 100 steps) is 7.5 MB, and this leg 1 writes the same two directories (0 and the stop), so well inside OUTPUT_BUDGET_GB (leg 2's output was not measured).",
+    "a_reference_step": "Y80_RT_A keeps only its last 10 full writes (purgeWrite 10, steps 96-105): step 86 is not among them, so RT-1a's denominator (max|theta_A(105) - theta_A(ref)|) and the max|Vs| precondition read A's EARLIEST kept write, y_rt_pairs Y80_RT86 a_reference_step = 96. RT-1a's PASS needs the NUMERATOR exactly 0; the denominator only proves the window moved the field (VOID below RT1_DENOMINATOR_MIN), so a nearer reference weakens nothing. The generator refuses a pair whose reference is not a kept write."
+   },
+   "expectation": "PRE-REGISTRATION. COPIED VERBATIM from research/investigations/20261015-0757-20261015-b80-rt-restart/DECISIONS.md (2026-10-15, ALIREZA DECIDED 'Confirm cause, accept round-off (Recommended)'), taken from the file by its headings and not retyped. THE CHILD: the confirming restart test BATCH 82 = Y80_RT86_B, the restart test RT_B of BATCH 80 with ONE number moved (leg 1 stops after step 86, leg 2 after step 105); every dictionary except child.json is byte-identical to Y80_RT_B's. Scored against the EXISTING Y80_RT_A (run 20261015-084423) by scripts/y_rt_compare.py (pair Y80_RT86; the window steps 87-105 and the A reference step 96 are read from the pair and cross-checked against this child's child.json). THE PRE-REGISTRATION (DECISIONS.md):\n\n**The confirming test (pre-registered here, BEFORE the build):** BATCH 82 = Y80_RT86_B.\n- **The configuration:** the same plug, dictionaries and runner path as Y80_RT_B, but leg 1 stops at step **86**, so that both arms run a FRESH PARDISO analysis at step 87. Leg 2 restarts through `--restart-from` and stops at 105.\n- **The comparison** is against the EXISTING Y80_RT_A (run 20261015-084423: steps 96-105 written, log steps 1-105) with y_rt_compare's rules: RT-1b on the PHASE_CLOT_DT lines for steps 87-105, and RT-1a/RT-1c on the step-105 fields.\n- **H6 is ESTABLISHED** if RT-1a/b/c are EXACTLY 0. **H6 is FALSIFIED** if any differs; in that case the investigation re-opens and BATCH 81 stays blocked.\n- **The control:** the CPU identity must equal launch 1's (Intel Xeon 2.20 GHz, same flags); otherwise the result is VOID.\n\n**If H6 is ESTABLISHED, the restart gate is restated for BATCH 81 onwards (not retroactively):**\n- a chained session continues the run to ROUND-OFF, not bitwise, because the PARDISO analysis is recomputed at each restart. That is \u2264 1e-9 relative in any field over 5 steps; B80 measured 1.1e-11 in U and 1.6e-8 in sigmaElastic. The verdict's resolution is \u2265 1e-3.\n- The chain merge's state checks (the assessor refusals) stay exact.",
+   "_what_a_failing_run_looks_like": "Any of RT-1a, RT-1b or RT-1c is NOT EXACTLY 0 (the fields of step 105 against Y80_RT_A's, or any PHASE_CLOT_DT line of steps 87-105 at 17 digits): H6 (the PARDISO analysis age is the only cause of the B80 restart difference) is FALSIFIED, the investigation re-opens and BATCH 81 stays blocked. A run whose CPU identity (environment.json s22.cpu_model and cpu_flags) differs from launch 1's is VOID, not a result. A leg that did not reach its step (the watcher, a FatalError, the 0.5 h backstop) or a restart point other than step 86 reads VOID, not PASS.",
+   "end_time_s": 0.003,
+   "stop_after_step": {
+    "leg1": 86,
+    "leg2": 105
+   }
+  },
+  {
+   "adhesive_strength_pa": 0.468,
+   "be_div_scheme": "Gauss upwind",
+   "bond_hold_dilation": 4,
+   "bond_hold_penalty": 10000000.0,
+   "clot_erosion_rate": 0.0,
+   "platelet_bind_rate": 5.04,
+   "platelet_diffusivity": 0.0,
+   "platelet_inlet_density_m3": 0.0,
+   "platelet_number_density_m3": 250000000000000.0,
+   "platelet_yield_m3": 4.6296e-17,
+   "release_support_limit": 0.5,
+   "residual_chi": 0.00022222,
+   "skeleton_dilute_drag_rate": 0.0,
+   "skeleton_volume_fraction": 0.45,
+   "platelet_adhesion_speed": 0.001209,
+   "network_pressure_weight": "networkPresence",
+   "network_damage_onset_stretch": 2.105,
+   "network_damage_stretch_scale": 1.0,
+   "network_critical_stretch": 2.8,
+   "network_release_time_s": 0.00033,
+   "final_relaxation_unity": true,
+   "n_correctors": 6,
+   "proj_site_log": "yes",
+   "platelet_transport_only": true,
+   "material_label_basis": "transportedLabel",
+   "k0p_m2": 9.7222222e-14,
+   "momentum_pressure_coupling": "blockCoupled",
+   "network_viscosity": "kelvinVoigt",
+   "tau_v_s": 0.001474,
+   "time_scale": 8.333333333333334,
+   "Gc_j_m2": 0.3698,
+   "v_p_m3": 4.6296e-17,
+   "clot_erosion_tau_pa": 0.12,
+   "skeleton_law": "valanisLandelTrilinear",
+   "skeleton_law_coeffs": {
+    "E1_pa": 23.96,
+    "E2_pa": 596.0,
+    "D1": 0.107,
+    "D2": 0.574,
+    "kappa": 0.98
+   },
+   "elastic_courant_modulus": "tangent",
+   "elastic_courant": 0.5,
+   "series": "s25_ys794_plug",
    "child_id": "Y81_YS794_PLUG",
    "wall_budget_h": 10.0,
    "_every_number_and_its_source": {
@@ -4736,11 +4801,69 @@
     "clot": "the series' clot_override (the C1 plug), drawn by scripts/y_gate/y_plug.py at setup; the 0/ shape tests are scripts/check_y_plug.py (design section 4).",
     "wall_budget_h": "10.0 h = the stopAtClockTime backstop inside one Colab session of ~11 h usable less ~0.7 h set-up (design section 5: up to 11 h; the chain restarts session to session through --restart-from; one pinned package sha per chain).",
     "output": "185 full writes at 1 ms: the generator's guard prices them from the 19.5 MB / 31,360-cell constant (see the series). Design section 8: about 3.7 GB per child.",
-    "not_scheduled": "in no batch: BATCH 81 is packaged only after BATCH 80 returns READY (design section 5); case-engineer 28 adds the assessor and the batch."
+    "not_scheduled": "in BATCH 81 as LAUNCH 1 (the YS794 chain), staged: BATCH stays 80 until BATCH 80 returns READY (design section 5); the notebook entry is BATCHES[81], listed in STAGED_BATCHES."
    },
    "expectation": "PRE-REGISTRATION. COPIED VERBATIM from research/designs/2026-10-14-case-symmetric-y-plug.md rev. 2.1 (CE, 2026-10-14; red teams 23 and 26 applied; APPROVED by Alireza 2026-10-14, 'Approve as designed (Recommended)'), taken from the file by its headings and not retyped. THE CHILD: the free occlusive plug on the YS794 mesh (predicted STUCK), BATCH 81, scored by the plug assessor (case-engineer 28). THE CLOT (section 4) AND THE VERDICT (section 6 B):\n\n## 4. The clot: the C1 plug (numerics 25 \u00a71, ESTABLISHED on the replica)\n\n**The shape:**\n- In the straight parent, the modelled width is **Wp 1.70 D0**: it overlaps each wall so the seal row is bulk clot (0.9967 / 0.9968).\n- Past the parent fillet tangent it is **physics 19's D0 stadium**, blended over 2\u03b5.\n  - A hard switch leaves a notch (the wall row 0.998 \u2192 0.408 in one cell); 4\u03b5 fails the width test.\n- The rear is a **cap of radius 0.85 D0**.\n- **L_c 2.5 D0** (UNSOURCED).\n- The front's c = 0.5 contour is **0.10 D0** upstream of the apex tip.\n- The plug is shifted laterally by **\u03b4 = 0.03 D0 toward +y**.\n\n**Tests on the generated 0/ fields** (YS794 / YS850):\n\n| test | measured | limit |\n|---|---|---|\n| width past the tangent | 1.004 / 1.004 D0 | \u2264 1.045 |\n| content at \\|y\\| > 0.5 D0 | 0.0358 / 0.0416 D0\u00b2 | \u2264 0.045 |\n| seal row | \u2265 0.99 | \u2265 0.99 |\n\n**Other measured values:**\n- A0 is 4.37e-2 / 4.51e-2 (the floor at \u03b4 = 0 is \u2264 8.9e-16);\n- N_skel 7,506 / 7,327;\n- the straight seal is 0.597 / 0.521 D0;\n- L_w at contact is 1.397 / 1.358 D0.\n\n**The material:**\n- the LT law at real G0 \u2248 300 Pa: E1 23.96, E2 596.0 sim, G 11.98 (Boodt 2021 Et75 with the Cahalane 2023 shape; physics 17 \u00a72);\n- every other key is S25_5a_tan's, unchanged, except interfaceWidth 6e-6 and ell 3e-6;\n- shell-only, `core_shell false`. Free: no adhesion.\n- **The verdict ratios are unchanged by C1** (physics 24 item 5): \u039b/\u039b_crit = **0.666** (YS794) and **1.800** (YS850).\n\n### B. BATCH 81 plug verdict (physics 24 C3, numerics 25 \u00a72)\n\n**The observables, from 1 ms full writes:**\n- **V_b:** the rate of the x-centroid of the smoothly weighted bulk content, w = \u03b8\u00b7clip((\u03b8/\u03c60 \u2212 0.8)/0.2, 0, 1). \u03c3 \u2248 0.0015 \u016b from 2 writes; the threshold-set form (\u03c3 0.04 \u016b) is refused.\n- **M\u00b1:** the bulk content (\u03b8/\u03c60 \u2265 0.9) past each daughter's normal line at the apex tip (physics 24's definition), in steps of about 5e-4 D0\u00b2.\n- **t_c (D3):** the time, interpolated between writes, at which the smooth-weight centroid has moved the 0.10 D0 front gap (physics 24 L33).\n- **V0:** the least-squares mean of V_b over the approach window [3 ms, t_c \u2212 1 ms].\n- **\u03c4_A** = \u039b\u00b7D0/V0 + \u03c4_v (physics 24).\n- **V_b values entering R:** 5-write centred least-squares fits (\u03c3 \u2248 0.0003 \u016b; D5).\n- **dM\u00b1/dt:** the least-squares slope over [t_c + \u03c4_A, t_c + 2\u03c4_A] (\u2265 16 writes), never a 2-write difference; one cell quantum is about 5e-4 D0\u00b2 (D4).\n- **The film branch is read from V0:** \u2265 0.3 \u016b means the mesh film (readable at 61-70 ms); \u2264 0.2 \u016b means \u221ak (108-133 ms).\n\n**The verdict at t_c + 2\u03c4_A,** with R = V_b(t_c + 2\u03c4_A)/V_b(t_c + \u03c4_A):\n\n| verdict | condition |\n|---|---|\n| **STUCK** | R \u2264 0.5 |\n| **SQUEEZE** | R \u2265 0.75, AND V_b \u2265 0.033 \u016b, AND for ONE daughter dM/dt \u2265 5e-4 D0\u00b2/ms with the other's slope \u2264 1/3 of it (physics 24's one-sided entry rule; D8) |\n| **INDETERMINATE at 2\u03c4_A** | anything else. Re-read at t_c + 3\u03c4_A (\u2264 181 ms at the \u221ak central case) with R' = V_b(3\u03c4_A)/V_b(2\u03c4_A) and the same rule. INDETERMINATE at both reads is final (D6) |\n\n**The predictions:**\n- **YS794: STUCK.** V_b = V_c\u00b7e^(\u2212(t \u2212 t_c)/\u03c4), with V_c 0.11-0.22 \u016b and V_b 0.015-0.029 \u016b at t_c + 2\u03c4. M\u00b1 \u2264 0.011-0.059 D0\u00b2.\n- **YS850: SQUEEZE.** A plateau at V_sq 0.049-0.161 \u016b after about 0.81\u03c4; dM/dt 0.0008-0.0035 D0\u00b2/ms.\n- **The pre-check:**\n- the assessor must return STUCK on all 8 of red team 23's model traces (R 0.27-0.32), and SQUEEZE on a constant 0.05 \u016b trace with M+ rising;\n- a \u03ba 0.5 STUCK trace must read INDETERMINATE;\n- the \u03ba 3.4 \u221ak STUCK trace with \u03c3 0.0015 \u016b noise must read STUCK in \u2265 99.9% of 1e4 draws (D5);\n- a \u03ba 3.4 STUCK trace whose front moves only x* 0.035 D0 must return a t_c, read STUCK, and keep FAIL 1 silent (D3);\n- M traces quantised at 4.95e-4 / 5.4e-4 D0\u00b2 with a true slope of 3.1e-4/ms must read < 5e-4, and with 8e-4/ms \u2265 5e-4 (D4).\n\n**Reported, NOT gated:**\n- **The split S** = (M+ \u2212 M\u2212)/(M+ + M\u2212) relative to contact. It is positive in both outcomes and its magnitude is unpredictable.\n- **A, the y-centroid of the bulk content.** It is EXPECTED TO GROW about \u00d71.6 even when stuck: the frictionless rounded apex destabilises the offset (physics 24 C4). |A| < 1e-3 at the verdict flags a symmetry hold.\n\n**What an unphysical run looks like (C5):**\n1. V_b < 0.02 \u016b during the approach (a weld).\n2. V_b > 0.75 \u016b during the approach (\u00d71.5 above the highest prediction, 0.501 \u016b), or Q > Q0.\n3. Total-content drift > 1e-6 relative, or any cell at \u03b8 \u2265 phiSMax 0.6, i.e. \u03b8/\u03c60 \u2265 1.333 (overfill against the code's cap; D1). \u03b8/\u03c60 > 1 is COMPACTION, not overfill. Max \u03b8/\u03c60 is REPORTED against the pre-registered band 1.04-1.2 (red team 26's estimate, SUSPECTED; it is not a gate).\n4. Dg > 1e-3, or bulk \u03bb1 > 1.6.\n5. The plug splitting at the apex: bulk content in BOTH daughters with M\u2212 and M+ each \u2265 0.05 D0\u00b2.\n6. A bypass: (Q \u2212 Q_s)/Q0 > 0.01 once V_b < 0.05 \u016b, where Q_s = \u222b Us_x dy across a parent section inside the straight seal, i.e. the plug's own swept rate. Q follows the plug's REAR, not its centroid (D2).\n\n**Also measured and reported:**\n- the OI-81 tail R_t = (dtWave(1)/dtWave)\u00b2 \u2265 5, with the argmax q > 0.99 outside the body (numerics 18), which decides S26;\n- the post-contact dt factor;\n- F2 and F3;\n- the clot-phase odd-even masked amplitude.\n\n**Untrustworthy at f = 2, and reported only as such:** the contact-local readouts (the peak-\u03bb1 location, the contact width, the sub-\u03b5 gap).\n\n**How to read the record (C10):**\n- **SQUEEZE means ENTRY ONSET** within 185 ms. Passage takes 0.72-2.4 s sim and is out of scope.\n- **A YS850 STUCK, or a YS794 SQUEEZE, falsifies physics 19's STATIC energy criterion** only if all of these hold: the verdict is decisive (not INDETERMINATE), the bypass is \u2264 0.01, and |A| > 1e-3.\n  - It says nothing about the timings, which are h-set through the mesh film.",
-   "_what_a_failing_run_looks_like": "Design section 6 B's six unphysical-run items (C5): V_b < 0.02 ubar during the approach (a weld), V_b > 0.75 ubar or Q > Q0, a total-content drift above 1e-6 or any cell at theta >= phiSMax 0.6, Dg > 1e-3 or bulk lambda1 > 1.6, the plug splitting at the apex, a bypass above 0.01 Q0; plus an exit code other than 0, a FatalError, a NaN. The verdict itself (STUCK / SQUEEZE / INDETERMINATE) is read by the plug assessor.",
-   "not_scheduled_because": "BATCH 81 is packaged only after BATCH 80 (the two flow gates and the restart pair) returns READY (design 2026-10-14-case-symmetric-y-plug.md rev. 2.1 section 5); case-engineer 28 builds the plug assessor and the batch entry."
+   "_what_a_failing_run_looks_like": "Design section 6 B's six unphysical-run items (C5): V_b < 0.02 ubar during the approach (a weld), V_b > 0.75 ubar or Q > Q0, a total-content drift above 1e-6 or any cell at theta >= phiSMax 0.6, Dg > 1e-3 or bulk lambda1 > 1.6, the plug splitting at the apex, a bypass above 0.01 Q0; plus an exit code other than 0, a FatalError, a NaN. The verdict itself (STUCK / SQUEEZE / INDETERMINATE) is read by the plug assessor."
+  },
+  {
+   "adhesive_strength_pa": 0.468,
+   "be_div_scheme": "Gauss upwind",
+   "bond_hold_dilation": 4,
+   "bond_hold_penalty": 10000000.0,
+   "clot_erosion_rate": 0.0,
+   "platelet_bind_rate": 5.04,
+   "platelet_diffusivity": 0.0,
+   "platelet_inlet_density_m3": 0.0,
+   "platelet_number_density_m3": 250000000000000.0,
+   "platelet_yield_m3": 4.6296e-17,
+   "release_support_limit": 0.5,
+   "residual_chi": 0.00022222,
+   "skeleton_dilute_drag_rate": 0.0,
+   "skeleton_volume_fraction": 0.45,
+   "platelet_adhesion_speed": 0.001209,
+   "network_pressure_weight": "networkPresence",
+   "network_damage_onset_stretch": 2.105,
+   "network_damage_stretch_scale": 1.0,
+   "network_critical_stretch": 2.8,
+   "network_release_time_s": 0.00033,
+   "final_relaxation_unity": true,
+   "n_correctors": 6,
+   "proj_site_log": "yes",
+   "platelet_transport_only": true,
+   "material_label_basis": "transportedLabel",
+   "k0p_m2": 9.7222222e-14,
+   "momentum_pressure_coupling": "blockCoupled",
+   "network_viscosity": "kelvinVoigt",
+   "tau_v_s": 0.001474,
+   "time_scale": 8.333333333333334,
+   "Gc_j_m2": 0.3698,
+   "v_p_m3": 4.6296e-17,
+   "clot_erosion_tau_pa": 0.12,
+   "skeleton_law": "valanisLandelTrilinear",
+   "skeleton_law_coeffs": {
+    "E1_pa": 23.96,
+    "E2_pa": 596.0,
+    "D1": 0.107,
+    "D2": 0.574,
+    "kappa": 0.98
+   },
+   "elastic_courant_modulus": "tangent",
+   "elastic_courant": 0.5,
+   "series": "s25_ys850_plug",
+   "child_id": "Y81_YS850_PLUG",
+   "wall_budget_h": 10.0,
+   "_every_number_and_its_source": {
+    "inherited": "EVERY key not named below is S25_5a_tan's, unchanged (B76-5a, the S25 build at S25's units S_L 5/3, S_t 25/3, S_P 0.04): the LT skeleton law, time_scale 25/3, k0p, Gc, tau_v, the platelet keys (passive: platelet_transport_only, inlet density 0), adhesive_strength_pa 0.468 (UNSOURCED; INERT here: Us has injury 0 and bonded 0, so no face is bonded), the bond-hold keys, elastic_courant 0.5 tangent. The Y gate has no clot, so the clot keys do nothing; they are kept so the DICTIONARY is the one the clot children will run (design section 3: 'as the 5a series').",
+    "dropped": "wall_shear_rate_1_s and mean_velocity_m_s (the flow is the series' pressure drive; the generator refuses them on a Y child), frame_interval_s and frame_fields (frames are written at adjustableRunTime, which this child does not use), end_time_s and write_interval_s (the series' pre-registered schedule).",
+    "skeleton_law_coeffs": "E1_pa 23.96, E2_pa 596.0 (G = E1/2 = 11.98): the LT law at real G0 about 300 Pa (physics 17 section 2; design section 4). D1 0.107, D2 0.574, kappa 0.98 are S25_5a_tan's.",
+    "clot": "the series' clot_override (the C1 plug), drawn by scripts/y_gate/y_plug.py at setup; the 0/ shape tests are scripts/check_y_plug.py (design section 4).",
+    "wall_budget_h": "10.0 h = the stopAtClockTime backstop inside one Colab session of ~11 h usable less ~0.7 h set-up (design section 5: up to 11 h; the chain restarts session to session through --restart-from; one pinned package sha per chain).",
+    "output": "185 full writes at 1 ms: the generator's guard prices them from the 19.5 MB / 31,360-cell constant (see the series). Design section 8: about 3.7 GB per child.",
+    "not_scheduled": "in BATCH 81 as LAUNCH 2 (the YS850 chain), staged: BATCH stays 80 until BATCH 80 returns READY (design section 5); the notebook entry is BATCHES[81], listed in STAGED_BATCHES. Same dictionaries as Y81_YS794_PLUG except the mesh, the drive and the series (inlet_pressure_m2_s2 1.220658e-3)."
+   },
+   "expectation": "PRE-REGISTRATION. COPIED VERBATIM from research/designs/2026-10-14-case-symmetric-y-plug.md rev. 2.1 (CE, 2026-10-14; red teams 23 and 26 applied; APPROVED by Alireza 2026-10-14, 'Approve as designed (Recommended)'), taken from the file by its headings and not retyped. THE CHILD: the free occlusive plug on the YS850 mesh (predicted SQUEEZE), BATCH 81, scored by the plug assessor (case-engineer 28). THE CLOT (section 4) AND THE VERDICT (section 6 B):\n\n## 4. The clot: the C1 plug (numerics 25 \u00a71, ESTABLISHED on the replica)\n\n**The shape:**\n- In the straight parent, the modelled width is **Wp 1.70 D0**: it overlaps each wall so the seal row is bulk clot (0.9967 / 0.9968).\n- Past the parent fillet tangent it is **physics 19's D0 stadium**, blended over 2\u03b5.\n  - A hard switch leaves a notch (the wall row 0.998 \u2192 0.408 in one cell); 4\u03b5 fails the width test.\n- The rear is a **cap of radius 0.85 D0**.\n- **L_c 2.5 D0** (UNSOURCED).\n- The front's c = 0.5 contour is **0.10 D0** upstream of the apex tip.\n- The plug is shifted laterally by **\u03b4 = 0.03 D0 toward +y**.\n\n**Tests on the generated 0/ fields** (YS794 / YS850):\n\n| test | measured | limit |\n|---|---|---|\n| width past the tangent | 1.004 / 1.004 D0 | \u2264 1.045 |\n| content at \\|y\\| > 0.5 D0 | 0.0358 / 0.0416 D0\u00b2 | \u2264 0.045 |\n| seal row | \u2265 0.99 | \u2265 0.99 |\n\n**Other measured values:**\n- A0 is 4.37e-2 / 4.51e-2 (the floor at \u03b4 = 0 is \u2264 8.9e-16);\n- N_skel 7,506 / 7,327;\n- the straight seal is 0.597 / 0.521 D0;\n- L_w at contact is 1.397 / 1.358 D0.\n\n**The material:**\n- the LT law at real G0 \u2248 300 Pa: E1 23.96, E2 596.0 sim, G 11.98 (Boodt 2021 Et75 with the Cahalane 2023 shape; physics 17 \u00a72);\n- every other key is S25_5a_tan's, unchanged, except interfaceWidth 6e-6 and ell 3e-6;\n- shell-only, `core_shell false`. Free: no adhesion.\n- **The verdict ratios are unchanged by C1** (physics 24 item 5): \u039b/\u039b_crit = **0.666** (YS794) and **1.800** (YS850).\n\n### B. BATCH 81 plug verdict (physics 24 C3, numerics 25 \u00a72)\n\n**The observables, from 1 ms full writes:**\n- **V_b:** the rate of the x-centroid of the smoothly weighted bulk content, w = \u03b8\u00b7clip((\u03b8/\u03c60 \u2212 0.8)/0.2, 0, 1). \u03c3 \u2248 0.0015 \u016b from 2 writes; the threshold-set form (\u03c3 0.04 \u016b) is refused.\n- **M\u00b1:** the bulk content (\u03b8/\u03c60 \u2265 0.9) past each daughter's normal line at the apex tip (physics 24's definition), in steps of about 5e-4 D0\u00b2.\n- **t_c (D3):** the time, interpolated between writes, at which the smooth-weight centroid has moved the 0.10 D0 front gap (physics 24 L33).\n- **V0:** the least-squares mean of V_b over the approach window [3 ms, t_c \u2212 1 ms].\n- **\u03c4_A** = \u039b\u00b7D0/V0 + \u03c4_v (physics 24).\n- **V_b values entering R:** 5-write centred least-squares fits (\u03c3 \u2248 0.0003 \u016b; D5).\n- **dM\u00b1/dt:** the least-squares slope over [t_c + \u03c4_A, t_c + 2\u03c4_A] (\u2265 16 writes), never a 2-write difference; one cell quantum is about 5e-4 D0\u00b2 (D4).\n- **The film branch is read from V0:** \u2265 0.3 \u016b means the mesh film (readable at 61-70 ms); \u2264 0.2 \u016b means \u221ak (108-133 ms).\n\n**The verdict at t_c + 2\u03c4_A,** with R = V_b(t_c + 2\u03c4_A)/V_b(t_c + \u03c4_A):\n\n| verdict | condition |\n|---|---|\n| **STUCK** | R \u2264 0.5 |\n| **SQUEEZE** | R \u2265 0.75, AND V_b \u2265 0.033 \u016b, AND for ONE daughter dM/dt \u2265 5e-4 D0\u00b2/ms with the other's slope \u2264 1/3 of it (physics 24's one-sided entry rule; D8) |\n| **INDETERMINATE at 2\u03c4_A** | anything else. Re-read at t_c + 3\u03c4_A (\u2264 181 ms at the \u221ak central case) with R' = V_b(3\u03c4_A)/V_b(2\u03c4_A) and the same rule. INDETERMINATE at both reads is final (D6) |\n\n**The predictions:**\n- **YS794: STUCK.** V_b = V_c\u00b7e^(\u2212(t \u2212 t_c)/\u03c4), with V_c 0.11-0.22 \u016b and V_b 0.015-0.029 \u016b at t_c + 2\u03c4. M\u00b1 \u2264 0.011-0.059 D0\u00b2.\n- **YS850: SQUEEZE.** A plateau at V_sq 0.049-0.161 \u016b after about 0.81\u03c4; dM/dt 0.0008-0.0035 D0\u00b2/ms.\n- **The pre-check:**\n- the assessor must return STUCK on all 8 of red team 23's model traces (R 0.27-0.32), and SQUEEZE on a constant 0.05 \u016b trace with M+ rising;\n- a \u03ba 0.5 STUCK trace must read INDETERMINATE;\n- the \u03ba 3.4 \u221ak STUCK trace with \u03c3 0.0015 \u016b noise must read STUCK in \u2265 99.9% of 1e4 draws (D5);\n- a \u03ba 3.4 STUCK trace whose front moves only x* 0.035 D0 must return a t_c, read STUCK, and keep FAIL 1 silent (D3);\n- M traces quantised at 4.95e-4 / 5.4e-4 D0\u00b2 with a true slope of 3.1e-4/ms must read < 5e-4, and with 8e-4/ms \u2265 5e-4 (D4).\n\n**Reported, NOT gated:**\n- **The split S** = (M+ \u2212 M\u2212)/(M+ + M\u2212) relative to contact. It is positive in both outcomes and its magnitude is unpredictable.\n- **A, the y-centroid of the bulk content.** It is EXPECTED TO GROW about \u00d71.6 even when stuck: the frictionless rounded apex destabilises the offset (physics 24 C4). |A| < 1e-3 at the verdict flags a symmetry hold.\n\n**What an unphysical run looks like (C5):**\n1. V_b < 0.02 \u016b during the approach (a weld).\n2. V_b > 0.75 \u016b during the approach (\u00d71.5 above the highest prediction, 0.501 \u016b), or Q > Q0.\n3. Total-content drift > 1e-6 relative, or any cell at \u03b8 \u2265 phiSMax 0.6, i.e. \u03b8/\u03c60 \u2265 1.333 (overfill against the code's cap; D1). \u03b8/\u03c60 > 1 is COMPACTION, not overfill. Max \u03b8/\u03c60 is REPORTED against the pre-registered band 1.04-1.2 (red team 26's estimate, SUSPECTED; it is not a gate).\n4. Dg > 1e-3, or bulk \u03bb1 > 1.6.\n5. The plug splitting at the apex: bulk content in BOTH daughters with M\u2212 and M+ each \u2265 0.05 D0\u00b2.\n6. A bypass: (Q \u2212 Q_s)/Q0 > 0.01 once V_b < 0.05 \u016b, where Q_s = \u222b Us_x dy across a parent section inside the straight seal, i.e. the plug's own swept rate. Q follows the plug's REAR, not its centroid (D2).\n\n**Also measured and reported:**\n- the OI-81 tail R_t = (dtWave(1)/dtWave)\u00b2 \u2265 5, with the argmax q > 0.99 outside the body (numerics 18), which decides S26;\n- the post-contact dt factor;\n- F2 and F3;\n- the clot-phase odd-even masked amplitude.\n\n**Untrustworthy at f = 2, and reported only as such:** the contact-local readouts (the peak-\u03bb1 location, the contact width, the sub-\u03b5 gap).\n\n**How to read the record (C10):**\n- **SQUEEZE means ENTRY ONSET** within 185 ms. Passage takes 0.72-2.4 s sim and is out of scope.\n- **A YS850 STUCK, or a YS794 SQUEEZE, falsifies physics 19's STATIC energy criterion** only if all of these hold: the verdict is decisive (not INDETERMINATE), the bypass is \u2264 0.01, and |A| > 1e-3.\n  - It says nothing about the timings, which are h-set through the mesh film.",
+   "_what_a_failing_run_looks_like": "Design section 6 B's six unphysical-run items (C5): V_b < 0.02 ubar during the approach (a weld), V_b > 0.75 ubar or Q > Q0, a total-content drift above 1e-6 or any cell at theta >= phiSMax 0.6, Dg > 1e-3 or bulk lambda1 > 1.6, the plug splitting at the apex, a bypass above 0.01 Q0; plus an exit code other than 0, a FatalError, a NaN. The verdict itself (STUCK / SQUEEZE / INDETERMINATE) is read by the plug assessor."
   }
  ],
  "s25_paired_comparisons": [
@@ -4809,6 +4932,102 @@
    "leg1_stop": 100,
    "leg2_stop": 105,
    "_why": "The restart test of design section 5 item 2 / numerics 25 section 5. RT_A writes every step to step 105; RT_B stops at step 100 (leg 1), is restarted by a second runner invocation (--restart-from the leg-1 tarball) and stops at step 105 (leg 2). RT-1a/b/c EXACTLY 0 at 17 digits: the fields of RT_B's step-105 directory against RT_A's, and the log lines for steps 101-105. Scored by assess_case.y_rt_report when both legs' cases are in one tree, and by scripts/y_rt_compare.py across the two sessions' returned cases (BATCH 80 launches 1 and 2)."
+  },
+  {
+   "pair_id": "Y80_RT86",
+   "a": "Y80_RT_A",
+   "b": "Y80_RT86_B",
+   "leg1_stop": 86,
+   "leg2_stop": 105,
+   "a_reference_step": 96,
+   "_why": "The confirming restart test of docket b80-rt-restart (DECISIONS 2026-10-15). The SAME reference arm Y80_RT_A as pair Y80_RT (deterministic, already returned: run 20261015-084423) against Y80_RT86_B, whose leg 1 stops after step 86 and whose leg 2 (a second runner invocation, --restart-from) stops after step 105: RT-1a/b/c at 17 digits over steps 87-105. A kept only steps 96-105, so a_reference_step 96 stands in for step 86 in RT-1a's denominator and the Vs precondition (the numerator, the PASS criterion, is the step-105 fields). Scored by scripts/y_rt_compare.py across the two sessions' returned cases (BATCH 82 launches 1 and 2; A from BATCH 80); never by assess_case in one tree (A is not in BATCH 82)."
   }
- ]
+ ],
+ "y_plug_verdict": {
+  "_why": "THE PLUG ASSESSOR'S THRESHOLDS (case-engineer 28; scripts/y_gate/y_plug_assess.py reads every one of them and the generator validates the block with the assessor's own check_params, so no key here is silently inert). Design research/designs/2026-10-14-case-symmetric-y-plug.md rev. 2.1 section 6 B (physics 24 C3/C4, numerics 25 section 2, red team 26 D1-D8). The verdict table, the INDETERMINATE band, the 6 FAIL items and the reported-not-gated values are scored from the 1 ms full writes of the Y81 children, across restarted sessions (scripts/y_plug_chain.py).",
+  "_every_number_and_its_source": {
+   "approach_start_s": "0.003 s = 3 ms: the start of the approach window [3 ms, t_c - 1 ms] over which V0 is fitted (research/designs/2026-10-14-case-symmetric-y-plug.md rev. 2.1 section 6 B, V0 bullet; D3). It skips the start-up from U = 0 (tau1 0.5 ms, red team 26 section 3 item 1).",
+   "approach_end_margin_s": "0.001 s = 1 ms: the window ends at t_c - 1 ms (the same bullet).",
+   "approach_min_writes": "3: a least-squares slope needs 3 points; the window at the shortest prediction (t_c 11.5 ms) holds 7.",
+   "weight_lo": "0.8: the smooth weight w = theta*clip((theta/phi0 - 0.8)/0.2, 0, 1) (research/designs/2026-10-14-case-symmetric-y-plug.md rev. 2.1 section 6 B, V_b bullet; numerics 25 section 2: sigma 0.0015 ubar from 2 writes against 0.04 for the threshold-set form, which is refused).",
+   "weight_hi": "1.0: the same clip (0.8 + 0.2).",
+   "bulk_theta_over_phi0": "0.9: the 'bulk content (theta/phi0 >= 0.9)' of M+- (research/designs/2026-10-14-case-symmetric-y-plug.md rev. 2.1 section 6 B, M+- bullet; physics 24).",
+   "fit_writes": "5: 'V_b values entering R: 5-write centred least-squares fits (sigma 0.0003 ubar; D5)'.",
+   "slope_min_writes": "16: 'dM+-/dt: the least-squares slope over [t_c + tau_A, t_c + 2 tau_A] (>= 16 writes)' (D4).",
+   "stuck_r_max": "0.5: STUCK iff R <= 0.5 (verdict table; physics 24 C3). The model gives R = exp(-tau_A/tau) <= 0.37 for kappa >= 1.",
+   "squeeze_r_min": "0.75: SQUEEZE needs R >= 0.75 (verdict table). The band (0.5, 0.75) is INDETERMINATE.",
+   "squeeze_vb_min_ubar": "0.033 ubar: V_b(t_c + 2 tau_A) >= 0.033 ubar = the lowest plateau 0.049 ubar / 1.5 (physics 24 C3).",
+   "squeeze_dm_min_d0sq_per_ms": "5e-4 D0^2/ms: 'for ONE daughter dM/dt >= 5e-4 D0^2/ms' = the lowest squeeze rate 0.0008 / 1.5 (physics 24 C3); one cell quantum is 4.95e-4 D0^2 (D4).",
+   "squeeze_other_slope_fraction_max": "1/3: 'with the other's slope <= 1/3 of it' (physics 24's one-sided entry rule; D8).",
+   "film_mesh_v0_min_ubar": "0.3 ubar: 'V0 >= 0.3 ubar means the mesh film (readable at 61-70 ms)' (research/designs/2026-10-14-case-symmetric-y-plug.md rev. 2.1 section 6 B).",
+   "film_sqrt_k_v0_max_ubar": "0.2 ubar: 'V0 <= 0.2 ubar means sqrt(k) (108-133 ms)'.",
+   "fail_weld_vb_ubar": "0.02 ubar: FAIL 1, V_b < 0.02 ubar during the approach (a weld) (C5 item 1).",
+   "fail_overspeed_vb_ubar": "0.75 ubar: FAIL 2, V_b > 0.75 ubar during the approach (x1.5 above the highest prediction, 0.501 ubar) (C5 item 2).",
+   "fail_content_drift_rel": "1e-6: FAIL 3, total content drift > 1e-6 relative (C5 item 3; red team 26 section 3 item 3a).",
+   "fail_dg_max": "1e-3: FAIL 4, Dg > 1e-3 (C5 item 4).",
+   "fail_bulk_lambda1_max": "1.6: FAIL 4, bulk lambda1 > 1.6 (C5 item 4; damage onset stretch 2.105, 5a table; entry lambda1 1.18-1.26).",
+   "fail_split_each_min_d0sq": "0.05 D0^2: FAIL 5, M- and M+ each >= 0.05 D0^2 (C5 item 5).",
+   "fail_bypass_max": "0.01: FAIL 6, (Q - Q_s)/Q0 > 0.01 (C5 item 6; D2).",
+   "fail_bypass_vb_below_ubar": "0.05 ubar: FAIL 6 is read 'once V_b < 0.05 ubar' (C5 item 6).",
+   "bypass_slab_width_d0": "0.05 D0 (about 2.5 cells at 51 cells across D0): the x-width of the slab whose mean skeleton flux is Q_s = the integral of Us_x dy across the tracked section. CASE-ENGINEER CHOICE (the design gives 'a parent section inside the straight seal' and no width).",
+   "a_symmetry_flag": "1e-3: '|A| < 1e-3 at the verdict flags a symmetry hold' (research/designs/2026-10-14-case-symmetric-y-plug.md rev. 2.1 section 6 B, A bullet; physics 24 C4).",
+   "theta_over_phi0_band": "[1.04, 1.2]: the pre-registered band for max theta/phi0, REPORTED not gated (red team 26's estimate, SUSPECTED; D1).",
+   "tail_rt_min": "5: the OI-81 tail R_t = (dtWave(1)/dtWave)^2 >= 5 (numerics 18 TAIL row), REPORTED: from the log (max over every step) and from the fields at each full write (the tangent ratio of tail_record, whose classification TAIL / CLOT_BODY / INTERMEDIATE / BELOW uses this threshold).",
+   "tail_q_outside_min": "0.99: 'argmax q > 0.99' = the cells OUTSIDE the clot body (numerics 18 section 1: R_tail = max over q > 0.99 of 3/4 stiff(be); 5a's argmax q was 0.99990). The CE ruling of 2026-10-15 names it: the argmax of the tangent ratio over cells with q > 0.99 outside the clot body.",
+   "tail_q_body_max": "0.5: 'R_body = max over q < 0.5' (numerics 18 section 1: the clot body). The cells in between (0.5 <= q <= 0.99, numerics 18's Y wall rows that have not yet drained) are reported as R_mid and make the class INTERMEDIATE when the argmax lies there.",
+   "spacing_min_fraction": "0.5 of a write interval: two writes closer than this are a duplicate (REFUSED) unless one is a restart point (which is then dropped). CASE-ENGINEER CHOICE: a writeNow session end can sit a few microseconds from a 1 ms write.",
+   "spacing_max_fraction": "1.5 of a write interval: a larger spacing between neighbouring writes is a GAP (REFUSED). CASE-ENGINEER CHOICE: the writes are 1 ms apart (the adjustable step jitters a write by one dt, 0.6%).",
+   "series": "per plug series: predicted (design section 6 B 'The predictions': YS794 STUCK, YS850 SQUEEZE); lambda_over_crit (0.666 and 1.800, physics 24 item 5); gate5_fv_bias and gate5_tol = the flow gate series' gate 5 centre and tolerance (1.16e-3 / 4.46e-3 and 1.15e-3 / 4.74e-3, numerics 25 section 4), from which Q0 = ubar*(1 + bias)*D0*depth and FAIL 2's flux limit Q0*(1 + tol) are formed; the generator cross-checks them against the flow-gate series' own gate5 block."
+  },
+  "approach_start_s": 0.003,
+  "approach_end_margin_s": 0.001,
+  "approach_min_writes": 3,
+  "weight_lo": 0.8,
+  "weight_hi": 1.0,
+  "bulk_theta_over_phi0": 0.9,
+  "fit_writes": 5,
+  "slope_min_writes": 16,
+  "stuck_r_max": 0.5,
+  "squeeze_r_min": 0.75,
+  "squeeze_vb_min_ubar": 0.033,
+  "squeeze_dm_min_d0sq_per_ms": 0.0005,
+  "squeeze_other_slope_fraction_max": 0.3333333333333333,
+  "film_mesh_v0_min_ubar": 0.3,
+  "film_sqrt_k_v0_max_ubar": 0.2,
+  "fail_weld_vb_ubar": 0.02,
+  "fail_overspeed_vb_ubar": 0.75,
+  "fail_content_drift_rel": 1e-06,
+  "fail_dg_max": 0.001,
+  "fail_bulk_lambda1_max": 1.6,
+  "fail_split_each_min_d0sq": 0.05,
+  "fail_bypass_max": 0.01,
+  "fail_bypass_vb_below_ubar": 0.05,
+  "bypass_slab_width_d0": 0.05,
+  "a_symmetry_flag": 0.001,
+  "theta_over_phi0_band": [
+   1.04,
+   1.2
+  ],
+  "tail_rt_min": 5.0,
+  "tail_q_outside_min": 0.99,
+  "tail_q_body_max": 0.5,
+  "spacing_min_fraction": 0.5,
+  "spacing_max_fraction": 1.5,
+  "series": {
+   "s25_ys794_plug": {
+    "predicted": "STUCK",
+    "lambda_over_crit": 0.666,
+    "gate5_fv_bias": 0.00116,
+    "gate5_tol": 0.00446,
+    "flow_gate_series": "s25_ys794"
+   },
+   "s25_ys850_plug": {
+    "predicted": "SQUEEZE",
+    "lambda_over_crit": 1.8,
+    "gate5_fv_bias": 0.00115,
+    "gate5_tol": 0.00474,
+    "flow_gate_series": "s25_ys850"
+   }
+  }
+ }
 }

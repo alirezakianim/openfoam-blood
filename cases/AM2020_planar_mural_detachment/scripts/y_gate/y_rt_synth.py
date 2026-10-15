@@ -21,6 +21,9 @@ Options of the RT case (each plants ONE defect on B, except where it says A; the
     drop_field=<name>  B's step-leg2_stop directory lacks this field
     no_restart_json=True   B has no restart.json
     dt_digits=<n>      the logged deltaT carry only n significant digits
+    child_json_leg1=<n>  B's child.json says leg 1 stops after step n (a B built for another window than the pair registers)
+    no_child_json=True   B has no child.json
+A pair entry with `a_reference_step` (Y80_RT86) gets an A that holds only its last 10 full writes, from step a_reference_step.
 """
 from __future__ import annotations
 
@@ -89,14 +92,17 @@ def _nudge(v: float) -> float:
 def build_rt_case(case: Path, which: str, entry: dict, **o) -> Path:
     case = Path(case)
     s1, s2 = int(entry["leg1_stop"]), int(entry["leg2_stop"])
+    ref = int(entry.get("a_reference_step", s1))
     if which == "A":
-        steps, first = range(s1 - 4, s2 + 1), 1
+        # A keeps its last 10 full writes (purgeWrite 10 = create_cases.S25_RT1_PURGE_WRITE), steps leg2 - 9 .. leg2 (96..105): the 100 -> 105 pair reads step 100 among them, the 86 -> 105 pair
+        # (Y80_RT86) finds step 86 purged and reads its a_reference_step (96, the earliest kept write)
+        steps, first = range(s2 - 9, s2 + 1), 1
     else:
         steps, first = [s2], s1 + (2 if o.get("late_leg1") else 1)
     case.mkdir(parents=True, exist_ok=True)
     for k in steps:
         st = state(k, static=bool(o.get("static")))
-        if which == "A" and o.get("vs_zero") and k == s1:
+        if which == "A" and o.get("vs_zero") and k == ref:
             st["Vs"] = [[0.0, 0.0, 0.0] for _ in st["Vs"]]
         d = case / f"{k * 1e-6:.6f}".rstrip("0")
         for name, kind in FIELDS:
@@ -127,6 +133,13 @@ def build_rt_case(case: Path, which: str, entry: dict, **o) -> Path:
     (case / "log.phaseClotAxisymmetricFluid").write_text("\n".join(lines))
     (case / "run-exit-code.txt").write_text("0\n")
     (case / "log.wallTime").write_text("WALL_SECONDS=91\n")
+    # child.json: the window the case was BUILT to run (the generator's own record), which assess_case.y_rt_pair cross-checks against the pair. `child_json_leg1=` plants a B built for another leg-1 stop.
+    if which == "A":
+        cj = {"child_id": entry["a"], "write_every_step": True, "stop_after_step": s2}
+    else:
+        cj = {"child_id": entry["b"], "stop_after_step": {"leg1": int(o.get("child_json_leg1", s1)), "leg2": s2}}
+    if not o.get("no_child_json"):
+        (case / "child.json").write_text(json.dumps(cj, indent=2) + "\n")
     if which == "B" and not o.get("no_restart_json"):
         (case / "restart.json").write_text(json.dumps({"chosen_index": s1 + (1 if o.get("late_leg1") else 0), "source": "synthetic"}) + "\n")
     return case
