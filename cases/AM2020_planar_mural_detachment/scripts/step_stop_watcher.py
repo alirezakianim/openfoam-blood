@@ -8,7 +8,7 @@ run when <case>/<its own name> exists; its action writeNow makes the NEXT step t
 written).
 
 WHAT IT DOES. `step_stop_watcher.py CASE`
-  * reads CASE/child.json `stop_after_step` = S (an integer >= 2);
+  * reads CASE/child.json `stop_after_step` = S (an integer >= 2; or {leg1, leg2} of the Y restart test: leg 2 when CASE/restart.json exists);
   * tails CASE/log.phaseClotAxisymmetricFluid, complete lines only. PHASE_CLOT_DT is printed at the START of each step with the ABSOLUTE
     time index (solver .C L13170: `step=` runTime.timeIndex(), after runTime++), so a restart's first record is step N0 + 1;
   * at the first record with step >= S - 1 it creates CASE/stopAfterStep and writes CASE/step-stop.txt. The solver is then inside step
@@ -53,6 +53,12 @@ def stop_step_of(case: Path) -> int:
         s = spec["stop_after_step"]
     except (OSError, ValueError, KeyError) as error:
         raise SystemExit(f"step_stop_watcher: {case / 'child.json'} needs stop_after_step ({error!r})") from error
+    if isinstance(s, dict):
+        # THE Y RESTART TEST (design 2026-10-14-case-symmetric-y-plug.md section 5 item 2): S PER LEG, {leg1, leg2}. restart_driver compares the dictionaries but not child.json, so
+        # the two legs run under identical dictionaries and differ only here. Leg 2 is the case that holds restart.json (restart_driver --apply writes it before this watcher starts).
+        if set(s) != {"leg1", "leg2"}:
+            raise SystemExit(f"step_stop_watcher: stop_after_step {s!r} must be an integer or exactly {{leg1, leg2}}")
+        s = s["leg2"] if (case / "restart.json").is_file() else s["leg1"]
     if isinstance(s, bool) or not isinstance(s, int) or s < 2:
         raise SystemExit(f"step_stop_watcher: stop_after_step {s!r} must be an integer >= 2")
     return s

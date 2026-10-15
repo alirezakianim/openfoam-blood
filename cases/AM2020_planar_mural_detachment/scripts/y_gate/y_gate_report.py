@@ -8,7 +8,7 @@ PURE PYTHON ON PURPOSE (no numpy, no scipy): assess_case.py runs under plain `py
 What each gate reads (all of it written by the child itself):
   gate 1  postProcessing/yGate/gate1.json, written by scripts/y_gate/y_mesh_gate.py BEFORE foamRun (the mesh-only
           pre-step). The verdict is RECOMPUTED here from the recorded numbers; the file's own `ok` is not trusted.
-  gate 2  q1/q0 at the last written time T_d. q0 = -inletFlux (logged), q1 = the instrument.
+  gate 2  q1/q0 at the last written time T_d. q0 = -inletFlux (logged), q1 = the instrument. For a SYMMETRIC series expected is 0.5 and tol 1e-7: the symmetry test.
   gate 3  |q1 + q2 - q0| / q0 at T_d.
   gate 4  the windowed pressure gradients at T_d: G_FV (1 + 2/N^2) = 12 nu Ubar / W^2, to 1e-3, Ubar = q / (W depth).
   gate 5  the parent mean q0 / (W0 depth) against the 0.94 cm/s centreline / the measured 1.5, x (1 + 2.5e-4).
@@ -285,6 +285,11 @@ def gate1(case: Path, spec: dict) -> dict:
             d = pts.get(k)
             if not isinstance(d, (int, float)) or not math.isfinite(d) or d > m["points_tol_m"]:
                 why.append(f"{k} {d!r} exceeds {m['points_tol_m']}")
+        if "mirror_tol_m" in m:
+            # A SYMMETRIC geometry (design 2026-10-14-case-symmetric-y-plug.md 6 A item 1): the real points must be their own mirror image in y to <= mirror_tol_m (1e-15 m).
+            mm = pts.get("mirror_max_m")
+            if not isinstance(mm, (int, float)) or isinstance(mm, bool) or not math.isfinite(mm) or mm > m["mirror_tol_m"] or pts.get("mirror_unmatched") != 0:
+                why.append(f"mirror error {mm!r} m (unmatched {pts.get('mirror_unmatched')!r}) exceeds {m['mirror_tol_m']} m (the symmetric mesh must be its own mirror image)")
         sp = rec.get("outlet_split", {})
         if sp.get("d1_y_positive") != m["outlet_faces"]["d1_y_positive"] or sp.get("d2_y_negative") != m["outlet_faces"]["d2_y_negative"]:
             why.append(f"outlet split {sp!r}, want {m['outlet_faces']!r}")
@@ -465,7 +470,8 @@ def assess(case: Path, spec: dict, nu: float, completed: bool) -> dict:
                 G, ks = _fit_gradient(centres, p, node, e, w0 * D0, w1 * D0, half)
                 ubar = qn / (W[k] * depth)
                 g_pois = 12.0 * nu * ubar / W[k] ** 2
-                ratio = abs(G) * (1.0 + 2.0 / N[k] ** 2) / g_pois - 1.0
+                bias_k = g4["bias"][k] if "bias" in g4 else 2.0 / N[k] ** 2       # a symmetric series states the bias measured on its real face spacing (numerics 25 section 4)
+                ratio = abs(G) * (1.0 + bias_k) / g_pois - 1.0
                 secs[name] = {"G": G, "ncells": len(ks), "Ubar_m_s": ubar, "G_pois": g_pois, "rel_err": ratio,
                               "sign_ok": G < 0.0, "pass": bool(G < 0.0 and abs(ratio) <= g4["tol"])}
             # REPORTED, NOT GATED (design section 4 gate 5): the parent window's centreline maximum, against 0.94 cm/s. The nearest

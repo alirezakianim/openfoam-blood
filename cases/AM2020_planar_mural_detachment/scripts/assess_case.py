@@ -3335,6 +3335,186 @@ def s25_rt1_report(runs: Path, children: dict, controls: dict) -> list:
     return out
 
 
+Y_RT_RESTART_STATE_OK = "restored"
+
+
+def y_rt_pair(a: Path, b: Path, entry: dict, a_log: str = "log.phaseClotAxisymmetricFluid") -> dict:
+    """THE Y RESTART TEST (design 2026-10-14-case-symmetric-y-plug.md section 5 item 2 and 6 A "The RT"; numerics 25 section 5), scored EXACTLY (0, at 17 digits):
+    A = Y80_RT_A, a cold start that wrote every step to step S2 (leg2_stop 105); B = Y80_RT_B's LEG 2 case: stopped at step S1 (leg1_stop 100) by stopAfterStep -> writeNow
+    (not write-aligned), restarted by a second runner invocation (--restart-from the leg-1 tarball), stopped at step S2. Its returned case holds restart.json (the restart point) and
+    the step-S2 full write.
+      RT-1a  m = max|theta_B - theta_A| at step S2 / max|theta_A(S2) - theta_A(S1)|: PASS only at a numerator of exactly 0 (thetaC and thetaH each), VOID below RT1_DENOMINATOR_MIN
+      RT-1b  the PHASE_CLOT_DT deltaT of steps S1+1 .. S2 are EQUAL in A's and B's logs (relative difference exactly 0; the log prints 17 digits)
+      RT-1c  every field of A's step-S2 directory exists in B's and is EQUAL to it bit for bit
+    Preconditions (a failed one is VOID, never a pass): the restart point is step S1 (restart.json chosen_index; B's first PHASE_CLOT_DT is S1 + 1, so leg 1 stopped ON TIME),
+    B reports PHASE_CLOT_S25_RESTART state=restored and A not, both write at precision >= 17, and max|Vs| of A at S1 is not 0 (the moving-skeleton state is exercised)."""
+    s1, s2 = int(entry["leg1_stop"]), int(entry["leg2_stop"])
+    void: list = []
+    fail: list = []
+    res: dict = {"pair_id": entry["pair_id"], "a": entry["a"], "b": entry["b"], "leg1_stop": s1, "leg2_stop": s2, "gates": {}}
+    da, db = rt1_full_dirs(a), rt1_full_dirs(b)
+    dta, dtb = rt1_dt(a / a_log), rt1_dt(b / a_log)
+    sa, sb = rt1_restart_state(a / a_log), rt1_restart_state(b / a_log)
+    res["restart_state"] = {"A": sa, "B": sb}
+    wp = {"A": rt1_write_precision(a), "B": rt1_write_precision(b)}
+    res["write_precision"] = wp
+    for what, v in wp.items():
+        if v is None or v < RT1_WRITE_PRECISION_MIN:
+            void.append(f"{what}'s system/controlDict writePrecision is {v!r}, below {RT1_WRITE_PRECISION_MIN}: a bitwise comparison of its fields is below the resolution of the files")
+    res["last_step"] = {"A": max(dta) if dta else None, "B": max(dtb) if dtb else None}
+    res["first_step"] = {"A": min(dta) if dta else None, "B": min(dtb) if dtb else None}
+    if sa == Y_RT_RESTART_STATE_OK:
+        void.append("A reports PHASE_CLOT_S25_RESTART state=restored: it was not a cold start")
+    if sb != Y_RT_RESTART_STATE_OK:
+        void.append(f"B reports PHASE_CLOT_S25_RESTART state={sb!r}, not {Y_RT_RESTART_STATE_OK}: leg 2 was not a restart (a cold start, or the restart did not read uniform/phaseClotState)")
+    rj = b / "restart.json"
+    try:
+        rec = json.loads(rj.read_text())
+        res["restart_chosen_index"] = rec.get("chosen_index")
+        if rec.get("chosen_index") != s1:
+            void.append(f"B restarted from step {rec.get('chosen_index')!r}, not {s1}: leg 1 did not stop on time (a late stopAfterStep), so the compared window is not the pre-registered one")
+    except (OSError, ValueError) as error:
+        res["restart_chosen_index"] = None
+        void.append(f"B's restart.json is unreadable ({error}): leg 2 is not evidence of a restart through --restart-from")
+    if dtb and min(dtb) != s1 + 1:
+        void.append(f"B's first PHASE_CLOT_DT step is {min(dtb)}, not {s1 + 1}")
+    for what, have, need in (("A", da, (s1, s2)), ("B", db, (s2,))):
+        missing = [i for i in need if i not in have]
+        if missing:
+            void.append(f"{what} has no full write at step(s) {missing} (A's purgeWrite keeps the last 10 writes; B writes at its stop)")
+    for what, have in (("A", dta), ("B", dtb)):
+        missing = [i for i in range(s1 + 1, s2 + 1) if i not in have]
+        if missing:
+            void.append(f"{what}'s log has no PHASE_CLOT_DT record for step(s) {missing}")
+    try:
+        vs = rt1_max_abs(rt1_read_field(da[s1] / "Vs")[2]) if s1 in da and (da[s1] / "Vs").is_file() else None
+    except (OSError, ValueError, TypeError) as error:
+        vs = None
+        void.append(f"A's Vs at step {s1} is unreadable ({error})")
+    res["vs_max_abs_at_leg1_stop"] = vs
+    if vs is None:
+        void.append(f"A's Vs at step {s1} is absent: the precondition Vs != 0 cannot be checked")
+    elif not vs > 0.0:
+        void.append(f"max|Vs| of A at step {s1} is 0: the skeleton has not moved, so the test does not exercise the moving-skeleton state")
+    # ---- RT-1a
+    g = {"threshold": "numerator == 0 exactly", "denominator_min": RT1_DENOMINATOR_MIN}
+    try:
+        if s1 in da and s2 in da and s2 in db:
+            t0, t2, tb = rt1_theta(da[s1]), rt1_theta(da[s2]), rt1_theta(db[s2])
+            if not len(t0) == len(t2) == len(tb):
+                raise ValueError("theta sizes differ between A(S1), A(S2) and B(S2)")
+            den = max(abs(y - x) for x, y in zip(t0, t2))
+            num = max(abs(y - x) for x, y in zip(t2, tb))
+            (ca, ha), (cb, hb) = rt1_theta_parts(da[s2]), rt1_theta_parts(db[s2])
+            num_c, num_h = max(abs(y - x) for x, y in zip(ca, cb)), max(abs(y - x) for x, y in zip(ha, hb))
+            g.update(numerator=num, denominator=den, numerator_thetaC=num_c, numerator_thetaH=num_h)
+            if not (math.isfinite(den) and math.isfinite(num)) or not den >= RT1_DENOMINATOR_MIN:
+                g["status"] = "VOID"
+                g["reason"] = f"denominator {den!r} < {RT1_DENOMINATOR_MIN:g} (or not finite): the test cannot discriminate"
+                void.append(f"RT-1a: {g['reason']}")
+            else:
+                g["m"] = num / den
+                g["status"] = "PASS" if (num == 0.0 and num_c == 0.0 and num_h == 0.0) else "FAIL"
+        else:
+            g["status"] = "VOID"
+            g["reason"] = "a directory RT-1a reads is missing"
+    except (OSError, ValueError) as error:
+        g["status"] = "VOID"
+        g["reason"] = str(error)
+        void.append(f"RT-1a: {error}")
+    res["gates"]["RT-1a"] = g
+    # ---- RT-1b
+    g = {"threshold": "relative difference == 0 exactly", "worst_rel": None}
+    rel = []
+    for i in range(s1 + 1, s2 + 1):
+        if i in dta and i in dtb:
+            x, y = float(dta[i]), float(dtb[i])
+            rel.append((abs(y - x) / abs(x) if x != 0 and math.isfinite(x) and math.isfinite(y) else math.inf, i))
+    if len(rel) == s2 - s1:
+        g["worst_rel"], g["worst_step"] = max(rel)
+        g["status"] = "PASS" if g["worst_rel"] == 0.0 else "FAIL"
+        g["digits_printed"] = min(rt1_dt_digits(a / a_log), rt1_dt_digits(b / a_log))
+        if g["digits_printed"] < RT1_DT_MIN_DIGITS and g["status"] == "PASS":
+            g["status"] = "VOID"
+            g["reason"] = (f"the log prints at most {g['digits_printed']} significant digits of deltaT, fewer than {RT1_DT_MIN_DIGITS}: an exact equality is below its resolution")
+    else:
+        g["status"] = "VOID"
+        g["reason"] = f"fewer than {s2 - s1} matched PHASE_CLOT_DT records"
+    res["gates"]["RT-1b"] = g
+    # ---- RT-1c
+    g = {"threshold": "max|B-A| == 0 exactly, every field", "fields": 0, "worst": []}
+    if s2 in da and s2 in db:
+        names = sorted(str(p.relative_to(da[s2])) for p in da[s2].rglob("*") if p.is_file())
+        problems, worst = [], []
+        for rel_name in names:
+            try:
+                fa = rt1_read_field(da[s2] / rel_name)
+            except (OSError, ValueError) as error:
+                problems.append(f"{rel_name}: A's file is unreadable ({error})")
+                continue
+            if fa is None:
+                continue
+            g["fields"] += 1
+            pb = db[s2] / rel_name
+            if not pb.is_file():
+                problems.append(f"{rel_name}: dropped (A has it at step {s2}, B has not)")
+                continue
+            try:
+                fb = rt1_read_field(pb)
+            except (OSError, ValueError) as error:
+                problems.append(f"{rel_name}: B's file is unreadable ({error})")
+                continue
+            if fb is None or fa[0] != fb[0] or fa[1] != fb[1] or len(fa[2]) != len(fb[2]):
+                problems.append(f"{rel_name}: B's internalField is not the same kind and size as A's")
+                continue
+            if not all(math.isfinite(v) for v in fa[2] + fb[2]):
+                problems.append(f"{rel_name}: not finite")
+                continue
+            scale = rt1_max_abs(fa[2])
+            diff = max((abs(y - x) for x, y in zip(fa[2], fb[2])), default=0.0)
+            rel_err = (diff / scale) if scale > 0.0 else (0.0 if diff == 0.0 else math.inf)
+            worst.append((rel_err, rel_name))
+            if diff != 0.0:
+                problems.append(f"{rel_name}: max|B-A| = {diff:.3g} (relative {rel_err:.3g}) is not 0")
+        worst.sort(reverse=True)
+        g["worst"] = [{"field": n, "rel": r} for r, n in worst[:5]]
+        g["problems"] = problems[:20]
+        g["n_problems"] = len(problems)
+        if g["fields"] == 0:
+            g["status"] = "VOID"
+            g["reason"] = f"A's step {s2} holds no field"
+            void.append(f"RT-1c: {g['reason']}")
+        else:
+            g["status"] = "FAIL" if problems else "PASS"
+    else:
+        g["status"] = "VOID"
+        g["reason"] = f"step {s2} directory missing in A or B"
+    res["gates"]["RT-1c"] = g
+    res["void_reasons"] = void
+    res["fail_reasons"] = fail
+    gate_status = [v["status"] for v in res["gates"].values()]
+    if void or "VOID" in gate_status:
+        res["status"] = "VOID"
+    elif fail or "FAIL" in gate_status:
+        res["status"] = "FAIL"
+    else:
+        res["status"] = "PASS"
+    return res
+
+
+def y_rt_report(runs: Path, children: dict, controls: dict) -> list:
+    """One entry per pair of the controls' `y_rt_pairs`. A pair with an arm that is not a child of this assessment gets ARMS_NOT_IN_THIS_RUN (the leg-2 session holds only Y80_RT_B;
+    its pair is scored by scripts/y_rt_compare.py on the two sessions' returned cases)."""
+    out = []
+    for entry in controls.get("y_rt_pairs", []):
+        absent = sorted(c for c in (entry["a"], entry["b"]) if c not in children)
+        if absent:
+            out.append({"pair_id": entry["pair_id"], "status": "ARMS_NOT_IN_THIS_RUN", "arms_absent": absent})
+            continue
+        out.append(y_rt_pair(runs / entry["a"], runs / entry["b"], entry))
+    return out
+
+
 def s25_report(text: str) -> dict:
     """Report-only fields from PHASE_CLOT_DT, PHASE_CLOT_LAMBDA, PHASE_CLOT_S25_R1, PHASE_CLOT_S25_CONFIG,
     PHASE_CLOT_S25_RESTART and contentOverCap* (on PHASE_CLOT_FREEPLATELET). Every field is None (or a zero
@@ -3434,6 +3614,21 @@ def s25_report(text: str) -> dict:
     s19kv = pairs(s19cfg.group(1)) if s19cfg else {}
     out["cpu"] = {k: s19kv.get(k) for k in S25_CPU_KEYS}
     return out
+
+
+def case_relative_error(exc: BaseException, case: Path | None) -> str:
+    """repr(exc) with the case directory's absolute path written as the child's name.
+
+    A reader's exception carries the path it was given (free_shell_timeseries.
+    read_surface_field_value: f"{case}: no postProcessing/..."), and result.json
+    is a report: an absolute path puts the temporary directory (or the Colab
+    mount) into it, so the same returned run reported twice differs in nothing
+    but where it was unpacked. The child's name is what identifies it."""
+    text = repr(exc)
+    if case is not None:
+        for absolute in sorted({str(case), str(Path(case).resolve())}, key=len, reverse=True):
+            text = text.replace(absolute, Path(case).name)
+    return text
 
 
 def s19_report(text: str, spec: dict | None = None, case: Path | None = None) -> dict:
@@ -3556,7 +3751,7 @@ def s19_report(text: str, spec: dict | None = None, case: Path | None = None) ->
             for name in ("inletFlux", "outletFlux"):
                 logged[name] = dict(fst.read_surface_field_value(case, name, "orientedSum(phi)"))
     except Exception as exc:  # the report says why rather than guessing
-        out["g4_source_error"] = repr(exc)
+        out["g4_source_error"] = case_relative_error(exc, case)
     out["q0"] = q0
     cr = [r["contResAbs"]/q0 for r in rows if "contResAbs" in r] if q0 else []
     out["contres_max"] = max(cr, default=None)
@@ -3580,7 +3775,7 @@ def s19_report(text: str, spec: dict | None = None, case: Path | None = None) ->
         n_cells = s19b_mesh_cells(case)
     except Exception as exc:  # the report says why rather than guessing
         n_cells = None
-        out["n_cells_source_error"] = repr(exc)
+        out["n_cells_source_error"] = case_relative_error(exc, case)
     out["n_cells"] = n_cells
     cfg_lumen = s21_config(out["config"], "blockCoupledLumen")
     out["config_lumen"] = cfg_lumen
@@ -5482,6 +5677,47 @@ def finite(values) -> bool:
 
 
 Y_GATE_SERIES_NAME = "s25_ygate"
+Y_FLOW_SERIES_NAMES = ("s25_ygate", "s25_ys794", "s25_ys850")      # the flow gates: scripts/y_gate/y_gate_report.py
+Y_PLUG_SERIES_NAMES = ("s25_ys794_plug", "s25_ys850_plug")          # the free occlusive plug: the restart pair (y_rt_report) and the clot children
+
+
+def stop_step_of_child(case: Path, spec: dict):
+    """The step a child stops after: stop_after_step, or for a Y restart-test B child ({leg1, leg2}) the leg this case ran (leg 2 when it holds restart.json,
+    which restart_driver --apply writes; scripts/step_stop_watcher.py chooses the same way)."""
+    s = spec.get("stop_after_step")
+    if isinstance(s, dict):
+        return s["leg2"] if (case / "restart.json").is_file() else s["leg1"]
+    return s
+
+
+def y_plug_child(case: Path, spec: dict, text: str, exit_code, wall_seconds, concurrency, times: list, watcher_stop, watcher_verdict,
+                 stopped_by_watcher: bool) -> dict:
+    """A child of a Y PLUG series (design 2026-10-14-case-symmetric-y-plug.md): the restart-test pair Y80_RT_A / Y80_RT_B (scored by y_rt_report) or a clot child
+    (Y81_*_PLUG; the plug assessor of its verdict is case-engineer 28's and is not built here). `completed` = it reached its stop (RT: the step of its leg; a clot child: its
+    end time within one step); the clot verdict is not computed."""
+    stop = stop_step_of_child(case, spec)
+    if stop is not None:
+        steps = [int(v) for v in re.findall(r"^PHASE_CLOT_DT step=(\d+) ", text, re.M)]
+        completed = bool(exit_code == 0 and any(k in text for k in COMPLETED) and steps and max(steps) >= stop and watcher_stop is None and not stopped_by_watcher)
+        reason = None if completed else f"did not reach step {stop}: exit code {exit_code}, last logged step {max(steps) if steps else None}"
+    else:
+        end = spec["end_time_s"]
+        dt_last = (times[-1] - times[-2]) if len(times) >= 2 else 0.0
+        completed = bool(exit_code == 0 and any(k in text for k in COMPLETED) and times and dt_last > 0 and abs(max(times) - end) <= dt_last
+                         and watcher_stop is None and not stopped_by_watcher)
+        reason = None if completed else f"did not reach the end time {end}: exit code {exit_code}, last logged time {max(times) if times else None}"
+    return {
+        "child_id": spec["child_id"], "series": spec["series"],
+        "wall_shear_rate_1_s": spec["wall_shear_rate_1_s"], "mean_velocity_m_s": spec["mean_velocity_m_s"],
+        "G_pa": spec["G_pa"], "k0p_m2": spec["k0p_m2"], "Gc_j_m2": spec["Gc_j_m2"], "core_shell": False,
+        "growth": spec["growth"], "wall_condition": spec["wall_condition"], "adhesive_strength_pa": spec["adhesive_strength_pa"],
+        "exit_code": exit_code, "wall_seconds": wall_seconds, "concurrency": concurrency,
+        "step_count": len(times), "final_log_time_s": max(times) if times else None,
+        "completed": completed, "watcher_stop": watcher_stop, "watcher_verdict": None,
+        "status": "COMPLETE" if completed else "INCOMPLETE", "verdict_note": None, "ran": len(times) > 0,
+        "cohesive_release_cells": 0, "admissible": completed, "bounded": completed, "bounds_reason": reason,
+        "y_plug": {"stop_step": stop, "verdict": "NOT_ASSESSED", "why": "the plug verdict (STUCK / SQUEEZE / INDETERMINATE) is scored by the plug assessor of case-engineer 28"},
+    }
 
 
 def y_gate_child(case: Path, spec: dict, text: str, exit_code, wall_seconds, concurrency, times: list, watcher_stop,
@@ -5552,7 +5788,7 @@ def assess_child(case: Path, spec: dict, controls: dict) -> dict:
     if spec.get("stop_after_step") is not None:
         steps = [int(s) for s in re.findall(r"^PHASE_CLOT_DT step=(\d+) ", text, re.M)]
         completed = bool(exit_code == 0 and any(k in text for k in COMPLETED) and steps
-                         and max(steps) >= spec["stop_after_step"])
+                         and max(steps) >= stop_step_of_child(case, spec))
 
     # THE STEP-1 WATCHER (design 2026-10-02-case-free-shell-throat, rev. 3,
     # S7.3b/04 #2). watcher-stop.txt is written by clot_free_watcher.py, NOT
@@ -5585,8 +5821,11 @@ def assess_child(case: Path, spec: dict, controls: dict) -> dict:
     if stopped_by_watcher:
         completed = False
 
-    if spec.get("series") == Y_GATE_SERIES_NAME:
+    if spec.get("series") in Y_FLOW_SERIES_NAMES:
         return y_gate_child(case, spec, text, exit_code, wall_seconds, concurrency, times, watcher_stop,
+                            watcher_verdict, stopped_by_watcher)
+    if spec.get("series") in Y_PLUG_SERIES_NAMES:
+        return y_plug_child(case, spec, text, exit_code, wall_seconds, concurrency, times, watcher_stop,
                             watcher_verdict, stopped_by_watcher)
 
     sweeps = [
@@ -6553,8 +6792,8 @@ def assess_child(case: Path, spec: dict, controls: dict) -> dict:
 
 def growth_table(children: dict, controls: dict) -> dict:
     rows, excluded = [], []
-    # The growing-face area comes from the matrix's geometry reference, which is None when no child carries a
-    # clot (clot_reference); a growth child there is refused in main(), and cannot be scored here either.
+    # The growing-face area comes from the matrix's geometry reference, which is None when no child's clot carries a
+    # height (clot_reference); a growth child there is refused in main(), and cannot be scored here either.
     if controls["_geometry"] is None and any(c["series"] == "growth" for c in children.values()):
         raise ValueError("growth_table: growth children but no clot reference")
     for c in sorted(children.values(), key=lambda r: r["wall_shear_rate_1_s"]):
@@ -6776,9 +7015,9 @@ def deformation_table(children: dict, controls: dict) -> dict:
     and `trustworthy` is false when the solve did not settle -- rather than
     reporting a large strain and leaving the caveat to prose nobody reads.
     """
-    # BATCH 79 (the Y gate, no clot): main() sets the clot reference to None when NO child of the
-    # matrix carries a clot (clot_reference), and a deformation child without one is refused there
-    # (clot_reference_refusal). So a no-clot matrix never reads a clot height: the height and the cell
+    # BATCH 79/80 (the Y children): main() sets the clot reference to None when NO child of the matrix has a clot
+    # with a height (clot_reference; the Y gate has none, the Y plug has none), and a deformation child without
+    # one is refused there (clot_reference_refusal). So such a matrix never reads a clot height: the height and the cell
     # are taken from the reference only when it exists, and the table keeps its schema (empty rows) for
     # the notebook's report cell. With a reference (every clot matrix) nothing below changed.
     reference_clot, reference_geometry = controls["_clot"], controls["_geometry"]
@@ -7234,33 +7473,38 @@ def cohesive_margin(children: dict, controls: dict) -> dict:
     }
 
 
-def has_clot(spec: dict) -> bool:
-    """A child carries a clot unless its generated spec says so: clot shape "none" (create_cases.py, the Y gate's
-    `clot` block) is the one declared no-clot marker."""
-    return spec["clot"].get("shape") != "none"
+def carries_reference_clot(spec: dict) -> bool:
+    """True iff the child's clot carries the geometry the reference is read for: a `height_m` (the clot height that
+    deformation_table divides by, and that clot_reference_refusal compares). The test is on the KEY the readers read,
+    not on a list of shape names, so a shape without a height can never be the reference: the Y gate's no-clot block
+    (shape "none") and the free occlusive plug of the Y81 children (y_plug.PLUG_KEYS: width, radii, length, gap, shift;
+    no height) are both outside it, and so is any future shape that has none. Every clot of the earlier series
+    (semisphere, halfEllipseDome, disc) carries height_m, so for them this is the former "shape != none"."""
+    return isinstance(spec["clot"].get("height_m"), (int, float))
 
 
 def clot_reference(matrix: list, own_geometry: set):
-    """The child that fixes the growth and deformation tables' geometry and clot height: the first CLOT child of a
-    series with the case's own geometry, else the first clot child; None when no child of the matrix has a clot.
-    On a matrix whose every child has a clot this is exactly the former `next(first non-own-geometry, matrix[0])`."""
-    clot_children = [s for s in matrix if has_clot(s)]
+    """The child that fixes the growth and deformation tables' geometry and clot height: the first child that
+    carries_reference_clot of a series with the case's own geometry, else the first such child; None when no child
+    of the matrix does. On a matrix whose every child has a clot height this is exactly the former
+    `next(first non-own-geometry, matrix[0])`."""
+    candidates = [s for s in matrix if carries_reference_clot(s)]
     return next(
-        (s for s in clot_children if s["series"] not in own_geometry),
-        clot_children[0] if clot_children else None,
+        (s for s in candidates if s["series"] not in own_geometry),
+        candidates[0] if candidates else None,
     )
 
 
 def clot_reference_refusal(matrix: list, reference) -> None:
     """Growth and deformation children are scored against the reference (their cell and clot height must equal it).
-    A child of those series with no clot, or any of them with no reference, is refused by name."""
+    A child of those series whose clot carries no height, or any of them with no reference, is refused by name."""
     for s in matrix:
         if s["series"] not in ("growth", "deformation"):
             continue
-        if reference is None or not has_clot(s):
+        if reference is None or not carries_reference_clot(s):
             raise ValueError(
                 f"{s['child_id']}: a {s['series']} child is scored against the matrix's clot reference "
-                f"and needs a clot (reference: {None if reference is None else reference['child_id']})"
+                f"and needs a clot with height_m (reference: {None if reference is None else reference['child_id']})"
             )
         if (
             s["geometry"]["h_m"] != reference["geometry"]["h_m"]
@@ -7300,9 +7544,10 @@ def main() -> int:
         name for name, spec in controls["series"].items()
         if spec.get("geometry_override")
     }
-    # THE CLOT REFERENCE IS TAKEN FROM CHILDREN THAT HAVE A CLOT (BATCH 79, docket 20261013-2314 report 14: a one-child
-    # matrix whose only child is the clot-free Y gate made that child the reference, and deformation_table read
-    # its clot height). A child with clot shape "none" is never a candidate, so a no-clot matrix has no reference
+    # THE CLOT REFERENCE IS TAKEN FROM CHILDREN WHOSE CLOT CARRIES A HEIGHT (BATCH 79, docket 20261013-2314 report 14: a
+    # one-child matrix whose only child is the clot-free Y gate made that child the reference, and deformation_table
+    # read its clot height; BATCH 80, report 29: the same through the free occlusive plug, a clot without a height).
+    # Only a clot with height_m is a candidate (carries_reference_clot), so a matrix of Y children has no reference
     # (None) rather than a wrong one, and every table that scores against the reference is gated on it.
     reference = clot_reference(matrix, own_geometry)
     controls["_geometry"] = reference["geometry"] if reference is not None else None
@@ -7334,6 +7579,7 @@ def main() -> int:
     s25_f3 = {cid: (c.get("s25") or {}).get("gates", {}).get("F3") for cid, c in children.items()}
     s25_pairs = s25_pair_report(children, controls)
     s25_rt1 = s25_rt1_report(runs, children, controls)
+    y_rt = y_rt_report(runs, children, controls)
     s25_stab = {cid: (c.get("s25_stability") or {}).get("verdict") for cid, c in children.items() if c.get("s25_stability")}
     y_gate = {cid: {"verdict": c["y_gate_verdict"], "failing": c["y_gate"]["failing"]} for cid, c in children.items() if c.get("y_gate")}
 
@@ -7348,6 +7594,7 @@ def main() -> int:
         "s25_f3_failures": sorted(cid for cid, v in s25_f3.items() if v == "FAIL"),
         "s25_paired": s25_pairs,
         "s25_rt1": s25_rt1,
+        "y_rt": y_rt,
         "s25_stability_gate": s25_stab,
         "y_gate": y_gate,
         "s25_stability_failures": sorted(cid for cid, v in s25_stab.items() if v == "FAIL"),
@@ -7389,6 +7636,7 @@ def main() -> int:
         "s25_f3_failures": result["s25_f3_failures"],
         "s25_paired": {p["pair_id"]: p["status"] for p in s25_pairs},
         "s25_rt1": {p["pair_id"]: p["status"] for p in s25_rt1},
+        **({"y_rt": {p["pair_id"]: p["status"] for p in y_rt}} if any(p["status"] != "ARMS_NOT_IN_THIS_RUN" for p in y_rt) else {}),
         "s25_stability": s25_stab,
         "y_gate": y_gate,
         "growth_exponent": result["growth_vs_flow"]["flow_dependence"]["exponent"],

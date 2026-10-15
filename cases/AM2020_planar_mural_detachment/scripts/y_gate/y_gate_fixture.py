@@ -25,8 +25,8 @@ import na09_roundtrip as R  # noqa: E402
 MAIN_CASE = HERE.parents[1]
 
 
-def build():
-    V, B, E, P = R.parse(str(MAIN_CASE / "constant" / "yGate" / "na09_blockMeshDict"))
+def build(dict_path=None, with_info=False):
+    V, B, E, P = R.parse(str(dict_path or (MAIN_CASE / "constant" / "yGate" / "na09_blockMeshDict")))
     Pu, Cu, tag, tol = R.build2d(V, B, E, 2)
     A = 0.5 * np.sum(Pu[Cu][:, :, 0] * np.roll(Pu[Cu][:, :, 1], -1, 1) - np.roll(Pu[Cu][:, :, 0], -1, 1) * Pu[Cu][:, :, 1], 1)
     if (A < 0).all():
@@ -52,10 +52,46 @@ def build():
     faces = mid[on]
     order = np.lexsort((faces[:, 0], faces[:, 1]))     # a deterministic order
     faces = faces[order]
+    if with_info:
+        # per cell: polygon area (m2) and whether it owns a WALL boundary edge (a boundary edge that is not on an inlet/outlet segment)
+        inl = [(V[f[0]][:2], V[f[1]][:2]) for f in P["inlet"][1]]
+        onio = on.copy()
+        for a, b in inl:
+            onio |= dist_to_seg(mid, a, b) < 1e-9
+        wall_edges = bnd[~onio]
+        wa, wb = wall_edges // len(Pu), wall_edges % len(Pu)
+        wallflag = np.zeros(len(Cu))
+        cell_of = {}
+        for k in range(4):
+            e2 = np.sort(Cu[:, [k, (k + 1) % 4]], axis=1)
+            for ci, (u, v) in enumerate(e2):
+                cell_of[(int(u), int(v))] = ci
+        for u, v in zip(wa, wb):
+            wallflag[cell_of[(int(u), int(v))]] = 1.0
+        area = np.abs(0.5 * np.sum(Pu[Cu][:, :, 0] * np.roll(Pu[Cu][:, :, 1], -1, 1) - np.roll(Pu[Cu][:, :, 0], -1, 1) * Pu[Cu][:, :, 1], 1))
+        return centres, faces, len(Pu), len(Cu), np.stack([area, wallflag], axis=1)
     return centres, faces, len(Pu), len(Cu)
 
 
+def main_tag(tag):
+    """The f = 2 symmetric meshes: fixtures/<tag>_cells_2d.npy, <tag>_outlet_faces_2d.npy, <tag>_cellinfo_2d.npy (area m2, wall-row flag)."""
+    want = {"YS794": (19728, 72), "YS850": (19416, 72)}[tag]
+    centres, faces, npts, ncell, info = build(MAIN_CASE / "constant" / "yGate" / f"na22_blockMeshDict_{tag}_h2", with_info=True)
+    out = HERE / "fixtures"
+    out.mkdir(exist_ok=True)
+    np.save(out / f"{tag}_cells_2d.npy", centres)
+    np.save(out / f"{tag}_outlet_faces_2d.npy", faces)
+    np.save(out / f"{tag}_cellinfo_2d.npy", info)
+    print(f"{tag}: points {npts} cells {ncell}; {len(faces)} outlet faces (y>0: {(faces[:, 1] > 0).sum()}, y<0: {(faces[:, 1] < 0).sum()}); "
+          f"wall-row cells {int(info[:, 1].sum())}; area sum {info[:, 0].sum():.6e} m2")
+    assert ncell == want[0] and len(faces) == want[1] and (faces[:, 1] > 0).sum() == want[1] // 2 and (faces[:, 1] < 0).sum() == want[1] // 2
+
+
 def main():
+    if len(sys.argv) > 1:
+        for tag in sys.argv[1:]:
+            main_tag(tag)
+        return
     centres, faces, npts, ncell = build()
     out = HERE / "fixtures"
     out.mkdir(exist_ok=True)

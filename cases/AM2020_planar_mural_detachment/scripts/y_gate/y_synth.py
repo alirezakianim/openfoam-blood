@@ -17,6 +17,9 @@ Options (each plants ONE defect; the default is a clean, converged, READY run):
                      why it was replaced (a step 5 % low puts T_d below 17.9 tau1)
     last_k           the last write is write number last_k (default 18 = 18 tau1 to within dt/2); skip_k  write numbers left out
     zero_face        (patch-local index) the outlet face whose written phi is 0 while the logged inletFlux keeps the true q0
+    face_profile     True: the outlet phi is a parabolic profile across each daughter's faces (exact sums q1, q2) instead of uniform per daughter
+    swap_faces       (i, j) indices into the outlet face list (fixture order): faces i and j exchange their fluxes (implies face_profile); a d1 face and a
+                     d2 face give q1/q0 an error of (f_j - f_i)/q0, which the symmetry gate must see
     drop_entry       True: the written outlet phi has one entry fewer than the patch has faces
     flip_outlet_log  the logged outletFlux is perturbed by this relative amount (the instrument must catch it)
     content          q = 1 - content in one cell     theta_net   thetaNetRef in one cell     lam_amp  lambda1 - 1 (default 1.5e-3)
@@ -26,6 +29,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import sys
 from pathlib import Path
 
@@ -37,12 +41,22 @@ FIX = HERE / "fixtures"
 _CACHE: dict = {}
 
 
-def fixtures():
-    if "fix" not in _CACHE:
-        n, nc, cells = R.read_npy_f8(FIX / "y_cells_2d.npy")
-        m, mc, faces = R.read_npy_f8(FIX / "y_outlet_faces_2d.npy")
-        _CACHE["fix"] = ([(cells[2 * i], cells[2 * i + 1]) for i in range(n)], [(faces[2 * i], faces[2 * i + 1]) for i in range(m)])
-    return _CACHE["fix"]
+def mesh_tag(ext: dict | None) -> str | None:
+    """'YS794' / 'YS850' for the symmetric f = 2 meshes (the tag in the pinned dictionary's file name), None for BATCH 79's (fixtures y_cells_2d.npy)."""
+    if ext is None:
+        return None
+    mm = re.search(r"_(YS\d+)_h2$", ext["mesh"]["blockMeshDict"])
+    return mm.group(1) if mm else None
+
+
+def fixtures(ext: dict | None = None):
+    tag = mesh_tag(ext)
+    if tag not in _CACHE:
+        cf, ff = (f"{tag}_cells_2d.npy", f"{tag}_outlet_faces_2d.npy") if tag else ("y_cells_2d.npy", "y_outlet_faces_2d.npy")
+        n, nc, cells = R.read_npy_f8(FIX / cf)
+        m, mc, faces = R.read_npy_f8(FIX / ff)
+        _CACHE[tag] = ([(cells[2 * i], cells[2 * i + 1]) for i in range(n)], [(faces[2 * i], faces[2 * i + 1]) for i in range(m)])
+    return _CACHE[tag]
 
 
 def _fmt(v: float) -> str:
@@ -75,7 +89,7 @@ def build_case(root: Path, ext: dict, nu: float, **o) -> Path:
     geo, g4, g5, g6 = ext["geometry_sim"], ext["gate4"], ext["gate5"], ext["gate6"]
     D0, depth, W, N = geo["D0_m"], geo["depth_m"], geo["widths_m"], geo["N"]
     n = ext["mesh"]["counts"]["nCells"]
-    cells2, faces2 = fixtures()
+    cells2, faces2 = fixtures(ext)
     z = 0.5 * depth
     # ---------------------------------------------------------------------------------------- flow numbers
     split = o.get("split", ext["gate2"]["expected"])
@@ -117,7 +131,8 @@ def build_case(root: Path, ext: dict, nu: float, **o) -> Path:
                     pick = (sec, s, nn) if pick is None else None      # a cell in both bands is a junction cell: left at 0
         branch.append(pick)
     gp = [12.0 * nu * (q_inf[k] / (W[k] * depth)) / W[k] ** 2 for k in range(3)]       # the Poiseuille pressure gradients (infinite time)
-    gfv = [gp[k] / (1.0 + sign * 2.0 / N[k] ** 2) for k in range(3)]
+    bias = g4["bias"] if "bias" in g4 else [2.0 / N[k] ** 2 for k in range(3)]       # the symmetric series' measured per-section bias, else 2/N^2
+    gfv = [gp[k] / (1.0 + sign * bias[k]) for k in range(3)]
     p_unit, u_unit = [], []
     for pick in branch:
         if pick is None:
@@ -154,6 +169,18 @@ def build_case(root: Path, ext: dict, nu: float, **o) -> Path:
         phi_out = ([q1 / n_d1] * n_d1 + [q2 / n_d2] * n_d2)
         # outlet order = faces2 order (sorted by y then x in the fixture): d2 (y<0) faces first, d1 after
         order = [(q2 / n_d2) if fy < 0 else (q1 / n_d1) for (_fx, fy) in faces2]
+        if o.get("face_profile") or o.get("swap_faces"):
+            # a PARABOLIC split of each daughter's flux over its outlet faces (the real phi is not uniform across a face row), exact in the sums q1 and q2
+            wts = []
+            for (fx, fy) in faces2:
+                e = axes["d1" if fy > 0 else "d2"]
+                nn = -(fx - node[0]) * e[1] + (fy - node[1]) * e[0]
+                wts.append(max(1.0 - (2.0 * nn / W[1 if fy > 0 else 2]) ** 2, 1e-3))
+            tot = {True: math.fsum(w for w, (_fx, fy) in zip(wts, faces2) if fy > 0), False: math.fsum(w for w, (_fx, fy) in zip(wts, faces2) if fy < 0)}
+            order = [(q1 if fy > 0 else q2) * w / tot[fy > 0] for w, (_fx, fy) in zip(wts, faces2)]
+        if o.get("swap_faces"):
+            i, j = o["swap_faces"]                 # a face assigned to the wrong daughter: two faces of the two daughters exchange their fluxes
+            order[i], order[j] = order[j], order[i]
         if o.get("zero_face") is not None:
             order[o["zero_face"]] = 0.0
         if o.get("drop_entry"):
@@ -175,9 +202,9 @@ def build_case(root: Path, ext: dict, nu: float, **o) -> Path:
             q = [1.0] * n
             th = [0.0] * n
             if o.get("content") is not None:
-                q[12345] = 1.0 - o["content"]
+                q[min(12345, n // 3)] = 1.0 - o["content"]
             if o.get("theta_net") is not None:
-                th[23456] = o["theta_net"]
+                th[min(23456, n // 2)] = o["theta_net"]
             (d / "q").write_text(_field("volScalarField", "q", _scalar_list(q).rstrip("\n"), zg))
             (d / "thetaNetRef").write_text(_field("volScalarField", "thetaNetRef", _scalar_list(th).rstrip("\n"), zg))
     for nm, rows in (("inletFlux", flux_in), ("outletFlux", flux_out)):
@@ -195,13 +222,18 @@ def build_case(root: Path, ext: dict, nu: float, **o) -> Path:
 
 def write_gate1(root: Path, ext: dict, **change) -> None:
     m = ext["mesh"]
+    sym = "mirror_tol_m" in m
     rec = {"blockMesh_exit": 0, "blockMesh_log_ends": True, "checkMesh_ok": True, "negative_volumes": 0,
-           "non_orth_max_deg": 24.4074, "skewness_max": 0.6572, "counts": dict(m["counts"]), "counts_checkMesh": dict(m["counts"]),
+           "non_orth_max_deg": m["non_orth_max_deg"] if sym else 24.4074, "skewness_max": m["skew_max"] if sym else 0.6572,
+           "counts": dict(m["counts"]), "counts_checkMesh": dict(m["counts"]),
            "patches": dict(m["patches"]),
            "points": {"format": "ascii", "gz_present": False, "n_ref": m["points_ref_n"], "n_plane": m["points_ref_n"],
                       "max_dist_real_to_ref_m": 1.3e-10, "max_dist_ref_to_real_m": 1.3e-10, "unmatched_real": 0, "unmatched_ref": 0},
-           "outlet_split": {"d1_y_positive": 88, "d2_y_negative": 60, "on_axis": 0}, "roundtrip": {"ran": False, "why": "synthetic"},
+           "outlet_split": {"d1_y_positive": m["outlet_faces"]["d1_y_positive"], "d2_y_negative": m["outlet_faces"]["d2_y_negative"], "on_axis": 0},
+           "roundtrip": {"ran": False, "why": "synthetic"},
            "error": None, "failing_checks": [], "ok": True, "why": []}
+    if sym:
+        rec["points"].update({"mirror_max_m": 1.1e-19, "mirror_unmatched": 0})          # the replica's mirror error (design section 2)
     rec.update(change)
     out = Path(root) / "postProcessing" / "yGate"
     out.mkdir(parents=True, exist_ok=True)
@@ -258,8 +290,9 @@ def build_mesh(root: Path, ext: dict, **o) -> Path:
     face_lines += outl
     face_lines += ["4(0 0 0 0)"] * (c["nFaces"] - len(face_lines))
     (poly / "faces").write_text(_header("faceList", "faces") + f"\n{c['nFaces']}\n(\n" + "\n".join(face_lines) + "\n)\n")
-    no = o.get("non_orth", 24.4074)
-    sk = o.get("skew", 0.6572)
+    sym = "mirror_tol_m" in m
+    no = o.get("non_orth", m["non_orth_max_deg"] if sym else 24.4074)
+    sk = o.get("skew", m["skew_max"] if sym else 0.6572)
     vol = (f"Zero or negative cell volume detected.  Minimum negative volume: -1e-19, Number of negative volume cells: {o['neg_volume']}"
            if o.get("neg_volume") else "Min volume = 2.9e-19. Max volume = 5.7e-19.  Total volume = 1.1e-11.  Cell volumes OK.")
     (root / "log.checkMesh").write_text(

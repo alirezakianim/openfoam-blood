@@ -135,6 +135,30 @@ def synthesise_y_child(case: Path, spec: dict, exit_code: int = 0, short: bool =
     y_synth.build_case(case, spec["y_gate"], spec["plasma"]["nu_m2_s"], **options)
 
 
+def synthesise_y_plug_child(case: Path, spec: dict, exit_code: int = 0, short: bool = False, **options) -> None:
+    """A child of the symmetric Y's PLUG series (case-engineer 27b): the restart-test arm Y80_RT_A / Y80_RT_B (spec has stop_after_step) or the clot child Y81_*_PLUG. The plug
+    spec's y_gate block has no gate6 (kind 'plug': mesh, geometry_sim, drive, plug), so it must NOT go to synthesise_y_child (KeyError). scripts/y_gate/y_rt_synth.py lays out
+    the files: for the pair, an EXACT restart (A: full writes at steps leg1 - 4 .. leg2 and a log from step 1; B: the leg-2 case, restart.json, the step-leg2 directory and a log
+    from step leg1 + 1), so assess_case.y_rt_pair PASSES it; for the clot child, a log to endTime - dt/2 and the initial c drawn by y_plug.py at the replica's cell centres.
+    `options` plant ONE defect (y_rt_synth.build_rt_case: ulp=, dt_ulp=, late_leg1=, cold_b=, ...); `short` stops the log early (INCOMPLETE)."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "y_gate"))
+    import y_rt_synth
+    if spec.get("stop_after_step") is None:
+        y_rt_synth.build_plug_case(case, spec, exit_code=exit_code, short=short, **options)
+        return
+    controls = json.loads((Path(__file__).resolve().parents[1] / "constant" / "mainCaseControls.json").read_text())
+    entry = next(e for e in controls["y_rt_pairs"] if spec["child_id"] in (e["a"], e["b"]))
+    which = "A" if spec["child_id"] == entry["a"] else "B"
+    y_rt_synth.build_rt_case(case, which, entry, **options)
+    log = case / "log.phaseClotAxisymmetricFluid"
+    if short:
+        lines = log.read_text().split("\n")
+        log.write_text("\n".join(lines[: len(lines) // 2]) + "\n")                          # no End, and the last step is below the stop
+    elif exit_code != 0:
+        log.write_text(log.read_text().replace("End\n", "Foam::sigFpe::sigHandler(int) at ??:?\n"))
+    (case / "run-exit-code.txt").write_text(f"{exit_code}\n")
+
+
 def synthesise_child(
     case: Path,
     spec: dict,
@@ -234,6 +258,8 @@ def synthesise_child(
     # BATCH 79 (the Y gate's child only): options for scripts/y_gate/y_synth.py build_case, each planting ONE defect (split=, q0_scale=, last_k=, content=, ...)
     y_options: dict | None = None,
 ) -> None:
+    if spec.get("y_gate") and spec["y_gate"].get("kind") == "plug":
+        return synthesise_y_plug_child(case, spec, exit_code=exit_code, short=short, **(y_options or {}))
     if spec.get("y_gate"):
         return synthesise_y_child(case, spec, exit_code=exit_code, short=short, **(y_options or {}))
     assert not y_options, f"{spec['child_id']}: y_options is read only by the Y child"
@@ -1288,9 +1314,9 @@ def _y_edit(c: dict, path: tuple, value) -> None:
 
 Y_GATE_REFUSALS = (
     ("y_gate block on another series", lambda c: c["series"]["s25_5a"].update({"y_gate": _y_series(c)["y_gate"]}),
-     "y_gate is read only for the Y series s25_ygate; here it would be silently inert"),
+     "y_gate is read only for the Y series s25_ygate, s25_ys794, s25_ys850, s25_ys794_plug, s25_ys850_plug; here it would be silently inert"),
     ("non_orthogonal_correctors on another series", lambda c: c["series"]["s25_5a"].update({"non_orthogonal_correctors": 2}),
-     "non_orthogonal_correctors is read only for the Y series s25_ygate; here it would be silently inert"),
+     "non_orthogonal_correctors is read only for the Y series s25_ygate, s25_ys794, s25_ys850, s25_ys794_plug, s25_ys850_plug; here it would be silently inert"),
     ("the Y series without non_orthogonal_correctors", lambda c: _y_edit(c, ("non_orthogonal_correctors",), None),
      "non_orthogonal_correctors is required by the Y series"),
     ("write_every_n_steps (the rev. 2.1 step schedule) on the Y child", lambda c: _s16(c, "B79_Y_GATE", write_every_n_steps=163),
@@ -1332,7 +1358,7 @@ Y_GATE_REFUSALS = (
     ("d2 at sqrt(0.3815) D0 instead of the pinned 0.618 D0", lambda c: _y_edit(c, ("y_gate", "geometry_sim", "widths_m"), [5.833333333333333e-05, 5.833333333333333e-05, 0.6177 * 5.833333333333333e-05]),
      "are not D0, d1 x D0, d2 x D0"),
     ("the drive's mean velocity is not centreline / 1.5 / (S_t / S_L)", lambda c: _y_edit(c, ("y_gate", "gate5", "u_mean_sim_m_s"), 0.00125),
-     "gate5.u_mean_sim_m_s"),
+     "the drive's u_mean_sim_m_s 0.00125 != centreline/1.5/(S_t/S_L)"),
     ("tau1 is not D0^2 / (pi^2 nu)", lambda c: _y_edit(c, ("y_gate", "gate6", "tau1_s"), 0.0005),
      "gate6.tau1_s 0.0005 != D0^2/(pi^2 nu)"),
 )
@@ -3079,8 +3105,15 @@ def _s25_rt1_gates_section() -> None:
     shown.append("arms not in this run: ARMS_NOT_IN_THIS_RUN")
     # ---- each guard, deleted from a scratch copy of the assessor, lets its negative PASS (the gate can fail BECAUSE of it)
     def mutated(old: str, new: str, tag: str):
-        assert src.count(old) == 1, f"the assessor text for {tag} moved: {old[:80]!r}"
-        return load(src.replace(old, new), tag)
+        # y_rt_pair (the symmetric Y's restart pair, case-engineer 27) repeats several of rt1_pair's guard lines VERBATIM, after it: a count of 2 is accepted when the FIRST copy lies
+        # before `def y_rt_pair(` and the second after it, and then only rt1_pair's copy (the first) is mutated, so this section still judges rt1_pair alone. check_y_symmetric.py
+        # deletes y_rt_pair's copies one at a time.
+        n = src.count(old)
+        assert n in (1, 2), f"the assessor text for {tag} moved: {old[:80]!r} ({n} copies)"
+        if n == 2:
+            cut = src.index("def y_rt_pair(")
+            assert src.index(old) < cut < src.rindex(old), f"the two copies of the text for {tag} are not rt1_pair's then y_rt_pair's"
+        return load(src.replace(old, new, 1), tag)
     removed = []
     m_gate = mutated('g["status"] = "PASS" if (num == 0.0 and num_c == 0.0 and num_h == 0.0) else "FAIL"', 'g["status"] = "PASS"', "mgate")
     assert verdict(m_gate, mutate=zero_carrier)["gates"]["RT-1a"]["status"] == "PASS"
@@ -3705,12 +3738,41 @@ def s23_generator_negatives(only: str | None = None) -> None:
         # S25: every legacy child states S_t = 1.0, writes it, and writes 17 digits (the grid is not a filter: all of them)
         # the legacy children (every child outside the S25 5a series, whose six children (two smoke, the RT-1 pair, BATCH 78's RT-1 pair) state S_t = 25/3 on purpose)
         # (B79_Y_GATE is the 49th child: series s25_ygate, the 5a dictionary at S_t = 25/3 on the Y mesh, so it is outside "legacy" too)
-        legacy = [c for c in every if json.loads((root / "runs" / c / "child.json").read_text())["series"] not in ("s25_5a", "s25_ygate")]
-        assert len(legacy) == KEPT_CHILDREN - 7, (len(legacy), KEPT_CHILDREN)
+        # (the 5 symmetric-Y children, series s25_ys794 / s25_ys850 / s25_ys794_plug, are likewise the 5a dictionary at S_t = 25/3 on the f = 2 Y meshes)
+        legacy = [c for c in every if json.loads((root / "runs" / c / "child.json").read_text())["series"] not in ("s25_5a", "s25_ygate", "s25_ys794", "s25_ys850", "s25_ys794_plug")]
+        assert len(legacy) == KEPT_CHILDREN - 12, (len(legacy), KEPT_CHILDREN)
         assert all("\ntimeScale 1.0;\n" in props(c) for c in legacy), "a child's dictionary lacks timeScale 1.0"
         assert all(json.loads((root / "runs" / c / "child.json").read_text())["time_scale"] == 1.0 for c in legacy)
-        assert [c for c in every if c not in legacy] == ["B78_RT_5a_A", "B78_RT_5a_B", "B79_Y_GATE", "RT_5a_A", "RT_5a_B", "S25_5a_tan", "S25_5a_tan_half"]
-        assert all("\ntimeScale 8.333333333333334;\n" in props(c) for c in ("B78_RT_5a_A", "B78_RT_5a_B", "B79_Y_GATE", "RT_5a_A", "RT_5a_B", "S25_5a_tan", "S25_5a_tan_half"))
+        non_legacy = ["B78_RT_5a_A", "B78_RT_5a_B", "B79_Y_GATE", "RT_5a_A", "RT_5a_B", "S25_5a_tan", "S25_5a_tan_half",
+                      "Y80_RT_A", "Y80_RT_B", "Y80_YS794_FLOW", "Y80_YS850_FLOW", "Y81_YS794_PLUG"]
+        assert [c for c in every if c not in legacy] == non_legacy
+        assert all("\ntimeScale 8.333333333333334;\n" in props(c) for c in non_legacy)
+        # THE SYMMETRIC Y (design 2026-10-14-case-symmetric-y-plug.md rev. 2.1; case-engineer 27 and 27b): the schedule and the shared dictionaries, read off the generated files
+        _ys = lambda cid, f: (root / "runs" / cid / f).read_text()
+        _top = lambda cid: re.sub(r"(?s)functions.*", "", _ys(cid, "system/controlDict"))
+        for _g in ("Y80_YS794_FLOW", "Y80_YS850_FLOW"):                       # the flow gates: runTime tau1, 18 tau1 + 2e-5 s
+            for _pat in (r"(?m)^writeControl\s+runTime;", r"(?m)^writeInterval\s+0\.00050976;", r"(?m)^endTime\s+0\.00919568;", r"(?m)^purgeWrite\s+0;"):
+                assert re.search(_pat, _top(_g)), (_g, _pat)
+        # the plug child: 185 ms + 5e-5 s, NOT a multiple of the 1 ms write interval (CE ruling, DECISIONS 2026-10-14): the 185th write cannot tie with the stop
+        for _pat in (r"(?m)^writeControl\s+runTime;", r"(?m)^writeInterval\s+0\.001;", r"(?m)^endTime\s+0\.18505;", r"(?m)^purgeWrite\s+0;"):
+            assert re.search(_pat, _top("Y81_YS794_PLUG")), ("Y81_YS794_PLUG", _pat)
+        # RT_B and the plug child share every file byte for byte except the controlDict, and the controlDict differs in endTime, the wallBudget stopTime and the stopAfterStep object ONLY
+        for _f in ("constant/phaseClotProperties", "constant/physicalProperties", "constant/momentumTransport", "system/fvSchemes", "system/fvSolution", "system/blockMeshDict"):
+            assert (root / "runs" / "Y81_YS794_PLUG" / _f).read_bytes() == (root / "runs" / "Y80_RT_B" / _f).read_bytes(), _f
+        _y81, _rtb = _ys("Y81_YS794_PLUG", "system/controlDict"), _ys("Y80_RT_B", "system/controlDict")
+        _blk = re.findall(r"\n    stopAfterStep\n    \{[^}]*\}", _rtb)
+        assert len(_blk) == 1 and "type            stopAtFile;" in _blk[0] and "action          writeNow;" in _blk[0], _blk
+        _back = _rtb.replace(_blk[0], "")
+        for _was, _is in (("endTime 0.003;", "endTime 0.18505;"), ("stopTime        1800;", "stopTime        36000;")):
+            assert _back.count(_was) == 1, _was
+            _back = _back.replace(_was, _is)
+        assert _back == _y81, "RT_B's controlDict differs from the plug child's by more than endTime, the wallBudget stopTime and the stopAfterStep object"
+        # RT_A writes every step (timeStep 1, purgeWrite 10) and stops after step 105 through the same object
+        for _pat in (r"(?m)^writeControl\s+timeStep;", r"(?m)^writeInterval\s+1;", r"(?m)^purgeWrite\s+10;", r"stopAfterStep"):
+            assert re.search(_pat, _ys("Y80_RT_A", "system/controlDict")), ("Y80_RT_A", _pat)
+        for _c in ("Y80_YS794_FLOW", "Y80_YS850_FLOW", "Y80_RT_A", "Y80_RT_B", "Y81_YS794_PLUG"):
+            assert not (root / "runs" / _c / "child.env").exists() and "solver_library" not in json.loads(_ys(_c, "child.json")), _c
+            assert re.findall(r"(?m)^\s*nNonOrthogonalCorrectors\s+(\S+);", _ys(_c, "system/fvSolution")) == ["2"], _c
         # BATCH 79 (design 2026-10-14-case-y-bifurcation-gate.md rev. 2.2): the Y child writes at runTime tau1 and stops at 18 tau1 + 2e-5 s, with 2 non-orthogonal correctors,
         # no child.env and no solver_library; the dictionary is S25_5a_tan's (the clot children inherit it)
         _y = root / "runs" / "B79_Y_GATE"
@@ -3944,6 +4006,101 @@ def y_gate_only_matrix() -> None:
         else:
             raise AssertionError(f"{why}: ACCEPTED")
     ac.clot_reference_refusal([y, d1, g1], ac.clot_reference([y, d1, g1], set()))
+    # BATCH 80 (verification 29, F1): the free occlusive plug is a clot WITHOUT a height (y_plug.PLUG_KEYS), so it is never the reference, whatever sorts first
+    plug = {"child_id": "P", "series": "s25_ys794_plug", "geometry": {"h_m": 1.5e-6}, "clot": {"shape": "occlusive plug", "width_parent_D0": 1.0}}
+    assert not ac.carries_reference_clot(plug) and not ac.carries_reference_clot(y) and ac.carries_reference_clot(d1)
+    assert ac.clot_reference([plug], set()) is None and ac.clot_reference([plug, y], set()) is None, "a plug-only matrix has no reference"
+    assert ac.clot_reference([plug, d1], set()) is d1 and ac.clot_reference([plug, y, d1, g1], set()) is d1, "a plug that sorts first is never the reference"
+    try:
+        ac.clot_reference_refusal([plug, dict(d1, clot={"shape": "occlusive plug"})], ac.clot_reference([plug], set()))
+    except ValueError as error:
+        print(f"   refused (a deformation child whose clot is a plug): {str(error)[:110]}")
+    else:
+        raise AssertionError("a deformation child with a plug clot: ACCEPTED")
+    ac.clot_reference_refusal([plug, y], None)
+
+
+def s19_source_errors_are_case_relative() -> None:
+    """THE REPORT NAMES THE CHILD, NOT WHERE IT WAS UNPACKED (case-engineer 31).
+
+    s19_report writes the exception a reader raised (g4_source_error, n_cells_source_error). free_shell_timeseries.read_surface_field_value puts the case path it was
+    given into the message, so, when numpy imports, the same returned run reported twice differed in the temporary directory's name (the release of BATCH 80 stopped
+    there: theta_native_grades_identically, 38 children). Without numpy the text is `No module named 'numpy'` and nothing shows. The reader is stubbed here with the same
+    message so the test does not depend on the interpreter; the same case is reported from two different directories and the two reports must be equal, with no
+    directory of the run in either."""
+    import importlib.util
+    import types
+    sp = importlib.util.spec_from_file_location("assess_case_relerr", Path(__file__).resolve().parent / "assess_case.py")
+    ac = importlib.util.module_from_spec(sp)
+    sp.loader.exec_module(ac)
+    stub = types.ModuleType("free_shell_timeseries")
+    stub.Q0_REF_M3_S, stub.Q0_REF_DP = 1.0, 1.0
+
+    def read_surface_field_value(case, name, column):
+        raise FileNotFoundError(f"{case}: no postProcessing/{name}/<t>/surfaceFieldValue.dat")
+    stub.read_surface_field_value = read_surface_field_value
+    kept = sys.modules.get("free_shell_timeseries")
+    sys.modules["free_shell_timeseries"] = stub
+    try:
+        seen = []
+        for _ in range(2):
+            with tempfile.TemporaryDirectory(prefix="am2020-main-") as t:
+                case = Path(t) / "runs" / "C1"
+                (case / "0").mkdir(parents=True)
+                (case / "0" / "p").write_text("inlet\n{\n    type fixedValue;\n    value uniform 10;\n}\n")
+                report = ac.s19_report("", {"s19": {}}, case)
+                err = report["g4_source_error"]
+                assert t not in err and str(case) not in err, f"the report carries the run's directory: {err}"
+                seen.append(err)
+                # any exception that names a file under the case (the n_cells reader's open), by the path as given and as resolved
+                for named in (case / "constant" / "polyMesh" / "owner", case.resolve() / "constant" / "polyMesh" / "owner"):
+                    text = ac.case_relative_error(OSError(f"cannot read {named}"), case)
+                    assert text == "OSError('cannot read C1/constant/polyMesh/owner')", text
+                assert ac.case_relative_error(ValueError("no path here"), case) == repr(ValueError("no path here"))
+                assert ac.case_relative_error(ValueError(f"under {case.resolve()}/x"), None) == repr(ValueError(f"under {case.resolve()}/x")), "case None: the text is unchanged"
+        assert seen[0] == seen[1] == "FileNotFoundError('C1: no postProcessing/inletFlux/<t>/surfaceFieldValue.dat')", seen
+    finally:
+        if kept is None:
+            sys.modules.pop("free_shell_timeseries", None)
+        else:
+            sys.modules["free_shell_timeseries"] = kept
+
+
+def y_launch_trees() -> None:
+    """THE LAUNCH TREES AS THE NOTEBOOK BUILDS THEM (verification 29, F1): each Colab launch runs create_cases.py with ITS OWN filter and Allrun ends with assess_case.py on that
+    tree, not on the full 54-child matrix the other scenarios score (whose clot reference is an earlier channel disc). BATCH 80 launch 1 and launch 2 are read from the
+    notebook with the selector's parser; the lone Y81 plug child is the first child of BATCH 81's chains (no BATCHES entry yet). Each tree gets every child synthesised as a clean returned run,
+    and assess_case.main must exit 0, write result.json, and carry the y_gate and y_rt blocks. Before the fix a plug became the clot reference and deformation_table read its
+    missing height_m: KeyError, no result.json, INVALID / NO_ASSESSOR_RESULT."""
+    import importlib.util
+    root_repo = Path(__file__).resolve().parents[3]
+    nbs = importlib.util.spec_from_file_location("nbsel_launch", root_repo / "scripts" / "check_notebook_batch_selector.py")
+    nbsel = importlib.util.module_from_spec(nbs)
+    nbs.loader.exec_module(nbsel)
+    names = nbsel.notebook_names(nbsel.launch_cell(root_repo / "notebooks" / "AM2020_main_case_colab.ipynb"))
+    trees = {"BATCH 80 launch 1": names["LAUNCHES"][80][1][0].split(), "BATCH 80 launch 2": names["LAUNCHES"][80][2][0].split(), "a lone Y81 plug child": ["Y81_YS794_PLUG"]}
+    assert trees["BATCH 80 launch 1"] == ["Y80_YS794_FLOW", "Y80_YS850_FLOW", "Y80_RT_A", "Y80_RT_B"] and trees["BATCH 80 launch 2"] == ["Y80_RT_B"], trees
+    for label, filt in trees.items():
+        with tempfile.TemporaryDirectory(prefix="am2020-ylaunch-") as tmp:
+            root = build_case(Path(tmp))
+            shutil.rmtree(root / "runs")
+            done = subprocess.run([sys.executable, "-B", str(root / "scripts" / "create_cases.py")] + filt, capture_output=True, text=True)
+            assert done.returncode == 0, (done.stdout + done.stderr)[-600:]
+            matrix = json.loads((root / "runs" / "matrix.json").read_text())
+            assert sorted(m["child_id"] for m in matrix) == sorted(filt), (label, [m["child_id"] for m in matrix])
+            (root / "log.Allwmake").write_text(GOOD_BUILD)
+            for spec in matrix:
+                synthesise_child(root / "runs" / spec["child_id"], spec)
+            code, result = run_assessor(root)            # raises when no result.json: the pre-fix failure
+            assert code == 0, f"{label}: assess_case exited {code}"
+            assert "y_gate" in result and "y_rt" in result, (label, sorted(result)[:40])
+            assert result["children_total"] == len(filt), (label, result["children_total"])
+            gates = {c: v["verdict"] for c, v in result["y_gate"].items()}
+            assert all(c.endswith("_FLOW") for c in gates) and sorted(gates) == sorted(f for f in filt if f.endswith("_FLOW")), (label, gates)
+            assert all(v == "READY" for v in gates.values()), (label, result["y_gate"])
+            rt = [(e["pair_id"], e["status"]) for e in result["y_rt"]]
+            assert result["deformation"]["rows"] == [] and result["deformation"]["clot_height_m"] is None, result["deformation"]
+            print(f"   {label}: {filt} -> exit 0, result.json, y_gate {gates}, y_rt {rt}, {result['children_admissible']}/{result['children_total']} admissible")
 
 
 def reference_library_wiring() -> None:
@@ -3959,7 +4116,7 @@ def reference_library_wiring() -> None:
     spec.loader.exec_module(nbsel)
     text = nbsel.source_of(root / "notebooks" / "AM2020_main_case_colab.ipynb")
     batch, batches = nbsel.parse(text)
-    assert batch == max(batches) == 79, (batch, max(batches))
+    assert batch == max(batches) == 80, (batch, max(batches))
     # the build script re-pins by exactly these two patterns; a second match would break the release
     assert len(re.findall(r"EXPECTED_REPO_DIGEST = '[0-9a-f]{64}'", text)) == 1
     assert len(re.findall(r"EXPECTED_TAG = 'digest-[0-9a-f]{12}'", text)) == 1
@@ -4082,6 +4239,20 @@ def reference_library_wiring() -> None:
     a79 = by[(79, 1)]["argv"]
     assert "--mkl-cbwr" not in a79 and a79[a79.index("--mkl-threads") + 1] == "1" and not any(f in a79 for f in ("--baseline-solver", "--s22-solver", "--p2prime-solver")), a79
     refused(need("B79_Y_GATE", controls), {"p2prime": "", "s22": "", "baseline": "/x"}, "built for nothing")
+    # BATCH 80 (the symmetric Y: two flow gates and the restart pair) is ONE session of 4 children (launch 1) and a SECOND runner invocation (launch 2: Y80_RT_B's leg 2 alone, restarted
+    # from launch 1's tarball). Both are on the 1-core runtime and clone NO reference library: --mkl-threads 1, no --mkl-cbwr, no library flag. Y80_RT_B is the one child in two launches by
+    # design (RESTART_LAUNCHES); the matrix order of launch 1 is the run order (A before B).
+    assert [k for k in by if k[0] == 80] == [(80, 1), (80, 2)], sorted(by)
+    assert by[(80, 1)]["children"] == ["Y80_YS794_FLOW", "Y80_YS850_FLOW", "Y80_RT_A", "Y80_RT_B"], by[(80, 1)]["children"]
+    assert by[(80, 2)]["children"] == ["Y80_RT_B"], by[(80, 2)]["children"]
+    for _n in (1, 2):
+        assert need(" ".join(by[(80, _n)]["children"]), controls) == set() and by[(80, _n)]["library_passed"] == [], _n
+        _a80 = by[(80, _n)]["argv"]
+        assert "--mkl-cbwr" not in _a80 and _a80[_a80.index("--mkl-threads") + 1] == "1" and not any(f in _a80 for f in ("--baseline-solver", "--s22-solver", "--p2prime-solver")), (_n, _a80)
+        assert ("Y80_RT_B" in _a80[_a80.index("--only") + 1].split()) and (_n == 1 or _a80[_a80.index("--only") + 1] == "Y80_RT_B"), (_n, _a80)
+    assert any("restarted from" in _l and "--restart-from" in _l for _l in by[(80, 2)]["printed"]) and not any("restarted from" in _l for _l in by[(80, 1)]["printed"]), "launch 2 is the restart, launch 1 a cold start"
+    refused(need("Y80_RT_B", controls), {"p2prime": "", "s22": "", "baseline": "/x"}, "built for nothing")
+    check(need("Y80_RT_B", controls), {"p2prime": "", "s22": "", "baseline": ""})
     assert "--s22-solver" in by[(72, 1)]["argv"] and "--s22-solver" not in by[(72, 2)]["argv"]
     # the same two negatives on this function's own exec'd runner functions
     check(need(" ".join(by[(72, 1)]["children"]), controls), {"p2prime": "", "s22": "/x"})
@@ -4666,10 +4837,10 @@ S21_GENERATOR_NEGATIVES = (
 # The number of children the generator emits: the 18 kept + the 8 S22 validation
 # twins of BATCH 71 + the 4 S23 twins of BATCH 72 + the 2 production children of BATCH 73 + the 1 diagnostic child of BATCH 74
 # (D74_refI, the passive intact-network reference) + the 1 re-run child of BATCH 75 (D75_refI, the same measurement on rev. 3.1) + the 2 B76-5a
-# smoke children (S25_5a_tan, S25_5a_tan_half; case-engineer 09b) + the 2 B76-OFF children (B76_OFF_A on the baseline binary, B76_OFF_B on the S25 build; case-engineer 09c) + the 4 B76-RT children (RT_P73_A/B, RT_5a_A/B) + the 6 BATCH 78 children (B78_OFF_A/B, B78_CTL_1/2, B78_RT_5a_A/B; case-engineer 06) + the 1 BATCH 79 child (B79_Y_GATE, the Y-bifurcation geometry gate; case-engineer 12 and 13). ONE pin, read by
+# smoke children (S25_5a_tan, S25_5a_tan_half; case-engineer 09b) + the 2 B76-OFF children (B76_OFF_A on the baseline binary, B76_OFF_B on the S25 build; case-engineer 09c) + the 4 B76-RT children (RT_P73_A/B, RT_5a_A/B) + the 6 BATCH 78 children (B78_OFF_A/B, B78_CTL_1/2, B78_RT_5a_A/B; case-engineer 06) + the 1 BATCH 79 child (B79_Y_GATE, the Y-bifurcation geometry gate; case-engineer 12 and 13) + the 5 symmetric-Y children (Y80_YS794_FLOW, Y80_YS850_FLOW, Y80_RT_A, Y80_RT_B of BATCH 80 and the plug child Y81_YS794_PLUG; case-engineer 27 and 27b). ONE pin, read by
 # s21_generator_negatives, s23_generator_negatives and main(): BATCH 72 updated main's copy and left this
 # function's at 26, and release 2026-10-07 died on it ten minutes into the build.
-KEPT_CHILDREN = 49
+KEPT_CHILDREN = 54
 
 
 def s21_generator_negatives() -> None:
@@ -4804,6 +4975,7 @@ def main() -> int:
         assert all(c["status"] == "COMPLETE" for c in r["children"].values()), sorted(
             (k, c["status"]) for k, c in r["children"].items() if c["status"] != "COMPLETE")
         assert r["xu2017_fig5"], "no Xu report"
+        assert [(e["pair_id"], e["status"]) for e in r["y_rt"]] == [("Y80_RT", "PASS")], ("the symmetric Y's restart pair on an exact synthetic restart", r.get("y_rt"))
     exercise("healthy", variant(), healthy)
 
     def compile_failed(r, code):
@@ -4859,6 +5031,34 @@ def main() -> int:
     exercise("y_gate_child_with_a_step_3pct_high_is_still_ready",
              variant(B79_Y_GATE=dict(y_options=dict(dt=1.03 * 3.1188e-06))), healthy)
     run_direct("y_gate_one_child_matrix_is_assessed_ready_and_a_wrong_split_not_ready", y_gate_only_matrix)
+    run_direct("y_launch_trees_are_assessed_exit_0_with_y_gate_and_y_rt", y_launch_trees)
+    run_direct("s19_source_errors_are_case_relative_not_the_temporary_directory", s19_source_errors_are_case_relative)
+    # THE SYMMETRIC Y (BATCH 80/81; case-engineer 27b), end to end through assess_case.main on y_synth / y_rt_synth cases. The symmetric gates read gate 2 as |q1/q0 - 0.5| <= 1e-7:
+    # a 3e-5 split error (the size of a 1e-9 m mirror defect, design 6 A item 2) and one outlet face's flux on the wrong daughter (about 2e-2) are NOT_READY by gate 2.
+    def ys_not_ready(cid, gate):
+        def check(r, code):
+            assert code == 0 and not r["inadmissible"], (code, r["inadmissible"])
+            y = r["children"][cid]
+            assert y["y_gate_verdict"] == "NOT_READY" and gate in y["y_gate"]["failing"], (cid, y["y_gate_verdict"], y["y_gate"]["failing"])
+            assert y["y_gate"]["g2"]["verdict"] == "FAIL", y["y_gate"]["g2"]["verdict"]
+        return check
+    exercise("ys794_gate_child_with_a_3e-5_asymmetry_is_not_ready_by_gate_2",
+             variant(Y80_YS794_FLOW=dict(y_options=dict(split=0.5 + 3e-5))), ys_not_ready("Y80_YS794_FLOW", "g2"))
+    exercise("ys850_gate_child_with_a_swapped_outlet_face_flux_is_not_ready_by_gate_2",
+             variant(Y80_YS850_FLOW=dict(y_options=dict(swap_faces=(54, 0)))), ys_not_ready("Y80_YS850_FLOW", "g2"))
+    exercise("ys_gate_child_stopped_early_is_excluded_and_named", variant(Y80_YS850_FLOW=dict(short=True)), only("Y80_YS850_FLOW", "did not complete"))
+    # the restart pair: an exact restart PASSES (the healthy scenario); one unit in the last place of one field of RT_B's step-105 directory, or of one logged deltaT, is FAIL
+    # (the children are COMPLETE: the measurement exists), and a leg 2 that stopped early is INCOMPLETE and named.
+    def y_rt_status(want):
+        def check(r, code):
+            assert code == 0 and not r["inadmissible"], (code, r["inadmissible"])
+            assert [(e["pair_id"], e["status"]) for e in r["y_rt"]] == [("Y80_RT", want)], r.get("y_rt")
+        return check
+    exercise("y_rt_one_ulp_in_a_field_is_fail", variant(Y80_RT_B=dict(y_options=dict(ulp="q"))), y_rt_status("FAIL"))
+    exercise("y_rt_one_ulp_in_a_logged_dt_is_fail", variant(Y80_RT_B=dict(y_options=dict(dt_ulp=True))), y_rt_status("FAIL"))
+    exercise("y_rt_a_cold_leg_2_is_void_not_pass", variant(Y80_RT_B=dict(y_options=dict(cold_b=True))), y_rt_status("VOID"))
+    exercise("y_rt_leg_2_stopped_early_is_excluded_and_named", variant(Y80_RT_B=dict(short=True)), only("Y80_RT_B", "did not reach step"))
+    exercise("y_plug_child_stopped_early_is_excluded_and_named", variant(Y81_YS794_PLUG=dict(short=True)), only("Y81_YS794_PLUG", "did not reach the end time"))
     # MISSING FIELDS MUST NOT PASS VACUOUSLY.
     exercise("missing_fields_are_inadmissible",
              variant(em79_G4_s18p_Cnp=dict(omit_fields=True)), only("em79_G4_s18p_Cnp"))
@@ -5691,8 +5891,12 @@ def main() -> int:
         run_direct("batch_76_launch_filters_generate", lambda: launch_filters_generate(nbsel, 76, _filtered_generation))
 
     if _batch != 78:
-        # BATCH 78's one-session filter (1-core, the baseline library) stays exercised while BATCH 79 is the default
+        # BATCH 78's one-session filter (1-core, the baseline library) stays exercised while a later batch is the default
         run_direct("batch_78_launch_filters_generate", lambda: launch_filters_generate(nbsel, 78, _filtered_generation))
+
+    if _batch != 79:
+        # BATCH 79's one-child filter (the Y gate, 1-core) stays exercised while BATCH 80 is the default
+        run_direct("batch_79_launch_filters_generate", lambda: launch_filters_generate(nbsel, 79, _filtered_generation))
 
     def one_core_launch():
         # S25 (the 1-core runtime batches 76/77): BATCHES[77] has no entry until its children are written, so the
@@ -5700,7 +5904,7 @@ def main() -> int:
         # carries --mkl-threads 1 and NO --mkl-cbwr, design section 12.1), and that filter generates by itself, as the cell hands it to Allrun.
         argvs = nbsel.check_one_core(nbsel.launch_cell(
             Path(__file__).resolve().parents[3] / "notebooks" / "AM2020_main_case_colab.ipynb"), nbsel.CONTROLS)
-        assert sorted(argvs) == [76, 77, 78, 79], sorted(argvs)
+        assert sorted(argvs) == [76, 77, 78, 79, 80], sorted(argvs)
         filt = ["P73_G4_r3_40"]
         rc, built, last = _filtered_generation(filt)
         assert rc == 0, f"the 1-core stand-in filter was refused: {last}"

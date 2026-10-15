@@ -14,7 +14,8 @@ constant/polyMesh/{points,owner,boundary,faces}. Writes <case>/postProcessing/yG
   * THE POINTS: `points` says `format ascii` and no `points.gz` exists; the z = 0 plane holds 79,976 points in both the mesh and
     constant/yGate/na09_points_ref_2d.npy; the two-way max distance between them is <= 1e-9 m (the order of the points does not
     matter). The replica's own round trip is 1.3e-10 m (probes/na09_roundtrip_C.txt);
-  * the outlet faces split 88 (y > 0) / 60 (y < 0), the split the per-daughter flux instrument reads.
+  * the outlet faces split 88 (y > 0) / 60 (y < 0), the split the per-daughter flux instrument reads (36 / 36 on the symmetric meshes);
+  * a SYMMETRIC mesh only (mesh.mirror_tol_m in constant/yGate.json): the points are their own mirror image in y to <= 1e-15 m.
 An unreadable or missing file is a FAIL, never a crash that reads as a pass: every exception writes gate1.json with ok false and exits 1.
 
 WRAPPER AROUND na09_roundtrip.py (shipped with na06_ymesh.py, which it imports): when numpy and scipy import (Colab: yes), the
@@ -199,6 +200,11 @@ def run(case: Path, bm_exit: int) -> dict:
         d1, u1 = directed_max(plane, ref_xy)
         d2, u2 = directed_max(ref_xy, plane)
         pr.update({"max_dist_real_to_ref_m": d1, "max_dist_ref_to_real_m": d2, "unmatched_real": u1, "unmatched_ref": u2})
+        if "mirror_tol_m" in m:
+            # THE MIRROR CHECK of a symmetric geometry (design 2026-10-14-case-symmetric-y-plug.md 6 A item 1): every real point's mirror image (x, -y) has a real point
+            # within mirror_tol_m (1e-15 m). The replica's mirror error is 1e-19 m, so a real defect of a nanometre reads 1e6 times the limit.
+            dm, um = directed_max([(x, -y) for x, y in plane], plane)
+            pr.update({"mirror_max_m": dm, "mirror_unmatched": um})
         rec["outlet_split"] = outlet_split(poly, patches, pts)
     rec["points"] = pr
     rec["roundtrip"] = roundtrip_evidence(case, spec)

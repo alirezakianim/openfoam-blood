@@ -12,6 +12,10 @@ cases/AM2020_planar_mural_detachment/Allrun
 cases/AM2020_planar_mural_detachment/constant/mainCaseControls.json
 cases/AM2020_planar_mural_detachment/constant/yGate/na09_blockMeshDict
 cases/AM2020_planar_mural_detachment/constant/yGate/na09_points_ref_2d.npy
+cases/AM2020_planar_mural_detachment/constant/yGate/na22_blockMeshDict_YS794_h2
+cases/AM2020_planar_mural_detachment/constant/yGate/na22_blockMeshDict_YS850_h2
+cases/AM2020_planar_mural_detachment/constant/yGate/na22_points_ref_2d_YS794_h2.npy
+cases/AM2020_planar_mural_detachment/constant/yGate/na22_points_ref_2d_YS850_h2.npy
 cases/AM2020_planar_mural_detachment/scripts/apply_throat.py
 cases/AM2020_planar_mural_detachment/scripts/assess_case.py
 cases/AM2020_planar_mural_detachment/scripts/clot_free_watcher.py
@@ -24,6 +28,12 @@ cases/AM2020_planar_mural_detachment/scripts/seed_stage2_content.py
 cases/AM2020_planar_mural_detachment/scripts/seed_theta_peak.py
 cases/AM2020_planar_mural_detachment/scripts/shrink_returned_run_colab.py
 cases/AM2020_planar_mural_detachment/scripts/step_stop_watcher.py
+cases/AM2020_planar_mural_detachment/scripts/y_gate/fixtures/YS794_cellinfo_2d.npy
+cases/AM2020_planar_mural_detachment/scripts/y_gate/fixtures/YS794_cells_2d.npy
+cases/AM2020_planar_mural_detachment/scripts/y_gate/fixtures/YS794_outlet_faces_2d.npy
+cases/AM2020_planar_mural_detachment/scripts/y_gate/fixtures/YS850_cellinfo_2d.npy
+cases/AM2020_planar_mural_detachment/scripts/y_gate/fixtures/YS850_cells_2d.npy
+cases/AM2020_planar_mural_detachment/scripts/y_gate/fixtures/YS850_outlet_faces_2d.npy
 cases/AM2020_planar_mural_detachment/scripts/y_gate/fixtures/y_cells_2d.npy
 cases/AM2020_planar_mural_detachment/scripts/y_gate/fixtures/y_outlet_faces_2d.npy
 cases/AM2020_planar_mural_detachment/scripts/y_gate/na06_ymesh.py
@@ -32,7 +42,11 @@ cases/AM2020_planar_mural_detachment/scripts/y_gate/y_gate_fixture.py
 cases/AM2020_planar_mural_detachment/scripts/y_gate/y_gate_report.py
 cases/AM2020_planar_mural_detachment/scripts/y_gate/y_initialise.py
 cases/AM2020_planar_mural_detachment/scripts/y_gate/y_mesh_gate.py
+cases/AM2020_planar_mural_detachment/scripts/y_gate/y_plug.py
+cases/AM2020_planar_mural_detachment/scripts/y_gate/y_plug_tests.py
+cases/AM2020_planar_mural_detachment/scripts/y_gate/y_rt_synth.py
 cases/AM2020_planar_mural_detachment/scripts/y_gate/y_synth.py
+cases/AM2020_planar_mural_detachment/scripts/y_rt_compare.py
 cases/AM2020_planar_mural_detachment/template/0/Dg
 cases/AM2020_planar_mural_detachment/template/0/H
 cases/AM2020_planar_mural_detachment/template/0/U

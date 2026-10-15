@@ -1650,6 +1650,8 @@ def rt1_refusal(child: dict, series: dict, by_id: dict) -> None:
     if not named:
         return
     cid = child["child_id"]
+    if isinstance(child.get("stop_after_step"), dict):
+        return y_rt_leg_refusal(child, series)
     if "write_every_step" not in child or "stop_after_step" not in child:
         raise ValueError(
             f"{cid}: write_every_step and stop_after_step go together ({', '.join(named)} alone would be silently "
@@ -1698,6 +1700,33 @@ def rt1_refusal(child: dict, series: dict, by_id: dict) -> None:
         raise ValueError(f"{cid}: its source {a_id} runs another solver library; a restart under another binary is not RT-1.")
 
 
+Y_RT_LEG_KEYS = ("leg1", "leg2")
+
+
+def y_rt_leg_refusal(child: dict, series: dict) -> None:
+    """The Y restart-test B child (design 2026-10-14-case-symmetric-y-plug.md section 5 item 2; numerics 25 section 5): stop_after_step is {leg1: S1, leg2: S2}, S PER LEG, in child.json
+    (restart_driver compares the dictionaries, not child.json, so the two legs run under IDENTICAL dictionaries). It has NO write_every_step: it writes as the BATCH 81 clot child does
+    (runTime, 1 ms), so the leg-1 stop at step S1 is a non-write-aligned writeNow. Leg 2 is a second runner invocation with --restart-from, not a sibling restart (no restart_from_child).
+    Refused anywhere but a PLUG series, where nothing would read the dict."""
+    cid = child["child_id"]
+    if child["series"] not in Y_PLUG_SERIES:
+        raise ValueError(f"{cid}: a per-leg stop_after_step {child['stop_after_step']!r} is read only by the plug series {', '.join(Y_PLUG_SERIES)} (step_stop_watcher.py picks the leg "
+                         f"from restart.json); here it would be silently inert")
+    legs = child["stop_after_step"]
+    if set(legs) != set(Y_RT_LEG_KEYS) or not all(_plain_int(legs[k]) for k in Y_RT_LEG_KEYS):
+        raise ValueError(f"{cid}: stop_after_step {legs!r} must be exactly {{leg1: int, leg2: int}}")
+    if not (legs["leg1"] >= 1 and legs["leg2"] - legs["leg1"] == S25_RT1_STEPS):
+        raise ValueError(f"{cid}: stop_after_step {legs!r}: leg 2 must run {S25_RT1_STEPS} steps after leg 1's stop (leg2 - leg1 == {S25_RT1_STEPS}, leg1 >= 1)")
+    for k in ("write_every_step", "restart_from_child", "restart_index", "frame_interval_s", "frame_fields"):
+        if k in child:
+            raise ValueError(f"{cid}: {k} cannot accompany a per-leg stop_after_step (the leg-2 restart is the runner's --restart-from; the writes are the clot child's runTime schedule)")
+    wh = child.get("wall_budget_h")
+    if isinstance(wh, bool) or not isinstance(wh, (int, float)) or not 0 < wh <= S25_RT1_WALL_BUDGET_MAX_H:
+        raise ValueError(f"{cid}: a Y restart-test child needs wall_budget_h in (0, {S25_RT1_WALL_BUDGET_MAX_H}] h (the backstop; got {wh!r})")
+    if "end_time_s" not in child:
+        raise ValueError(f"{cid}: a Y restart-test child names its own end_time_s (the backstop), not the series'.")
+
+
 def rt1_controldict_apply(control: Path, child_id: str, child: dict) -> None:
     """Write the RT-1 write schedule and read it back from the file. Runs AFTER the adaptive-dt block, which sets
     writeControl adjustableRunTime for the series. The function object `stopAfterStep` is written by the wall-budget
@@ -1736,7 +1765,7 @@ S25_RT1_FIELDS_ALLOWED = ("thetaPendingB", "thetaPendingP")
 def s25_rt1_pairs_refusal(controls: dict) -> None:
     pairs = controls.get("s25_rt1_pairs")
     by_id = {c["child_id"]: c for c in controls["children"]}
-    rt_children = sorted(cid for cid, c in by_id.items() if "write_every_step" in c)
+    rt_children = sorted(cid for cid, c in by_id.items() if "write_every_step" in c and c["series"] not in Y_PLUG_SERIES)   # the Y pairs are y_rt_pairs
     if pairs is None:
         if rt_children:
             raise ValueError(f"RT-1 children {rt_children} exist but the controls hold no s25_rt1_pairs: nothing would score them.")
@@ -1768,6 +1797,44 @@ def s25_rt1_pairs_refusal(controls: dict) -> None:
     unscored = sorted(set(rt_children) - set(used))
     if unscored or len(used) != len(set(used)):
         raise ValueError(f"every RT-1 child is in exactly one s25_rt1_pairs entry; unscored {unscored}, repeated {sorted({u for u in used if used.count(u) > 1})}.")
+
+
+Y_RT_PAIR_KEYS = ("pair_id", "a", "b", "leg1_stop", "leg2_stop", "_why")
+
+
+def y_rt_pairs_refusal(controls: dict) -> None:
+    """The Y restart pairs (top-level `y_rt_pairs`, read by assess_case y_rt_report): A = write_every_step with stop_after_step S2, B = per-leg stop_after_step {leg1: S1, leg2: S2}, in
+    the SAME plug series with the same material and binary. A Y RT child that no pair scores, or a pair whose arms disagree with the controls, is refused."""
+    by_id = {c["child_id"]: c for c in controls["children"]}
+    y_rt = sorted(cid for cid, c in by_id.items() if c["series"] in Y_PLUG_SERIES and ("write_every_step" in c or isinstance(c.get("stop_after_step"), dict)))
+    pairs = controls.get("y_rt_pairs")
+    if pairs is None:
+        if y_rt:
+            raise ValueError(f"Y restart-test children {y_rt} exist but the controls hold no y_rt_pairs: nothing would score them.")
+        return
+    if not isinstance(pairs, list) or not pairs:
+        raise ValueError("y_rt_pairs must be a non-empty list")
+    seen, used = set(), []
+    for i, e in enumerate(pairs):
+        if not isinstance(e, dict) or set(e) != set(Y_RT_PAIR_KEYS):
+            raise ValueError(f"y_rt_pairs[{i}] must hold exactly {', '.join(Y_RT_PAIR_KEYS)}; got {sorted(e) if isinstance(e, dict) else e!r}.")
+        if not isinstance(e["pair_id"], str) or not e["pair_id"] or e["pair_id"] in seen:
+            raise ValueError(f"y_rt_pairs[{i}] pair_id {e['pair_id']!r} must be a non-empty string, unique.")
+        seen.add(e["pair_id"])
+        for k in ("a", "b"):
+            if e[k] not in by_id or by_id[e[k]]["series"] not in Y_PLUG_SERIES:
+                raise ValueError(f"y_rt_pairs[{i}] ({e['pair_id']}) {k} {e[k]!r} is not a child of a Y plug series.")
+        a, b = by_id[e["a"]], by_id[e["b"]]
+        if a["series"] != b["series"] or a.get("solver_library") != b.get("solver_library") or a.get("skeleton_law_coeffs") != b.get("skeleton_law_coeffs"):
+            raise ValueError(f"y_rt_pairs[{i}] ({e['pair_id']}): {e['a']} and {e['b']} must share series, solver library and material.")
+        if a.get("write_every_step") is not True or not _plain_int(a.get("stop_after_step")) or a["stop_after_step"] != e["leg2_stop"] or "restart_from_child" in a:
+            raise ValueError(f"y_rt_pairs[{i}] ({e['pair_id']}): {e['a']} must be a cold start with write_every_step true and stop_after_step == leg2_stop {e['leg2_stop']!r}.")
+        if b.get("stop_after_step") != {"leg1": e["leg1_stop"], "leg2": e["leg2_stop"]} or "write_every_step" in b:
+            raise ValueError(f"y_rt_pairs[{i}] ({e['pair_id']}): {e['b']} must hold stop_after_step {{leg1: {e['leg1_stop']!r}, leg2: {e['leg2_stop']!r}}} and no write_every_step.")
+        used += [e["a"], e["b"]]
+    unscored = sorted(set(y_rt) - set(used))
+    if unscored or len(used) != len(set(used)):
+        raise ValueError(f"every Y restart-test child is in exactly one y_rt_pairs entry; unscored {unscored}, repeated {sorted({u for u in used if used.count(u) > 1})}.")
 
 
 # S25 B76-5a (case-engineer 09b; design 2026-10-10-S25-arteriole-bundle rev. 2.2 section 7): the arteriole series, a free-shell
@@ -2143,9 +2210,17 @@ def write_platelet_number_density(case: Path, value: float, inlet_value: float, 
 #   nP's patch names, the mural clot initialiser (no clot), seed_stage2_content's patch names, the function objects (flux objects only: no
 #   stopWatcher, no probes at channel coordinates), the write schedule (runTime at tau1, not adjustableRunTime) and nNonOrthogonalCorrectors.
 # =====================================================================================================================
-Y_GATE_SERIES = ("s25_ygate",)
+# THE SYMMETRIC Y (design research/designs/2026-10-14-case-symmetric-y-plug.md rev. 2.1; Alireza 2026-10-14 'Approve as designed'): two more flow-gate series on the
+# f = 2 meshes (one per geometry; BATCH 80) and two PLUG series (the free occlusive plug on the same meshes; the restart pair and the BATCH 81 clots). Every one of them
+# carries a `y_gate` block and is generated by the Y path below. A FLOW series' y_gate holds the gates; a PLUG series' y_gate says `"kind": "plug"` and holds the mesh,
+# the geometry and the drive only (the plug assessor, not the gate report, scores its children).
+Y_GATE_FLOW_SERIES = ("s25_ygate", "s25_ys794", "s25_ys850")
+Y_PLUG_SERIES = ("s25_ys794_plug", "s25_ys850_plug")
+Y_GATE_SERIES = Y_GATE_FLOW_SERIES + Y_PLUG_SERIES
 Y_GATE_STALE_GEOMETRY = ("nx", "ny", "channel_length_m", "channel_height_m", "injury_length_m", "injury_centre_x_m")
 Y_GATE_BLOCKS = ("mesh", "geometry_sim", "gate2", "gate3", "gate4", "gate5", "gate6", "gate7")
+Y_PLUG_BLOCKS = ("mesh", "geometry_sim", "drive")
+Y_GATE_ONLY_BLOCKS = ("gate2", "gate3", "gate4", "gate5", "gate6", "gate7")
 PER_TIME_DIR_CELLS = 31360          # the mesh behind PER_TIME_DIR_GB (run 20260906-004750)
 Y_GATE_PATCHES = ("inlet", "outlet", "wall", "front", "back")
 # THE PATCH x FIELD TABLE (design section 3), the types the generator writes and reads back. Anything beyond fixedValue, zeroGradient,
@@ -2168,6 +2243,35 @@ def _sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def y_series_kind(ext: dict | None) -> str | None:
+    """None for a non-Y series; 'gate' for a flow-gate series (the y_gate block has no `kind`: B79's is byte-identical); 'plug' for a plug series."""
+    if ext is None:
+        return None
+    return ext.get("kind", "gate")
+
+
+def y_drive(ext: dict) -> dict:
+    """The block that holds the parent mean velocity: the gate series' gate5, the plug series' drive."""
+    return ext["gate5"] if y_series_kind(ext) == "gate" else ext["drive"]
+
+
+def y_dict_facts(text: str) -> dict:
+    """What the pinned blockMeshDict says about itself, so that nothing here is typed twice: N = the cells across the parent (blocks Up0 + Ce0 + Lo0, the second cell count),
+    d1 (Up3 + C3) and d2 (C4 + Lo3), and the z extent (the vertices' z, written `// i Name` per line). All three Y dictionaries (na09, na22 YS794/YS850 h2) carry these
+    labels (checked); a dictionary without them is refused."""
+    blocks = {n: (int(a), int(b), int(c)) for _v, a, b, c, n in re.findall(
+        r"hex\s*\(([\d\s]+)\)\s*\(\s*(\d+)\s+(\d+)\s+(\d+)\s*\)\s*simpleGrading\s*\([^)]*\)\s*//\s*(\w+)", text)}
+    need = ("Up0", "Ce0", "Lo0", "Up3", "C3", "C4", "Lo3")
+    if [n for n in need if n not in blocks]:
+        raise ValueError(f"the blockMeshDict lacks the labelled blocks {[n for n in need if n not in blocks]}; N cannot be derived")
+    if any(blocks[n][2] != 1 for n in blocks):
+        raise ValueError("a block has more than one cell in z; the Y mesh is one cell deep")
+    zs = [float(z) for _x, _y, z in re.findall(r"\(\s*([-+0-9.eE]+)\s+([-+0-9.eE]+)\s+([-+0-9.eE]+)\s*\)\s*//\s*\d+\s+\w+", text)]
+    ctm = float(re.search(r"convertToMeters\s+([-+0-9.eE]+)", text).group(1))
+    return {"N": [blocks["Up0"][1] + blocks["Ce0"][1] + blocks["Lo0"][1], blocks["Up3"][1] + blocks["C3"][1], blocks["C4"][1] + blocks["Lo3"][1]],
+            "depth_m": (max(zs) - min(zs)) * ctm}
+
+
 def y_gate_series_refusal(name: str, series: dict) -> None:
     """Every way the Y series' keys could be silently inert, stale or inconsistent, on the CONTROLS entry. `y_gate` and
     `non_orthogonal_correctors` are read ONLY for the Y series, and required there."""
@@ -2181,16 +2285,23 @@ def y_gate_series_refusal(name: str, series: dict) -> None:
     if not is_y:
         return
     y = series["y_gate"]
-    missing = [b for b in Y_GATE_BLOCKS if not isinstance(y.get(b), dict)]
+    kind = y_series_kind(y)
+    if kind not in ("gate", "plug") or (kind == "plug") != (name in Y_PLUG_SERIES):
+        raise ValueError(f"series {name}: y_gate.kind {y.get('kind')!r} must be 'plug' for the plug series {Y_PLUG_SERIES} and absent for the flow series {Y_GATE_FLOW_SERIES}")
+    blocks = Y_GATE_BLOCKS if kind == "gate" else Y_PLUG_BLOCKS
+    missing = [b for b in blocks if not isinstance(y.get(b), dict)]
     if missing:
         raise ValueError(f"series {name}: y_gate lacks the blocks {missing}")
+    extra = [b for b in (Y_GATE_ONLY_BLOCKS if kind == "plug" else ("drive",)) if b in y]
+    if extra:
+        raise ValueError(f"series {name}: y_gate holds {extra}, which the {kind} series never reads (silently inert)")
     n = series["non_orthogonal_correctors"]
     if isinstance(n, bool) or not isinstance(n, int) or n < 0:
         raise ValueError(f"series {name}: non_orthogonal_correctors {n!r} must be an integer >= 0")
     for key, want in (("pressure_driven", True), ("adjust_time_step", True), ("wall_bond_free", True), ("growth", False),
                       ("core_shell", False)):
         if bool(series.get(key)) != want:
-            raise ValueError(f"series {name}: {key} must be {want} (a flow-only, pressure-driven, content-free-wall gate)")
+            raise ValueError(f"series {name}: {key} must be {want} (a pressure-driven, content-free-wall Y series; the plug is free: no bond)")
     if series.get("step1_watcher"):
         raise ValueError(f"series {name}: step1_watcher must be off: clot_free_watcher.py waits for a clot's V1 key and would "
                          f"either stop a clot-free run or wait on a log line that never comes")
@@ -2214,11 +2325,69 @@ def y_gate_series_refusal(name: str, series: dict) -> None:
                          f"nothing in the Y path; they must be null")
     if set(m["patches"]) != set(Y_GATE_PATCHES):
         raise ValueError(f"series {name}: y_gate.mesh.patches {sorted(m['patches'])} != {sorted(Y_GATE_PATCHES)}")
+    geo_s = y["geometry_sim"]
+    # The y-geometry keys of the series (design section 9): h_m, interface_width_m, ell_m, depth_m, read from geometry_override. depth_m and N are the DICTIONARY's own,
+    # re-derived here from the pinned file, never trusted from a second copy; ell = eps/2 (design section 2; BATCH 79 too); eps/h >= 4 is the generator's floor (main).
+    facts = y_dict_facts((CASE / m["blockMeshDict"]).read_text())
+    for key in ("h_m", "interface_width_m", "ell_m", "depth_m"):
+        if not isinstance(geo.get(key), (int, float)) or isinstance(geo.get(key), bool) or not geo[key] > 0:
+            raise ValueError(f"series {name}: geometry_override.{key} {geo.get(key)!r} must be a positive number (the Y path reads it)")
+    if not math.isclose(geo["ell_m"], 0.5 * geo["interface_width_m"], rel_tol=1e-9):
+        raise ValueError(f"series {name}: geometry_override.ell_m {geo['ell_m']} != interface_width_m/2 = {0.5 * geo['interface_width_m']} (design section 2: ell = eps/2)")
+    for what, got in (("geometry_override.depth_m", geo["depth_m"]), ("geometry_sim.depth_m", geo_s.get("depth_m"))):
+        if not isinstance(got, (int, float)) or not math.isclose(got, facts["depth_m"], rel_tol=1e-9):
+            raise ValueError(f"series {name}: {what} {got!r} != the dictionary's z extent {facts['depth_m']!r}")
+    if geo_s.get("N") != facts["N"]:
+        raise ValueError(f"series {name}: geometry_sim.N {geo_s.get('N')!r} != the cells across the parent, d1 and d2 of the pinned dictionary {facts['N']} (its blocks Up0+Ce0+Lo0, Up3+C3, C4+Lo3)")
+    symmetric = geo_s["d1_over_D0"] == geo_s["d2_over_D0"] and geo_s["axes_deg"]["d1"] == -geo_s["axes_deg"]["d2"]
+    if ("mirror_tol_m" in m) != symmetric:
+        raise ValueError(f"series {name}: y_gate.mesh.mirror_tol_m is "
+                         + ("required by a symmetric geometry (design 6 A item 1: the mirror check)" if symmetric else
+                            "read only for a symmetric geometry (d1 == d2, axes +-); here it would be silently inert"))
+    if "mirror_tol_m" in m and not (isinstance(m["mirror_tol_m"], (int, float)) and 0 < m["mirror_tol_m"] <= 1e-15):
+        raise ValueError(f"series {name}: y_gate.mesh.mirror_tol_m {m['mirror_tol_m']!r} must be in (0, 1e-15] m (design 6 A item 1)")
     sc = series["clot_override"]
-    if sc.get("shape") != "none":
+    if kind == "gate" and sc.get("shape") != "none":
         raise ValueError(f"series {name}: clot_override.shape must be 'none' (no clot)")
+    if kind == "plug":
+        if sc.get("shape") != "occlusive plug":
+            raise ValueError(f"series {name}: a plug series' clot_override.shape must be 'occlusive plug' (got {sc.get('shape')!r})")
+        import y_plug
+        inert = [k for k in sc if k not in y_plug.PLUG_KEYS and not k.startswith("_")]
+        if inert:
+            raise ValueError(f"series {name}: clot_override holds {inert}, which the occlusive plug never reads (silently inert); it reads exactly {list(y_plug.PLUG_KEYS)}")
+        p = {k: sc[k] for k in y_plug.PLUG_KEYS if k in sc}
+        y_plug.plug_geometry(p, geo_s["D0_m"], geo["interface_width_m"], y_plug.dict_anchors((CASE / m["blockMeshDict"]).read_text()))
+        # endTime = k write intervals + a margin r (CE ruling, DECISIONS 2026-10-14 case-engineer 27): the k-th write (t = k wi) is a write time and the stop
+        # threshold is endTime - dt/2 (Time::run), so r > dt_max/2 puts the stop strictly after the last write (no float tie); r <= 0.1 wi keeps it one step
+        # group past it. The partial interval after the k-th write writes nothing (OF-13 writes only at write times and on a writeNow stop).
+        wi_p, et_p, dtm = series["write_interval_s"], series["end_time_s"], series["max_delta_t_s"]
+        k_p = math.floor(et_p / wi_p + 1e-9)
+        r_p = et_p - k_p * wi_p
+        if not et_p > 0 or k_p < 1 or not (0.5 * dtm < r_p <= 0.1 * wi_p):
+            raise ValueError(f"series {name}: end_time_s {et_p} must be a whole number of write_interval_s {wi_p} plus a margin r with max_delta_t_s/2 = {0.5 * dtm:.3e} < r <= 0.1 write_interval_s "
+                             f"(here {k_p} intervals and r = {r_p:.3e} s): a stop on a write time ties the last write with the stop threshold (CE ruling, DECISIONS 2026-10-14)")
+    w = geo_s["widths_m"]
+    if not (math.isclose(w[0], geo_s["D0_m"], rel_tol=1e-12) and math.isclose(w[1], geo_s["D0_m"] * geo_s["d1_over_D0"], rel_tol=1e-12)
+            and math.isclose(w[2], geo_s["D0_m"] * geo_s["d2_over_D0"], rel_tol=1e-12)):
+        raise ValueError(f"series {name}: geometry_sim.widths_m {w} are not D0, d1 x D0, d2 x D0 (pinned at the mesh values, red team 11 D)")
+    ob = m["outlet_faces"]
+    if ob["d1_y_positive"] + ob["d2_y_negative"] != m["patches"]["outlet"]:
+        raise ValueError(f"series {name}: the outlet split {ob} does not add up to the outlet patch's {m['patches']['outlet']} faces")
+    g5 = y_drive(y)
+    want_u = g5["centreline_phys_m_s"] / g5["u_max_over_u_mean"] / g5["sim_to_phys_velocity"]
+    if not math.isclose(want_u, g5["u_mean_sim_m_s"], rel_tol=1e-6):
+        raise ValueError(f"series {name}: the drive's u_mean_sim_m_s {g5['u_mean_sim_m_s']} != centreline/1.5/(S_t/S_L) = {want_u!r}")
+    if kind == "plug":
+        return
+    if symmetric and y["gate2"]["expected"] != 0.5:
+        raise ValueError(f"series {name}: a symmetric geometry's gate 2 is the symmetry test: expected must be 0.5 (got {y['gate2']['expected']!r})")
+    if "bias" in y["gate4"]:
+        b = y["gate4"]["bias"]
+        if not (isinstance(b, list) and len(b) == 3 and all(isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < v < 0.01 for v in b)):
+            raise ValueError(f"series {name}: gate4.bias {b!r} must be three per-section FV biases in (0, 0.01)")
     # ONE number, two readers: the end time, the write interval and the step-count schedule agree with the gate's own constants.
-    g6, geo_s = y["gate6"], y["geometry_sim"]
+    g6 = y["gate6"]
     nu = series["nu_m2_s"]
     tau1 = geo_s["D0_m"] ** 2 / (math.pi ** 2 * nu)
     if not math.isclose(tau1, g6["tau1_s"], rel_tol=2e-4):
@@ -2236,19 +2405,6 @@ def y_gate_series_refusal(name: str, series: dict) -> None:
         raise ValueError(f"series {name}: end_time_s {series['end_time_s']} is {margin:.4e} s past {g6['end_tau1']} tau1; it must be in "
                          f"[3 dt_est = {3 * g6['dt_est_s']:.4e}, 0.1 tau1 = {0.1 * g6['tau1_s']:.4e}] s (the 18th write must precede the stop at "
                          f"endTime - dt/2; a longer tail buys nothing)")
-    g5 = y["gate5"]
-    want_u = g5["centreline_phys_m_s"] / g5["u_max_over_u_mean"] / g5["sim_to_phys_velocity"]
-    if not math.isclose(want_u, g5["u_mean_sim_m_s"], rel_tol=1e-6):
-        raise ValueError(f"series {name}: gate5.u_mean_sim_m_s {g5['u_mean_sim_m_s']} != centreline/1.5/(S_t/S_L) = {want_u!r}")
-    w = geo_s["widths_m"]
-    if not (math.isclose(w[0], geo_s["D0_m"], rel_tol=1e-12) and math.isclose(w[1], geo_s["D0_m"] * geo_s["d1_over_D0"], rel_tol=1e-12)
-            and math.isclose(w[2], geo_s["D0_m"] * geo_s["d2_over_D0"], rel_tol=1e-12)):
-        raise ValueError(f"series {name}: geometry_sim.widths_m {w} are not D0, d1 x D0, d2 x D0 (pinned at the mesh values, red team 11 D)")
-    if not (len(geo_s["N"]) == 3 and geo_s["N"] == [100, 88, 60]):
-        raise ValueError(f"series {name}: geometry_sim.N {geo_s['N']} != [100, 88, 60] (the cells across the parent, d1 and d2)")
-    ob = m["outlet_faces"]
-    if ob["d1_y_positive"] + ob["d2_y_negative"] != m["patches"]["outlet"]:
-        raise ValueError(f"series {name}: the outlet split {ob} does not add up to the outlet patch's {m['patches']['outlet']} faces")
 
 
 def y_gate_child_refusal(child: dict, series: dict) -> None:
@@ -2260,18 +2416,58 @@ def y_gate_child_refusal(child: dict, series: dict) -> None:
     if not is_y:
         return
     y = series["y_gate"]
-    for key in ("wall_shear_rate_1_s", "mean_velocity_m_s", "frame_interval_s", "frame_fields", "write_every_step", "stop_after_step",
-                "restart_from_child", "restart_index", "write_interval_s", "end_time_s"):
+    plug = y_series_kind(y) == "plug"
+    # A Y child takes its flow from the series' pressure drive and its schedule from the series' write_interval_s and end_time_s. The ONE exception is a PLUG-series
+    # restart-test child (design section 5 item 2): it carries the RT-1 step keys (write_every_step / stop_after_step, rt1_refusal) and its own backstop end_time_s.
+    rt = plug and "stop_after_step" in child
+    if plug:
+        import y_plug
+        inert = [k for k in child.get("clot_override", {}) if k not in y_plug.PLUG_KEYS and not k.startswith("_")]
+        if inert:
+            raise ValueError(f"{cid}: clot_override holds {inert}, which the occlusive plug never reads (silently inert); it reads exactly {list(y_plug.PLUG_KEYS)}")
+    refused = ["wall_shear_rate_1_s", "mean_velocity_m_s", "frame_interval_s", "frame_fields", "restart_from_child", "restart_index", "write_interval_s"]
+    if not rt:
+        refused += ["write_every_step", "stop_after_step", "end_time_s"]
+    for key in refused:
         if key in child:
             raise ValueError(f"{cid}: {key} is not a Y-child key (the flow comes from the series' pressure drive, the schedule from the "
                              f"series' write_interval_s and end_time_s); here it would be silently inert or would override the pre-registration")
+    if rt and "end_time_s" not in child:
+        raise ValueError(f"{cid}: a Y restart-test child names its own end_time_s (the backstop)")
     wh = child.get("wall_budget_h")
     if isinstance(wh, bool) or not isinstance(wh, (int, float)) or not 0 < wh <= 11.0:
         raise ValueError(f"{cid}: a Y child needs wall_budget_h in (0, 11] h (the stopAtClockTime backstop inside one Colab session); got {wh!r}")
 
 
+def y_plug_floors(child_id: str, g: dict, clot: dict, ext: dict | None, series: dict) -> dict:
+    """The 'occlusive plug' branch of the clot shapes: its keys, its anchors against the pinned dictionary, and the floors that DO apply (the 3 eps gap floor is exempt at both walls,
+    recorded). -> the plug block written to constant/yGate.json and child.json (the numbers in D0 and metres)."""
+    import y_plug
+    if ext is None or y_series_kind(ext) != "plug":
+        raise ValueError(f"{child_id}: the 'occlusive plug' clot shape is drawn by scripts/y_gate/y_initialise.py on a Y mesh and is refused on every series but {', '.join(Y_PLUG_SERIES)} "
+                         f"(the channel initialiser knows no such shape; here it would be silently inert)")
+    D0, eps = ext["geometry_sim"]["D0_m"], g["interface_width_m"]
+    p = {k: clot[k] for k in y_plug.PLUG_KEYS if k in clot}
+    anchors = y_plug.dict_anchors((CASE / ext["mesh"]["blockMeshDict"]).read_text())
+    geom = y_plug.plug_geometry(p, D0, eps, anchors)
+    node, inlet_x = 0.0, -4.0                   # the inlet is 4 D0 upstream of the node (design section 1)
+    if geom["rear_x_D0"] < inlet_x + 1.0:
+        raise ValueError(f"{child_id}: the plug's rear x = {geom['rear_x_D0']:.4f} D0 lies within 1 D0 of the inlet (x = {inlet_x} D0)")
+    if not geom["front_x_D0"] < geom["tip_D0"]:
+        raise ValueError(f"{child_id}: the plug's front x = {geom['front_x_D0']:.4f} D0 is not upstream of the apex tip {geom['tip_D0']:.4f} D0")
+    if not geom["blend_end_x_D0"] < geom["front_x_D0"]:
+        raise ValueError(f"{child_id}: the blend (x_t {geom['xt_D0']:.4f} + {p['blend_eps']} eps = {geom['blend_end_x_D0']:.4f} D0) reaches the plug's front {geom['front_x_D0']:.4f} D0")
+    if not geom["seal_straight_arithmetic_D0"] > 0:
+        raise ValueError(f"{child_id}: no straight seal: the parent-width cap ends at or past the fillet tangent (arithmetic {geom['seal_straight_arithmetic_D0']:.4f} D0)")
+    out = {k: clot[k] for k in y_plug.PLUG_KEYS if k in clot}
+    out.update({"D0_m": D0, "interface_width_m": eps, "resolved_D0": geom, "exempt_from_3eps_gap_floor": True,
+                "front_gap_interface_widths": p["gap_D0"] * D0 / eps, "overlap_at_wall_D0": p["width_parent_D0"] / 2 - 0.5})
+    return out
+
+
 def y_gate_install_mesh(case: Path, ext: dict) -> None:
-    """The mesh: the pinned dictionary BYTE FOR BYTE, then the y_gate block as constant/yGate.json (read by the setup scripts)."""
+    """The mesh: the pinned dictionary BYTE FOR BYTE, then the y_gate block as constant/yGate.json (read by the setup scripts). `ext` is the series' y_gate block, plus the
+    resolved `plug` block for a plug child (y_initialise.py draws it)."""
     src = CASE / ext["mesh"]["blockMeshDict"]
     dst = case / "system" / "blockMeshDict"
     shutil.copyfile(src, dst)
@@ -2365,21 +2561,30 @@ def y_gate_controldict_apply(control: Path, child_id: str, child: dict, series: 
     """The write schedule (design rev. 2.2): writeControl runTime, writeInterval = tau1 (the series' write_interval_s), endTime = the series'
     end_time_s, NOT adjustableRunTime (the solver sets its own dt; OF-13 Time.C L1196-1208 writes at the step whose t + dt/2 crosses k tau1 for
     any dt and does not adjust dt; the writeAlign path is OI-80). The main loop has already written these three; this READS THEM BACK from the
-    file and refuses any other, and sets purgeWrite 0."""
+    file and refuses any other, and sets purgeWrite 0.
+    A PLUG-series restart-test child changes two things (design 2026-10-14-case-symmetric-y-plug.md section 5 item 2): its endTime is the child's own backstop, and RT_A
+    (write_every_step) keeps the RT-1 schedule rt1_controldict_apply has just written and read back (timeStep 1, purgeWrite 10); RT_B keeps the runTime schedule
+    (= the clot child's) so that its leg-1 stop is not write-aligned. Both carry exactly one stopAfterStep."""
     if ext is None:
         return
     wi = float(child.get("write_interval_s", series["write_interval_s"]))
     et = float(child.get("end_time_s", series["end_time_s"]))
-    replace_entry(control, "writeControl", "runTime")
-    replace_entry(control, "writeInterval", wi)
-    replace_entry(control, "endTime", et)
-    replace_entry(control, "purgeWrite", 0)
+    every_step = "write_every_step" in child
+    if every_step:
+        replace_entry(control, "endTime", et)
+    else:
+        replace_entry(control, "writeControl", "runTime")
+        replace_entry(control, "writeInterval", wi)
+        replace_entry(control, "endTime", et)
+        replace_entry(control, "purgeWrite", 0)
     text = re.sub(r"//[^\n]*", "", control.read_text())
     top = text.split("functions", 1)[0]
     got = (re.findall(r"(?m)^\s*writeControl\s+([^;\s]+)\s*;", top), re.findall(r"(?m)^\s*writeInterval\s+([^;\s]+)\s*;", top),
            re.findall(r"(?m)^\s*endTime\s+([^;\s]+)\s*;", top), re.findall(r"(?m)^\s*purgeWrite\s+([^;\s]+)\s*;", top))
-    if (got[0], got[3]) != (["runTime"], ["0"]) or [float(v) for v in got[1]] != [wi] or [float(v) for v in got[2]] != [et]:
-        raise ValueError(f"{child_id}: Y controlDict writes {got!r}, not runTime / {wi!r} / endTime {et!r} / purgeWrite 0")
+    want_wc, want_pw = (["timeStep"], [str(S25_RT1_PURGE_WRITE)]) if every_step else (["runTime"], ["0"])
+    want_wi = [1.0] if every_step else [wi]
+    if (got[0], got[3]) != (want_wc, want_pw) or [float(v) for v in got[1]] != want_wi or [float(v) for v in got[2]] != [et]:
+        raise ValueError(f"{child_id}: Y controlDict writes {got!r}, not {want_wc[0]} / {want_wi[0]!r} / endTime {et!r} / purgeWrite {want_pw[0]}")
     if "adjustableRunTime" in text:
         raise ValueError(f"{child_id}: Y controlDict still carries adjustableRunTime")
     if "stopWatcher" in text or "probesPU" in text or "frames" in text:
@@ -2387,6 +2592,8 @@ def y_gate_controldict_apply(control: Path, child_id: str, child: dict, series: 
     for name in ("inletFlux", "outletFlux", "inletP", "outletP"):
         if len(re.findall(rf"(?m)^\s*{name}\s*\{{", text)) != 1:
             raise ValueError(f"{child_id}: Y controlDict must hold exactly one {name} function object")
+    if len(re.findall(r"(?m)^\s*stopAfterStep\s*\{", text)) != (1 if "stop_after_step" in child else 0):
+        raise ValueError(f"{child_id}: Y controlDict must hold {'exactly one' if 'stop_after_step' in child else 'no'} stopAfterStep function object")
 
 
 def main() -> int:
@@ -2448,6 +2655,7 @@ def main() -> int:
     for _c in controls["children"]:
         rt1_refusal(_c, series_spec[_c["series"]], _children_by_id)
     s25_rt1_pairs_refusal(controls)
+    y_rt_pairs_refusal(controls)
     for child in controls["children"]:
         spec = series_spec[child["series"]]
         welded = spec["wall_condition"] == "fixedValue"
@@ -2824,6 +3032,14 @@ def main() -> int:
                 f"{g['h_m']} is {cells_across:.2f} cells across the interface; "
                 f"four is the floor this project has held to"
             )
+        # THE OCCLUSIVE PLUG (design 2026-10-14-case-symmetric-y-plug.md rev. 2.1 section 4): a clot shape drawn by scripts/y_gate/y_plug.py on the Y mesh. It is EXEMPT from the
+        # 3 eps lumen-gap floor every other shape holds, at both walls: the plug OVERLAPS the lateral walls (Wp 1.70 D0 against the parent's 1 D0, so the seal row is bulk clot) and
+        # its front sits 0.10 D0 (0.97 eps) upstream of the apex by design (the approach the verdict measures). It exists ONLY on a Y plug series.
+        plug_block = None
+        if clot.get("shape") == "occlusive plug":
+            plug_block = y_plug_floors(child_id, g, clot, ext, series)
+        elif ext is not None and y_series_kind(ext) == "plug":
+            raise ValueError(f"{child_id}: a child of the plug series {child['series']} must carry the 'occlusive plug' clot (got {clot.get('shape')!r})")
         if ext is None and not math.isclose(g["h_m"], g["channel_height_m"] / g["ny"],
                                             rel_tol=1e-9):
             raise ValueError(f"{child_id}: h_m disagrees with channel_height/ny")
@@ -3005,7 +3221,7 @@ def main() -> int:
         if ext is not None:
             # The Y mesh has no channel height: the parent mean is the gate-5 drive (0.94 cm/s centreline / 1.5, in sim units) and the
             # wall shear rate is the planar Poiseuille value in the parent, BOOKKEEPING (child.json); nothing reads either as an input.
-            u_mean = ext["gate5"]["u_mean_sim_m_s"]
+            u_mean = y_drive(ext)["u_mean_sim_m_s"]
             gamma = 6.0 * u_mean / ext["geometry_sim"]["widths_m"][0]
         else:
             gamma = child["wall_shear_rate_1_s"]
@@ -3101,7 +3317,7 @@ def main() -> int:
         # discontinuity at each join, which is a salient corner in the one
         # place the measurement is taken.
         if ext is not None:
-            y_gate_install_mesh(case, ext)
+            y_gate_install_mesh(case, ext if plug_block is None else dict(ext, plug=plug_block))
         else:
             (case / "system" / "blockMeshDict").write_text(mural_gen.planar_mesh(g))
         _configure_fields = mural_gen.configure_fields if ext is None else y_gate_configure_fields
@@ -4668,7 +4884,11 @@ def main() -> int:
         if ext is not None:
             spec["y_gate"] = json.loads(json.dumps(ext))
             spec["non_orthogonal_correctors"] = int(series["non_orthogonal_correctors"])
-            spec["clot"] = {"shape": "none", "why": "flow only: the Y gate carries no clot (c = +1 everywhere, y_initialise.py)"}
+            if plug_block is None:
+                spec["clot"] = {"shape": "none", "why": "flow only: the Y gate carries no clot (c = +1 everywhere, y_initialise.py)"}
+            else:
+                spec["y_gate"]["plug"] = json.loads(json.dumps(plug_block))
+                spec["clot"] = dict(plug_block, why="the free occlusive plug of design 2026-10-14-case-symmetric-y-plug.md section 4, drawn by scripts/y_gate/y_initialise.py (y_plug.py)")
         dictionary_key_refusal(case / "constant" / "phaseClotProperties")
         if child.get("solver_library") in SOLVER_LIBRARIES:
             # S22 section 7 arm A0 / S23 section 7 arm (1'): Allrun sources this before foamRun.
@@ -4680,7 +4900,11 @@ def main() -> int:
     'xu2017_fig5': 22,
     'throat_free_shell': 23,
     's25_5a': 24,
-    's25_ygate': 25}
+    's25_ygate': 25,
+    's25_ys794': 26,
+    's25_ys850': 27,
+    's25_ys794_plug': 28,
+    's25_ys850_plug': 29}
     missing = {c["series"] for c in controls["children"]} - set(order)
     if missing:
         raise ValueError(f"no run order declared for series {sorted(missing)}")

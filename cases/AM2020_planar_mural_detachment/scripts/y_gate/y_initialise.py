@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
-"""The Y gate's initialiser: NO CLOT. Imports the mural gate's file helpers (initialise_cases.read_vectors / replace_scalar /
-replace_vector) and writes the same fields its main() writes for a clot -- c, w, Dg, H, U, Us -- with c = +1 (blood) in every cell.
+"""The Y gate's initialiser: NO CLOT (the flow gates) or the OCCLUSIVE PLUG (the plug series). Imports the mural gate's file helpers
+(initialise_cases.read_vectors / replace_scalar / replace_vector) and writes the same fields its main() writes for a clot -- c, w, Dg, H, U, Us --
+with c = +1 (blood) in every cell, or, when constant/yGate.json carries a `plug` block (the generator writes it for a plug child only), with
+c = tanh(sd/eps) of the plug of scripts/y_gate/y_plug.py (design 2026-10-14-case-symmetric-y-plug.md section 4): the signed distance is drawn
+at the cell centres of 0/C against the fillet tangent and apex tip READ FROM system/blockMeshDict.
 
 WHY NOT initialise_cases.py ITSELF: its main() draws a one-sided clot on the bottom wall of a structured nx x ny channel and REFUSES
 a mesh without one ("clot has no solid bulk", "no open lumen" -- fine -- but also the row indexing `centres[:nx]` that assumes a single
@@ -20,6 +23,8 @@ HERE = Path(__file__).resolve().parent
 MURAL_SCRIPTS = HERE.parents[2] / "AM2020_mural_geometry_gate" / "scripts"
 sys.path.insert(0, str(MURAL_SCRIPTS))
 import initialise_cases as mural_init  # noqa: E402
+sys.path.insert(0, str(HERE))
+import y_plug  # noqa: E402
 
 
 def main(argv) -> int:
@@ -27,7 +32,17 @@ def main(argv) -> int:
     spec = json.loads((case / "constant" / "yGate.json").read_text())
     n = int(spec["mesh"]["counts"]["nCells"])
     centres = mural_init.read_vectors(case / "0" / "C", n)     # refuses a count other than n
-    mural_init.replace_scalar(case / "0" / "c", [1.0] * n)
+    plug = spec.get("plug")
+    if plug is None:
+        c_values = [1.0] * n
+    else:
+        anchors = y_plug.dict_anchors((case / "system" / "blockMeshDict").read_text())
+        p = {k: plug[k] for k in y_plug.PLUG_KEYS}
+        y_plug.plug_geometry(p, plug["D0_m"], plug["interface_width_m"], anchors)       # the keys, the consistency, the anchors against the controls
+        c_values = y_plug.c_field(centres, p, plug["D0_m"], plug["interface_width_m"], anchors)
+        if not (min(c_values) < -0.99 and max(c_values) > 0.99):
+            raise ValueError(f"the plug's c ranges over [{min(c_values):.4f}, {max(c_values):.4f}]: no bulk clot or no open lumen")
+    mural_init.replace_scalar(case / "0" / "c", c_values)
     mural_init.replace_scalar(case / "0" / "w", [1.0] * n)
     mural_init.replace_scalar(case / "0" / "Dg", [0.0] * n)
     mural_init.replace_scalar(case / "0" / "H", [0.0] * n)
@@ -35,8 +50,9 @@ def main(argv) -> int:
     mural_init.replace_vector(case / "0" / "Us", [(0.0, 0.0, 0.0)] * n)
     out = case / "postProcessing" / "initialisation"
     out.mkdir(parents=True, exist_ok=True)
-    summary = {"child_id": json.loads((case / "child.json").read_text())["child_id"], "cell_count": n, "solid_cells": 0,
-               "solid_fraction": 0.0, "c_min": 1.0, "c_max": 1.0, "shape": "none",
+    solid = sum(1 for v in c_values if v < 0.0)
+    summary = {"child_id": json.loads((case / "child.json").read_text())["child_id"], "cell_count": n, "solid_cells": solid,
+               "solid_fraction": solid / n, "c_min": min(c_values), "c_max": max(c_values), "shape": "none" if plug is None else plug["shape"],
                "centre_x_range_m": [min(c[0] for c in centres), max(c[0] for c in centres)],
                "centre_y_range_m": [min(c[1] for c in centres), max(c[1] for c in centres)]}
     (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
