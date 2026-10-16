@@ -2269,6 +2269,9 @@ Y_GATE_BLOCKS = ("mesh", "geometry_sim", "gate2", "gate3", "gate4", "gate5", "ga
 Y_PLUG_BLOCKS = ("mesh", "geometry_sim", "drive")
 Y_GATE_ONLY_BLOCKS = ("gate2", "gate3", "gate4", "gate5", "gate6", "gate7")
 PER_TIME_DIR_CELLS = 31360          # the mesh behind PER_TIME_DIR_GB (run 20260906-004750)
+# One full write of a Y child, measured: run 20261015-233526, Y80_RT86_B/0.0006492563073, the 59 files summed from the returned tar (22,694,452 bytes, decimal GB), 19728 cells.
+Y_PER_TIME_DIR_GB = 22.694452 / 1000.0
+Y_PER_TIME_DIR_CELLS = 19728
 Y_GATE_PATCHES = ("inlet", "outlet", "wall", "front", "back")
 # THE PATCH x FIELD TABLE (design section 3), the types the generator writes and reads back. Anything beyond fixedValue, zeroGradient,
 # noSlip and empty was read in /Volumes/OpenFOAM-13/source (pressureInletOutletVelocity: phi default "phi", tangentialVelocity optional,
@@ -2460,6 +2463,8 @@ def y_gate_child_refusal(child: dict, series: dict) -> None:
     if "write_every_n_steps" in child:
         raise ValueError(f"{cid}: write_every_n_steps is read by nothing (it was the Y gate's rev. 2.1 step schedule; rev. 2.2 writes at "
                          f"runTime tau1 from the series' write_interval_s)")
+    if "role" in child and (not isinstance(child["role"], str) or not child["role"].strip()):
+        raise ValueError(f"{cid}: role {child['role']!r} must be a non-empty string (child.json's `role`; it replaces the series question for this child only)")
     if not is_y:
         return
     y = series["y_gate"]
@@ -2504,8 +2509,8 @@ def y_plug_floors(child_id: str, g: dict, clot: dict, ext: dict | None, series: 
         raise ValueError(f"{child_id}: the plug's front x = {geom['front_x_D0']:.4f} D0 is not upstream of the apex tip {geom['tip_D0']:.4f} D0")
     if not geom["blend_end_x_D0"] < geom["front_x_D0"]:
         raise ValueError(f"{child_id}: the blend (x_t {geom['xt_D0']:.4f} + {p['blend_eps']} eps = {geom['blend_end_x_D0']:.4f} D0) reaches the plug's front {geom['front_x_D0']:.4f} D0")
-    if not geom["seal_straight_arithmetic_D0"] > 0:
-        raise ValueError(f"{child_id}: no straight seal: the parent-width cap ends at or past the fillet tangent (arithmetic {geom['seal_straight_arithmetic_D0']:.4f} D0)")
+    # (rev. 2.2 A4: the rev. 2.1 'no straight seal' refusal is gone. The 75% plug's YS850 cap centre lies 0.059 D0 past the fillet tangent (seal_straight_arithmetic_D0 -0.059, recorded in
+    # resolved_D0 as a fact), accepted by A1 and detected by FAIL 6, which reads the flux through the non-plug fraction of a parent section, not a tracked seal.)
     out = {k: clot[k] for k in y_plug.PLUG_KEYS if k in clot}
     out.update({"D0_m": D0, "interface_width_m": eps, "resolved_D0": geom, "exempt_from_3eps_gap_floor": True,
                 "front_gap_interface_widths": p["gap_D0"] * D0 / eps, "overlap_at_wall_D0": p["width_parent_D0"] / 2 - 0.5})
@@ -4223,10 +4228,14 @@ def main() -> int:
             # end_time_s is only the backstop and write_interval_s is not what writes.
             # purgeWrite keeps the last S25_RT1_PURGE_WRITE of them on disk (and so in the return).
             projected_writes = min(child["stop_after_step"] + S25_RT1_OVERSHOOT, S25_RT1_PURGE_WRITE)
-        projected_gb = (projected_writes * PER_TIME_DIR_GB
-                        * S25_WRITE_PRECISION_BYTES_FACTOR)
         if ext is not None:
-            projected_gb *= cells / PER_TIME_DIR_CELLS      # the Y mesh is 78912 cells; the measured 19.5 MB is for 31360
+            # A Y child is priced on a Y write MEASURED at its own precision (run 20261015-233526: 22.694452 MB for a full write of the 19728-cell f = 2 mesh, 59 files incl.
+            # phi, phiSkelOwn; case-engineer 41b), scaled by cell count. The 19.5 MB constant below is the channel case's (31360 cells, writePrecision 12) and priced this at 1.2
+            # GB for 100 writes (x1.9 low).
+            projected_gb = projected_writes * Y_PER_TIME_DIR_GB * cells / Y_PER_TIME_DIR_CELLS
+        else:
+            projected_gb = (projected_writes * PER_TIME_DIR_GB
+                            * S25_WRITE_PRECISION_BYTES_FACTOR)
         if (
             projected_gb > OUTPUT_BUDGET_GB
             and not child.get("accept_large_output", False)
@@ -4781,7 +4790,7 @@ def main() -> int:
             # same one-sided cap for all three of them.
             "experiment": "planar_mural_detachment",
             "series": child["series"],
-            "role": series["question"],
+            "role": child.get("role", series["question"]),      # a child-level role is the plug children's own text (y_gate_child_refusal); no child, no change
             "wall_shear_rate_1_s": gamma,
             "mean_velocity_m_s": u_mean,
             "G_pa": s25_g_pa(child),

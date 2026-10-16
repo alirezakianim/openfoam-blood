@@ -10,11 +10,14 @@ The p24 constants below are physics 24's (probes/p24_model.py); they are used ON
 """
 from __future__ import annotations
 
+import atexit
 import json
 import math
+import os
 import random
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -31,12 +34,14 @@ UB = 1.2536e-3
 GPA = 11.98
 TV = 12.3e-3
 P_IN = {"YS794": 1.341158e-3 * 1050, "YS850": 1.220658e-3 * 1050}
-LW = {"YS794": {"lo": (1.167, 1.080), "cap": (1.405, 1.318), "flat": (1.544, 1.458)},
-      "YS850": {"lo": (1.134, 1.044), "cap": (1.373, 1.283), "flat": (1.516, 1.426)}}
+LW = {"YS794": {"lo": (1.167, 1.080), "cap": (1.405, 1.318), "flat": (1.544, 1.458), "p35_250": (1.483, 1.397), "p35_75": (0.974, 0.887)},
+      "YS850": {"lo": (1.134, 1.044), "cap": (1.373, 1.283), "flat": (1.516, 1.426), "p35_250": (1.448, 1.358), "p35_75": (0.921, 0.831)}}
+# "p35_75" / "p35_250": physics 35's as-built L_w (probes/p35_model.py: LW) of the 75% plug (L_c 1.915 D0, rev. 2.2 A1) and of the 2.5 D0 plug (its regression); the "lo/cap/flat" rows are physics 24's.
 DELTA = {"sqrt k": math.sqrt(9.7222e-14), "mesh": 0.648 * 1.5e-6}
 M_PLUS_CONTACT = 0.0059            # D0^2, physics 24 (p24_plug.txt, s = 0.10)
 DMP_DS, DMM_DS = 0.32, 0.20         # D0 per D0 of shift after contact
 QUANTUM = {"YS794": 4.95e-4, "YS850": 5.4e-4}   # D0^2, one cell of bulk content (numerics 25 section 2)
+END_TIME = 0.10005                  # the Y81 children's controlDict endTime (design rev. 2.2 A2): 100 ms sim plus 5e-5 s so that endTime is not a write time
 
 
 def z_film(lw: float, delta: float) -> float:
@@ -86,7 +91,8 @@ def records_from_displacement(times, disp_m, tag: str, x0_m=-0.7 * D0, m_plus=No
         if i == 0:
             x = x0_m                                           # the initial state is exact
         r = {"t": t, "X": x, "A": 4.37e-2, "A_bulk": 4.0e-2, "Mp": _quant(mp, q) if q else mp, "Mm": _quant(mm, q) if q else mm, "content": 2.34e-9, "r_max": 1.0,
-             "n_over": 0, "Dg_max": 0.0, "lam1_bulk_max": 1.2, "Q": None, "Qs": None, "slab_ok": None}
+             "n_over": 0, "Dg_max": 0.0, "lam1_bulk_max": 1.2, "Q": None,
+             "Qnp": None, "Dc": None, "QS": None, "core_r_min": None, "sec_valid": None}
         if i == 0:
             r["initial"] = True
         if extra:
@@ -132,7 +138,7 @@ def rt23_rate(m: dict):
 
 def facts_for(tag: str) -> dict:
     return {"ubar": 0.0012533333333333333, "D0": D0, "lam": P_IN[tag] / GPA, "tau_v": 0.012283333333333335, "gap_m": 0.10 * D0, "write_interval": 1e-3,
-            "series": {"YS794": "s25_ys794_plug", "YS850": "s25_ys850_plug"}[tag],
+            "series": {"YS794": "s25_ys794_plug", "YS850": "s25_ys850_plug"}[tag], "end_time": END_TIME,
             "q0": 0.0012533333333333333 * (1 + {"YS794": 0.00116, "YS850": 0.00115}[tag]) * D0 * 2e-6, "q0_tol": {"YS794": 0.00446, "YS850": 0.00474}[tag]}
 
 
@@ -201,9 +207,11 @@ def time_name(t: float) -> str:
     return f"{t:.10g}"
 
 
-def write_dir(d: Path, mesh: Mesh, t: float, index: int, r, phi0: float = 0.45, dg=None, us=None, be=None, theta_c_frac: float = 1.0, uniform_t: float = None, q=None, gfield=None) -> None:
+def write_dir(d: Path, mesh: Mesh, t: float, index: int, r, phi0: float = 0.45, dg=None, us=None, be=None, theta_c_frac: float = 1.0, uniform_t: float = None, q=None, gfield=None,
+              phi=None, phi_skel_own=None) -> None:
     """One full write: thetaC/thetaH from r (theta = r*phi0), Dg, Us, be (nonuniform only when given, else uniform), and the members restart_driver.classify and the
-    assessor require (w, phiSkel, U, p, phi, uniform/time) as one-line uniform fields."""
+    assessor require (w, phiSkel, U, p, uniform/time) as one-line uniform fields. phi and phiSkelOwn (the internal-face fluxes FAIL 6 reads) are uniform 0 unless given
+    as lists of nInternalFaces values."""
     d.mkdir(parents=True, exist_ok=True)
     theta = [v * phi0 for v in r]
     (d / "thetaC").write_text(field_text("volScalarField", "thetaC", scalar_internal([theta_c_frac * v for v in theta])))
@@ -216,10 +224,104 @@ def write_dir(d: Path, mesh: Mesh, t: float, index: int, r, phi0: float = 0.45, 
     if gfield is not None:
         (d / "Gfield").write_text(field_text("volScalarField", "Gfield", scalar_internal(gfield) if not isinstance(gfield, (int, float)) else f"uniform {_fmt(gfield)};"))
     for name, cls, val in (("w", "volScalarField", "uniform 1;"), ("phiSkel", "surfaceScalarField", "uniform 0;"), ("U", "volVectorField", "uniform (0 0 0);"),
-                           ("p", "volScalarField", "uniform 0;"), ("phi", "surfaceScalarField", "uniform 0;")):
+                           ("p", "volScalarField", "uniform 0;"),
+                           ("phi", "surfaceScalarField", scalar_internal(phi) if phi is not None else "uniform 0;"),
+                           ("phiSkelOwn", "surfaceScalarField", scalar_internal(phi_skel_own) if phi_skel_own is not None else "uniform 0;")):
         (d / name).write_text(field_text(cls, name, val))
     (d / "uniform").mkdir(exist_ok=True)
     (d / "uniform" / "time").write_text(f"FoamFile\n{{\n    format ascii;\n    class dictionary;\n    object time;\n}}\n\nvalue {_fmt(t)};\nname \"{_fmt(t)}\";\nindex {index};\ndeltaT 5e-06;\n\n{FOOTER}")
+
+
+# ---------------------------------------------------------------------------------------------------- the polyMesh (FAIL 6 reads constant/polyMesh)
+_POLY: dict = {}
+
+
+def _poly_header(cls: str, obj: str, note: str = "") -> str:
+    n = f'    note        "{note}";\n' if note else ""
+    return f'FoamFile\n{{\n    format      ascii;\n    class       {cls};\n{n}    location    "constant/polyMesh";\n    object      {obj};\n}}\n\n'
+
+
+def mesh_points_cells(tag: str):
+    """([(x, y)] points, [(a, b, c, d)] cells counter-clockwise) of the f = 2 replica: the shipped constant/yGate/na22_points_ref_2d_<tag>_h2.npy and the fixture
+    fixtures/<tag>_cellpts_2d.npy (y_gate_fixture.py topology())."""
+    n, _nc, pts = G.read_npy_f8(HERE.parents[1] / "constant" / "yGate" / f"na22_points_ref_2d_{tag}_h2.npy")
+    m, _mc, cp = G.read_npy_f8(y_synth.FIX / f"{tag}_cellpts_2d.npy")
+    return [(pts[2 * i], pts[2 * i + 1]) for i in range(n)], [tuple(int(cp[4 * c + k]) for k in range(4)) for c in range(m)]
+
+
+def polymesh_dir(tag: str, depth: float) -> Path:
+    """A directory holding points, faces, owner, neighbour of the replica extruded by `depth` in z (OpenFOAM's layout: internal faces first in upper-triangular order, then the lateral
+    boundary faces, then the back (z = 0) and front faces; every face's points follow the right-hand rule outward from its owner; a 2-D extrusion of the replica, built once per
+    process and removed at exit). The patch split (inlet / outlet / wall) is NOT written: the assessor reads no boundary file."""
+    key = (tag, depth)
+    if key in _POLY:
+        return _POLY[key]
+    pts2, cells = mesh_points_cells(tag)
+    npts = len(pts2)
+    ec: dict = {}
+    for c, q in enumerate(cells):
+        for k in range(4):
+            a, b = q[k], q[(k + 1) % 4]
+            ec.setdefault((a, b) if a < b else (b, a), []).append((c, a, b))
+    internal, lateral = [], []
+    for lst in ec.values():
+        if len(lst) == 2:
+            (c1, a1, b1), (c2, a2, b2) = lst
+            internal.append((c1, c2, a1, b1) if c1 < c2 else (c2, c1, a2, b2))
+        else:
+            lateral.append(lst[0])
+    internal.sort()
+    lateral.sort()
+    face_lines = [f"4({a} {b} {b + npts} {a + npts})" for _o, _n, a, b in internal]
+    face_lines += [f"4({a} {b} {b + npts} {a + npts})" for _c, a, b in lateral]
+    face_lines += [f"4({q[3]} {q[2]} {q[1]} {q[0]})" for q in cells]
+    face_lines += [f"4({q[0] + npts} {q[1] + npts} {q[2] + npts} {q[3] + npts})" for q in cells]
+    owners = [o for o, _n, _a, _b in internal] + [c for c, _a, _b in lateral] + list(range(len(cells))) + list(range(len(cells)))
+    note = f"nPoints:{2 * npts} nCells:{len(cells)} nFaces:{len(face_lines)} nInternalFaces:{len(internal)}"
+    d = Path(tempfile.mkdtemp(prefix="yplug_polymesh_"))
+    atexit.register(shutil.rmtree, str(d), True)
+    (d / "points").write_text(_poly_header("vectorField", "points") + f"{2 * npts}\n(\n" + "".join(f"({_fmt(x)} {_fmt(y)} 0)\n" for x, y in pts2)
+                              + "".join(f"({_fmt(x)} {_fmt(y)} {_fmt(depth)})\n" for x, y in pts2) + ")\n\n" + FOOTER)
+    (d / "faces").write_text(_poly_header("faceList", "faces") + f"{len(face_lines)}\n(\n" + "\n".join(face_lines) + "\n)\n\n" + FOOTER)
+    (d / "owner").write_text(_poly_header("labelList", "owner", note) + f"{len(owners)}\n(\n" + "\n".join(map(str, owners)) + "\n)\n\n" + FOOTER)
+    (d / "neighbour").write_text(_poly_header("labelList", "neighbour", note) + f"{len(internal)}\n(\n" + "\n".join(str(n) for _o, n, _a, _b in internal) + "\n)\n\n" + FOOTER)
+    _POLY[key] = d
+    return d
+
+
+def place_polymesh(case: Path, mesh: "Mesh") -> None:
+    """constant/polyMesh/{points, faces, owner, neighbour} of the replica in `case` (a hard link to the cached file where the file system allows, else a copy)."""
+    dst = Path(case) / "constant" / "polyMesh"
+    dst.mkdir(parents=True, exist_ok=True)
+    src = polymesh_dir(mesh.tag, mesh.depth)
+    for name in ("points", "faces", "owner", "neighbour"):
+        t = dst / name
+        if t.exists():
+            t.unlink()
+        try:
+            os.link(src / name, t)
+        except OSError:
+            shutil.copyfile(src / name, t)
+
+
+# ---------------------------------------------------------------------------------------------------- the section's face fluxes (FAIL 6 test data; NOT physics)
+def planted_section(sec: dict, n_internal: int, q_rel: float, vs_ms: float = 0.0, wall_rows: int = 0, vs_wall_ms: float = 0.0, gap: dict = None):
+    """The internal-face lists (phi, phiSkelOwn) of a write whose only non-zero fluxes sit on the section S: every other internal face is 0 (the assessor reads none of them).
+      the plug (c ~ 1) carries the RELATIVE flux q_rel (m3/s, spread by face area: phi - phiSkelOwn per face) and the skeleton velocity vs_ms (m/s) on every face except the `wall_rows`
+      faces at each end, whose skeleton velocity is vs_wall_ms;
+      gap = {face_position: flux_m3_s} adds a wall-gap flux to the relative flux of that face (position = index in the section, ascending y).
+    phiSkelOwn = sigma * vs * A, phi = phiSkelOwn + rel (rel = sigma * the +x relative flux): the identity of the solver's phi = phiFf phiFluidOwn + phiSf phiSkelOwn with the
+    relative flux written out. Returns (phi, phiSkelOwn)."""
+    nf = len(sec["faces"])
+    atot = math.fsum(sec["area"])
+    phi, sown = [0.0] * n_internal, [0.0] * n_internal
+    for k, (f, sg, a) in enumerate(zip(sec["faces"], sec["sigma"], sec["area"])):
+        wall = k < wall_rows or k >= nf - wall_rows
+        v = vs_wall_ms if wall else vs_ms
+        rel = q_rel * a / atot + (gap.get(k, 0.0) if gap else 0.0)
+        sown[f] = sg * v * a
+        phi[f] = sown[f] + sg * rel
+    return phi, sown
 
 
 COPY_FROM_CHILD = ("child.json", "system/blockMeshDict", "system/controlDict", "system/fvSchemes", "system/fvSolution", "constant/phaseClotProperties", "constant/physicalProperties",
@@ -228,7 +330,7 @@ COPY_FROM_CHILD = ("child.json", "system/blockMeshDict", "system/controlDict", "
 
 def write_session(case: Path, tpl: Path, mesh: Mesh, writes: list, with_zero: bool = True, restart: dict = None, flux: list = None, zero_r=None, phi0: float = 0.45,
                   flux_start: str = "0", log_text: str = "End\n") -> Path:
-    """A returned case. tpl = a GENERATED Y81 child directory (its dictionaries, child.json and 0/p are copied). writes = [{'t', 'r', 'index', and optional 'dg', 'us', 'be',
+    """A returned case. tpl = a GENERATED Y81 child directory (its dictionaries, child.json and 0/p are copied). writes = [{'t', 'r', 'index', and optional 'dg', 'us', 'be', 'phi', 'phi_skel_own' (nInternalFaces lists),
     'theta_c_frac'}], ascending. zero_r = the initial theta/phi0 (default plug_r at shift 0). restart = the restart.json dict (sessions after the first). flux = [(t, inletFlux)]."""
     case = Path(case)
     case.mkdir(parents=True, exist_ok=True)
@@ -241,6 +343,7 @@ def write_session(case: Path, tpl: Path, mesh: Mesh, writes: list, with_zero: bo
     (zero / "C").write_text(field_text("volVectorField", "C", vector_internal([(x, y, 0.0) for x, y in zip(mesh.x, mesh.y)])))
     (zero / "Vc").write_text(field_text("volScalarField", "Vc", scalar_internal([a * mesh.depth for a in mesh.area])))
     shutil.copyfile(tpl / "0" / "p", zero / "p")
+    place_polymesh(case, mesh)
     if with_zero:
         r0 = zero_r if zero_r is not None else plug_r(mesh, 0.0)
         theta0 = [v * phi0 for v in r0]
@@ -249,7 +352,8 @@ def write_session(case: Path, tpl: Path, mesh: Mesh, writes: list, with_zero: bo
         (zero / "Dg").write_text(field_text("volScalarField", "Dg", "uniform 0;"))
         (zero / "Us").write_text(field_text("volVectorField", "Us", "uniform (0 0 0);"))
     for w in writes:
-        write_dir(case / time_name(w["t"]), mesh, w["t"], w.get("index", 1), w["r"], phi0, w.get("dg"), w.get("us"), w.get("be"), w.get("theta_c_frac", 1.0), None, w.get("q"), w.get("gfield"))
+        write_dir(case / time_name(w["t"]), mesh, w["t"], w.get("index", 1), w["r"], phi0, w.get("dg"), w.get("us"), w.get("be"), w.get("theta_c_frac", 1.0), None, w.get("q"), w.get("gfield"),
+                  w.get("phi"), w.get("phi_skel_own"))
     if restart is not None:
         (case / "restart.json").write_text(json.dumps(restart, indent=1) + "\n")
     if flux is not None:

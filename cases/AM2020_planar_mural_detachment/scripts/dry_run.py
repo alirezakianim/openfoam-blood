@@ -1361,6 +1361,12 @@ Y_GATE_REFUSALS = (
      "the drive's u_mean_sim_m_s 0.00125 != centreline/1.5/(S_t/S_L)"),
     ("tau1 is not D0^2 / (pi^2 nu)", lambda c: _y_edit(c, ("y_gate", "gate6", "tau1_s"), 0.0005),
      "gate6.tau1_s 0.0005 != D0^2/(pi^2 nu)"),
+    # case-engineer 41b: the output guard prices a Y child from its MEASURED write (22.694452 MB per 19,728 cells); 400 writes = 9.1 GB > 8.0. The channel constant (19.5 MB / 31,360 cells x 1.274)
+    # priced the same run at 6.1 GB and ACCEPTED it, so this negative can only fire on the repriced guard.
+    ("the Y plug series run to 400 ms (400 writes x 22.7 MB = 9.1 GB against the 8 GB budget)", lambda c: c["series"]["s25_ys794_plug"].update({"end_time_s": 0.40005}),
+     "GB returned if this child SURVIVES"),
+    ("a Y81 child with a blank role text", lambda c: _s16(c, "Y81_YS794_PLUG", role="  "),
+     "must be a non-empty string"),
 )
 
 
@@ -3753,9 +3759,9 @@ def s23_generator_negatives(only: str | None = None) -> None:
         for _g in ("Y80_YS794_FLOW", "Y80_YS850_FLOW"):                       # the flow gates: runTime tau1, 18 tau1 + 2e-5 s
             for _pat in (r"(?m)^writeControl\s+runTime;", r"(?m)^writeInterval\s+0\.00050976;", r"(?m)^endTime\s+0\.00919568;", r"(?m)^purgeWrite\s+0;"):
                 assert re.search(_pat, _top(_g)), (_g, _pat)
-        # the plug child: 185 ms + 5e-5 s, NOT a multiple of the 1 ms write interval (CE ruling, DECISIONS 2026-10-14): the 185th write cannot tie with the stop
+        # the plug child: 100 ms + 5e-5 s (design rev. 2.2 A2; was 185 ms), NOT a multiple of the 1 ms write interval (CE ruling, DECISIONS 2026-10-14): the 100th write cannot tie with the stop
         for _g in ("Y81_YS794_PLUG", "Y81_YS850_PLUG"):
-            for _pat in (r"(?m)^writeControl\s+runTime;", r"(?m)^writeInterval\s+0\.001;", r"(?m)^endTime\s+0\.18505;", r"(?m)^purgeWrite\s+0;"):
+            for _pat in (r"(?m)^writeControl\s+runTime;", r"(?m)^writeInterval\s+0\.001;", r"(?m)^endTime\s+0\.10005;", r"(?m)^purgeWrite\s+0;"):
                 assert re.search(_pat, _top(_g)), (_g, _pat)
         # the YS850 plug is the YS794 plug's dictionaries on the other mesh (BATCH 81, case-engineer 28): the same controlDict, fvSchemes, fvSolution, phaseClotProperties, physicalProperties and momentumTransport
         for _f in ("constant/phaseClotProperties", "constant/physicalProperties", "constant/momentumTransport", "system/controlDict", "system/fvSchemes", "system/fvSolution"):
@@ -3767,7 +3773,7 @@ def s23_generator_negatives(only: str | None = None) -> None:
         _blk = re.findall(r"\n    stopAfterStep\n    \{[^}]*\}", _rtb)
         assert len(_blk) == 1 and "type            stopAtFile;" in _blk[0] and "action          writeNow;" in _blk[0], _blk
         _back = _rtb.replace(_blk[0], "")
-        for _was, _is in (("endTime 0.003;", "endTime 0.18505;"), ("stopTime        1800;", "stopTime        36000;")):
+        for _was, _is in (("endTime 0.003;", "endTime 0.10005;"), ("stopTime        1800;", "stopTime        36000;")):
             assert _back.count(_was) == 1, _was
             _back = _back.replace(_was, _is)
         assert _back == _y81, "RT_B's controlDict differs from the plug child's by more than endTime, the wallBudget stopTime and the stopAfterStep object"
@@ -4082,7 +4088,7 @@ def s19_source_errors_are_case_relative() -> None:
 def y_launch_trees() -> None:
     """THE LAUNCH TREES AS THE NOTEBOOK BUILDS THEM (verification 29, F1): each Colab launch runs create_cases.py with ITS OWN filter and Allrun ends with assess_case.py on that
     tree, not on the full 55-child matrix the other scenarios score (whose clot reference is an earlier channel disc). BATCH 80 launch 1 and launch 2, BATCH 81 launch 1 and launch 2
-    (the two plug chains, STAGED) and BATCH 82 launch 1 and launch 2 (the confirming restart test, the default) are read from the notebook with the selector's parser. Each tree gets every child synthesised as a clean returned run,
+    (the two plug chains, STAGED), BATCH 82 launch 1 and launch 2 (the confirming restart test, VOID) and BATCH 83 launch 1 and launch 2 (its corrected retest, the default) are read from the notebook with the selector's parser. Each tree gets every child synthesised as a clean returned run,
     and assess_case.main must exit 0, write result.json, and carry the y_gate and y_rt blocks; a plug child that wrote no full write adds NO y_plug summary (status NO_WRITES). Before the fix a plug became the clot reference and deformation_table read its
     missing height_m: KeyError, no result.json, INVALID / NO_ASSESSOR_RESULT."""
     import importlib.util
@@ -4092,10 +4098,12 @@ def y_launch_trees() -> None:
     nbs.loader.exec_module(nbsel)
     names = nbsel.notebook_names(nbsel.launch_cell(root_repo / "notebooks" / "AM2020_main_case_colab.ipynb"))
     trees = {"BATCH 80 launch 1": names["LAUNCHES"][80][1][0].split(), "BATCH 80 launch 2": names["LAUNCHES"][80][2][0].split(), "BATCH 81 launch 1": names["LAUNCHES"][81][1][0].split(), "BATCH 81 launch 2": names["LAUNCHES"][81][2][0].split(),
-             "BATCH 82 launch 1": names["LAUNCHES"][82][1][0].split(), "BATCH 82 launch 2": names["LAUNCHES"][82][2][0].split()}
+             "BATCH 82 launch 1": names["LAUNCHES"][82][1][0].split(), "BATCH 82 launch 2": names["LAUNCHES"][82][2][0].split(),
+             "BATCH 83 launch 1": names["LAUNCHES"][83][1][0].split(), "BATCH 83 launch 2": names["LAUNCHES"][83][2][0].split()}
     assert trees["BATCH 80 launch 1"] == ["Y80_YS794_FLOW", "Y80_YS850_FLOW", "Y80_RT_A", "Y80_RT_B"] and trees["BATCH 80 launch 2"] == ["Y80_RT_B"], trees
     assert trees["BATCH 81 launch 1"] == ["Y81_YS794_PLUG"] and trees["BATCH 81 launch 2"] == ["Y81_YS850_PLUG"], trees
     assert trees["BATCH 82 launch 1"] == ["Y80_RT86_B"] and trees["BATCH 82 launch 2"] == ["Y80_RT86_B"], trees
+    assert trees["BATCH 83 launch 1"] == ["Y80_RT86_B", "Y80_RT_A"] and trees["BATCH 83 launch 2"] == ["Y80_RT86_B"], trees       # the continuous arm and leg 1 in ONE launch, in the generator's matrix order
     for label, filt in trees.items():
         with tempfile.TemporaryDirectory(prefix="am2020-ylaunch-") as tmp:
             root = build_case(Path(tmp))
@@ -4160,15 +4168,26 @@ def y_plug_chain_scenarios() -> None:
             spec = json.loads((tpl / "child.json").read_text())
             mesh = PS.Mesh(tag, spec)
             facts = PS.facts_for(tag)
-            m = PS.model_numbers(tag, "mesh", "cap", 1.0)
+            m = PS.model_numbers(tag, "mesh", "p35_75", 1.0)               # physics 35's lumped model of the 75% plug (design rev. 2.2 A1), mesh film
             tau_a = facts["lam"] * facts["D0"] / m["V0"] + facts["tau_v"]
             k_end = int(math.ceil((m["t_c"] + 2.0 * tau_a + 0.004) / 1e-3))
             disp_at = PS.model_displacement(m)
+            rate_at = PS.model_rate(m)
             r_zero = PS.plug_r(mesh, 0.0)
             join_k, join_dt = 30, 4.1e-4
+            # FAIL 6 (rev. 2.2.2): the section S read from the case's own polyMesh, and the fluxes PLANTED on it (a correct STUCK: the plug's relative flux is the Darcy seepage f = 3.4e-3 Q0,
+            # the skeleton moves at the model rate; no gap). The gap variant drains the -y wall row and lets a 0.02 Q0 flux through it from the restart point on.
+            _stub = tmp / "stub"
+            PS.place_polymesh(_stub, mesh)
+            sec = PA.read_poly_section(_stub, mesh.D0, mesh.depth, mesh.xt * mesh.D0, mesh.x, mesh.y)
 
-            def write_for(t, idx):
-                return {"t": t, "r": PS.plug_r(mesh, disp_at(t) / mesh.D0), "index": idx}
+            def write_for(t, idx, gap=False):
+                r = PS.plug_r(mesh, disp_at(t) / mesh.D0)
+                if gap:
+                    for cc in (sec["own"][0], sec["nei"][0]):
+                        r[cc] = 0.0
+                phi, sown = PS.planted_section(sec, sec["n_internal"], 3.4e-3 * facts["q0"], vs_ms=rate_at(t), wall_rows=8, vs_wall_ms=rate_at(t), gap={0: 0.02 * facts["q0"]} if gap else None)
+                return {"t": t, "r": r, "index": idx, "phi": phi, "phi_skel_own": sown}
             w1 = [write_for(k * 1e-3, k) for k in range(1, join_k + 1)]
             t_join = join_k * 1e-3 + join_dt
             w1.append(write_for(t_join, join_k + 1))
@@ -4176,6 +4195,8 @@ def y_plug_chain_scenarios() -> None:
             jname = PS.time_name(t_join)
             w2 = [dict(w1[-1])] + [write_for(k * 1e-3, k + 2) for k in range(join_k + 1, k_end + 1)]
             s2 = PS.write_session(tmp / "s2", tpl, mesh, w2, zero_r=r_zero, restart=PS.restart_record(s1, jname, w1[-1]["index"]))
+            w2g = [dict(w1[-1])] + [write_for(k * 1e-3, k + 2, gap=True) for k in range(join_k + 1, k_end + 1)]
+            s2g = PS.write_session(tmp / "s2_gapflux", tpl, mesh, w2g, zero_r=r_zero, restart=PS.restart_record(s1, jname, w1[-1]["index"]))
             # session 1 alone: not yet readable
             rc, out = cli(s1)
             assert rc == 3 and out["status"] == "NOT_READABLE_YET", (tag, "session 1 alone", rc, out.get("status"), out.get("why"))
@@ -4192,6 +4213,19 @@ def y_plug_chain_scenarios() -> None:
             assert rc == 0 and out["status"] == "VERDICT" and out["verdict"] == "STUCK" and out["final"] and out["sessions"] == 2, (tag, rc, out.get("status"), out.get("verdict"), out.get("why"))
             # the STUCK law is laid on BOTH meshes; the YS794 chain is predicted STUCK (agrees), the YS850 chain SQUEEZE (a STUCK there DISAGREES with its prediction and the record says so)
             assert out["predicted"] == {"YS794": "STUCK", "YS850": "SQUEEZE"}[tag] and out["agrees_with_prediction"] is (tag == "YS794"), (tag, out.get("agrees_with_prediction"), out.get("predicted"))
+            # FAIL 6 on the planted section: silent at every valid post-contact write (Q_np/Q0 = the planted wall-row fluxes only), and the reading names it
+            f6 = out["fail"]["F6_bypass"]
+            assert f6["fired"] is False and f6["evaluated"] > 40 and f6["invalid_writes"] == 0 and f6["max_bypass"] < 5e-4 and "F6_bypass" not in out["fired"], (tag, out["fired"], f6)       # (F3 fires on this fixture: a rigid shift does not conserve the content; the assessor check conserves it)
+            assert out["film_branch"] == "mesh film" and out["record_complete"] is False, (tag, out.get("film_branch"), out.get("record_complete"))
+            if tag == "YS794":
+                assert out["reading"].startswith("STUCK as predicted; FAIL 6 silent at"), out["reading"]
+            else:
+                assert out["reading"].startswith("STUCK against the prediction SQUEEZE: FALSIFIES physics 19") and "Q_np <= 0.005 Q0" in out["reading"], out["reading"]
+            # the SAME chain with a 0.02 Q0 flux through a drained wall row from the restart point on: FAIL 6 FIRES, the verdict does not change, the reading says the run is not a clean test
+            rc, outg = cli(s1, s2g)
+            assert rc == 0 and outg["verdict"] == "STUCK" and outg["fail"]["F6_bypass"]["fired"] is True and outg["fail"]["F6_bypass"]["at_t"] > t_join, (tag, rc, outg["fail"]["F6_bypass"])
+            assert "F6_bypass" in outg["fired"] and "BUT FAIL 6 FIRED" in outg["reading"] and "as predicted" not in outg["reading"] and "FALSIFIES" not in outg["reading"], outg["reading"]
+            assert 0.02 < outg["fail"]["F6_bypass"]["max_bypass"] < 0.026, outg["fail"]["F6_bypass"]
             res = PA.assess_case_dirs([s1, s2], spec, params)
             ts = res["series_columns"]["t"]
             assert all(abs((b - a) - 1e-3) < 1e-9 for a, b in zip(ts, ts[1:])) and ts[0] == 0.0 and len(ts) == len(set(ts)), (tag, ts[28:34])
@@ -4208,8 +4242,8 @@ def y_plug_chain_scenarios() -> None:
             assert rc == 1 and out["status"] == "CHAIN_REFUSED" and "gap" in out["why"], (tag, rc, out.get("status"), out.get("why"))
             rc, out = cli(s2, s1)
             assert rc == 1 and out["status"] == "CHAIN_REFUSED", (tag, rc, out.get("status"))
-            print(f"   {child}: 2-session chain ({len(w1)} + {len(w2)} writes, join at {t_join:.5f} s) -> exit 0, VERDICT STUCK final, R {R:.3f} (model {math.exp(-tau_a / m['tau']):.3f}); "
-                  f"session 1 alone exit 3, session 2 alone CHAIN_NEEDED, a cold second session / a gap / swapped sessions exit 1 CHAIN_REFUSED")
+            print(f"   {child}: 2-session chain of the 75% plug ({len(w1)} + {len(w2)} writes, join at {t_join:.5f} s) -> exit 0, VERDICT STUCK final, R {R:.3f} (model {math.exp(-tau_a / m['tau']):.3f}), FAIL 6 silent at {f6['evaluated']} writes "
+                  f"(a 0.02 Q0 drained-row gap fires it: Q_np/Q0 {outg['fail']['F6_bypass']['max_bypass']:.4f}); session 1 alone exit 3, session 2 alone CHAIN_NEEDED, a cold second session / a gap / swapped sessions exit 1 CHAIN_REFUSED")
 
 
 def reference_library_wiring() -> None:
@@ -4225,8 +4259,8 @@ def reference_library_wiring() -> None:
     spec.loader.exec_module(nbsel)
     text = nbsel.source_of(root / "notebooks" / "AM2020_main_case_colab.ipynb")
     batch, batches = nbsel.parse(text)
-    # BATCH 82 (the confirming restart test) is the default, the newest entry; BATCH 81 (the plug chains) stays STAGED: built and checked, but never selectable as the default (check_notebook_batch_selector.STAGED)
-    assert batch == 82 and max(batches) == 82 and nbsel.STAGED == (81,), (batch, max(batches), nbsel.STAGED)
+    # BATCH 83 (the corrected restart retest) is the default, the newest entry; BATCH 81 (the plug chains) stays STAGED: built and checked, but never selectable as the default (check_notebook_batch_selector.STAGED)
+    assert batch == 83 and max(batches) == 83 and nbsel.STAGED == (81,), (batch, max(batches), nbsel.STAGED)
     assert nbsel.check_default_batch(text) == (batch, batches)
     # the build script re-pins by exactly these two patterns; a second match would break the release
     assert len(re.findall(r"EXPECTED_REPO_DIGEST = '[0-9a-f]{64}'", text)) == 1
@@ -4378,6 +4412,19 @@ def reference_library_wiring() -> None:
     assert any("stops after step 86" in _l for _l in by[(82, 1)]["printed"]) and any("stops after step 105" in _l for _l in by[(82, 2)]["printed"]), "BATCH 82 prints the two stops"
     refused(need("Y80_RT86_B", controls), {"p2prime": "", "s22": "", "baseline": "/x"}, "built for nothing")
     check(need("Y80_RT86_B", controls), {"p2prime": "", "s22": "", "baseline": ""})
+    # BATCH 83 (the corrected restart retest, case-engineer 36): launch 1 = the continuous arm Y80_RT_A AND Y80_RT86_B's leg 1 in ONE cold session (the matrix order: Y80_RT86_B first), launch 2 = Y80_RT86_B's leg 2 (a second
+    # runner invocation restarted from launch 1's tarball); 1-core runtime, no reference library, --mkl-threads 1, no --mkl-cbwr. Y80_RT86_B is the one child in two launches by design (RESTART_LAUNCHES).
+    assert [k for k in by if k[0] == 83] == [(83, 1), (83, 2)], sorted(by)
+    assert by[(83, 1)]["children"] == ["Y80_RT86_B", "Y80_RT_A"] and by[(83, 2)]["children"] == ["Y80_RT86_B"], (by[(83, 1)]["children"], by[(83, 2)]["children"])
+    for _n in (1, 2):
+        assert need(" ".join(by[(83, _n)]["children"]), controls) == set() and by[(83, _n)]["library_passed"] == [], _n
+        _a83 = by[(83, _n)]["argv"]
+        assert "--mkl-cbwr" not in _a83 and _a83[_a83.index("--mkl-threads") + 1] == "1" and not any(f in _a83 for f in ("--baseline-solver", "--s22-solver", "--p2prime-solver")), (_n, _a83)
+        assert _a83[_a83.index("--only") + 1].split() == by[(83, _n)]["children"], (_n, _a83)
+    assert any("restarted from" in _l and "--restart-from" in _l for _l in by[(83, 2)]["printed"]) and not any("restarted from" in _l for _l in by[(83, 1)]["printed"]), "BATCH 83 launch 2 is the restart, launch 1 a cold start"
+    assert any("stops after step 86" in _l and "ONE session" in _l for _l in by[(83, 1)]["printed"]) and any("stops after step 105" in _l and "--run-b1" in _l for _l in by[(83, 2)]["printed"]), "BATCH 83 prints the two stops and the three-session scoring"
+    refused(need("Y80_RT86_B Y80_RT_A", controls), {"p2prime": "", "s22": "", "baseline": "/x"}, "built for nothing")
+    check(need("Y80_RT86_B Y80_RT_A", controls), {"p2prime": "", "s22": "", "baseline": ""})
     # BATCH 81 (the plug chains, STAGED): TWO launches, one chain each, on the 1-core runtime, no reference library. Each launch is built twice: cold (session 1, RESTART_FROM empty) and as a later session of its chain
     # (RESTART_FROM = the previous session's tarball): the restarted argv carries --restart-from and says RESTARTED, the cold one neither; both pass --mkl-threads 1 and no --mkl-cbwr.
     assert [k for k in by if k[0] == 81] == [(81, 1), (81, 2)] and sorted(k for k in by_restart if k[0] == 81) == [(81, 1), (81, 2)], (sorted(by), sorted(by_restart))
@@ -6048,8 +6095,11 @@ def main() -> int:
         # BATCH 80's two launches (the flow gates and the restart pair) stay exercised while a later batch is the default
         run_direct("batch_80_launch_filters_generate", lambda: launch_filters_generate(nbsel, 80, _filtered_generation))
     if _batch != 82:
-        # BATCH 82's two launches (the confirming restart test: leg 1, then leg 2, the same child) stay exercised while a later batch is the default
+        # BATCH 82's two launches (the confirming restart test, VOID: leg 1, then leg 2, the same child) stay exercised while a later batch is the default
         run_direct("batch_82_launch_filters_generate", lambda: launch_filters_generate(nbsel, 82, _filtered_generation))
+    if _batch != 83:
+        # BATCH 83's two launches (the corrected retest: the continuous arm and leg 1 in one launch, then leg 2) stay exercised while a later batch is the default
+        run_direct("batch_83_launch_filters_generate", lambda: launch_filters_generate(nbsel, 83, _filtered_generation))
     # BATCH 81 (the plug chains, STAGED: never the default): each chain's filter generates by itself and in the notebook's order, whichever batch BATCH selects
     run_direct("batch_81_launch_filters_generate", lambda: launch_filters_generate(nbsel, 81, _filtered_generation))
 
@@ -6059,7 +6109,7 @@ def main() -> int:
         # carries --mkl-threads 1 and NO --mkl-cbwr, design section 12.1), and that filter generates by itself, as the cell hands it to Allrun.
         argvs = nbsel.check_one_core(nbsel.launch_cell(
             Path(__file__).resolve().parents[3] / "notebooks" / "AM2020_main_case_colab.ipynb"), nbsel.CONTROLS)
-        assert sorted(argvs) == [76, 77, 78, 79, 80, 81, 82], sorted(argvs)
+        assert sorted(argvs) == [76, 77, 78, 79, 80, 81, 82, 83], sorted(argvs)
         filt = ["P73_G4_r3_40"]
         rc, built, last = _filtered_generation(filt)
         assert rc == 0, f"the 1-core stand-in filter was refused: {last}"

@@ -29,9 +29,11 @@ cases/AM2020_planar_mural_detachment/scripts/seed_theta_peak.py
 cases/AM2020_planar_mural_detachment/scripts/shrink_returned_run_colab.py
 cases/AM2020_planar_mural_detachment/scripts/step_stop_watcher.py
 cases/AM2020_planar_mural_detachment/scripts/y_gate/fixtures/YS794_cellinfo_2d.npy
+cases/AM2020_planar_mural_detachment/scripts/y_gate/fixtures/YS794_cellpts_2d.npy
 cases/AM2020_planar_mural_detachment/scripts/y_gate/fixtures/YS794_cells_2d.npy
 cases/AM2020_planar_mural_detachment/scripts/y_gate/fixtures/YS794_outlet_faces_2d.npy
 cases/AM2020_planar_mural_detachment/scripts/y_gate/fixtures/YS850_cellinfo_2d.npy
+cases/AM2020_planar_mural_detachment/scripts/y_gate/fixtures/YS850_cellpts_2d.npy
 cases/AM2020_planar_mural_detachment/scripts/y_gate/fixtures/YS850_cells_2d.npy
 cases/AM2020_planar_mural_detachment/scripts/y_gate/fixtures/YS850_outlet_faces_2d.npy
 cases/AM2020_planar_mural_detachment/scripts/y_gate/fixtures/y_cells_2d.npy

@@ -27,7 +27,18 @@ THE VERDICT at t_c + 2 tau_A (R = V_b(t_c + 2 tau_A)/V_b(t_c + tau_A)):
   STUCK    R <= stuck_r_max
   SQUEEZE  R >= squeeze_r_min AND V_b(2 tau_A) >= squeeze_vb_min AND for ONE daughter dM/dt >= squeeze_dm_min with the other's slope <= 1/3 of it (D8)
   else INDETERMINATE; re-read at t_c + 3 tau_A with R' = V_b(3 tau_A)/V_b(2 tau_A), the same rule on the slopes of [2 tau_A, 3 tau_A]; INDETERMINATE at both is final (D6).
+  THE HORIZON (design rev. 2.2 A3.2, rev. 2.2.1 items 3-4): on a COMPLETE record (the last write >= the controlDict endTime - 1 write interval) whose 2 tau_A read lies past the last
+  centred fit, the read is made at that last fit time t_r: R_h = V_b(t_r)/V_b(t_r - tau_A), allowed only if t_r - tau_A >= t_c + horizon_lag_min_tau_a * tau_A; the same thresholds.
+  Otherwise, and whenever the 3 tau_A re-read lies past the last fit, INDETERMINATE is FINAL and is reported as "horizon". An INCOMPLETE record is NOT_READABLE_YET.
+  THE CONTACT WINDOW (rev. 2.2.2 item 4): a rate (V_b, R, R_h, any centred slope) is read at a fit centre t_i only if the whole fit window lies at or after t_c.
 THE 6 FAIL ITEMS (C5, D1, D2) are evaluated on every write and reported with the write that fired them; they never change the verdict, they say whether it can be trusted.
+  FAIL 6 (rev. 2.2.2, physics 40): Q_S = sum over the faces of ONE x-normal column S of the straight parent, at or upstream of the fillet tangent, of
+  sigma_f (phi_f - c_f phiSkelOwn_f), c = min(theta/phi0, 1) interpolated to the face. Q_S = Q_np + D_c: Q_np = sum sigma (1 - c) phi is the flux through the NON-plug fraction,
+  D_c = sum sigma c (phi - phiSkelOwn) the plug-weighted Darcy flux. FAIL if Q_np > fail_bypass_max Q0 at a VALID write (both centreline cells of S at theta/phi0 >=
+  bypass_core_r_min) with t_c <= t <= t_read (rev. 2.2.3). D_c and Q_S are REPORTED: a real compaction drains real Darcy flux. Reads phi, phiSkelOwn, thetaC, thetaH and constant/polyMesh; NOT U, Vs or Us.
+  THE F6 WINDOW (rev. 2.2.3, verification 42 W1): t_read is the time the verdict was actually read at: the reading that decided (t_c + 2 tau_A, the horizon read t_r, or the 3 tau_A re-read), or, for an
+  INDETERMINATE-final run, the last VALID read (a read with a ratio R); with no verdict yet (NOT_READABLE_YET, an INDETERMINATE that is not final, any earlier status) or no valid read the window is open
+  (t_read None: every write from t_c on). Q_np at later writes is REPORTED as F6_bypass.post_verdict_bypass, never failed: after the read the thin rear seal may be lost as the plug advances (physics 35).
 """
 from __future__ import annotations
 
@@ -45,16 +56,16 @@ import y_plug  # noqa: E402
 
 STATUSES = ("VERDICT", "NOT_READABLE_YET", "NO_CONTACT", "NOT_ASSESSABLE", "NO_WRITES")
 FAIL_ITEMS = ("F1_weld", "F2_overspeed_or_flux", "F3_overfill_or_drift", "F4_damage_or_stretch", "F5_split", "F6_bypass")
-REQUIRED_FIELDS = ("thetaC", "thetaH", "Dg", "Us", "be", "phi", "U", "p")      # a full write the assessor can reduce (restart_driver.classify holds the rest)
+REQUIRED_FIELDS = ("thetaC", "thetaH", "Dg", "Us", "be", "phi", "phiSkelOwn", "U", "p")      # a full write the assessor can reduce (restart_driver.classify holds the rest)
 PLUG_SERIES = ("s25_ys794_plug", "s25_ys850_plug")
 
 # the keys of the controls block `y_plug_verdict` and their types (number = int or float, not bool). The CHECKED RANGES live in check_params.
 PARAM_NUMBERS = (
     "approach_start_s", "approach_end_margin_s", "approach_min_writes", "weight_lo", "weight_hi", "bulk_theta_over_phi0", "fit_writes", "slope_min_writes",
     "stuck_r_max", "squeeze_r_min", "squeeze_vb_min_ubar", "squeeze_dm_min_d0sq_per_ms", "squeeze_other_slope_fraction_max",
-    "film_mesh_v0_min_ubar", "film_sqrt_k_v0_max_ubar",
+    "film_mesh_v0_min_ubar", "film_sqrt_k_v0_max_ubar", "horizon_lag_min_tau_a",
     "fail_weld_vb_ubar", "fail_overspeed_vb_ubar", "fail_content_drift_rel", "fail_dg_max", "fail_bulk_lambda1_max", "fail_split_each_min_d0sq",
-    "fail_bypass_max", "fail_bypass_vb_below_ubar", "bypass_slab_width_d0",
+    "fail_bypass_max", "bypass_core_r_min",
     "a_symmetry_flag", "tail_rt_min", "tail_q_outside_min", "tail_q_body_max", "spacing_min_fraction", "spacing_max_fraction")
 SERIES_KEYS = ("predicted", "lambda_over_crit", "gate5_fv_bias", "gate5_tol", "flow_gate_series")
 
@@ -100,14 +111,20 @@ def check_params(p: dict) -> None:
         raise ValueError("y_plug_verdict: stuck_r_max < squeeze_r_min (the INDETERMINATE band lies between them)")
     if not 0.0 < p["squeeze_other_slope_fraction_max"] < 1.0:
         raise ValueError("y_plug_verdict.squeeze_other_slope_fraction_max must lie in (0, 1)")
-    if not (p["film_sqrt_k_v0_max_ubar"] < p["film_mesh_v0_min_ubar"]):
-        raise ValueError("y_plug_verdict: film_sqrt_k_v0_max_ubar < film_mesh_v0_min_ubar")
+    if not (p["film_sqrt_k_v0_max_ubar"] <= p["film_mesh_v0_min_ubar"]):
+        raise ValueError("y_plug_verdict: film_sqrt_k_v0_max_ubar <= film_mesh_v0_min_ubar (equal is the single cut of rev. 2.2 A3.1: V0 at or above it is read as the mesh film, below it as the sqrt(k) film; the 'between' label is then empty)")
+    if not (0.0 < p["horizon_lag_min_tau_a"] <= 1.0):
+        raise ValueError("y_plug_verdict.horizon_lag_min_tau_a must lie in (0, 1] (1 is the ordinary 2 tau_A read's own lag)")
+    if not (0.0 < p["bypass_core_r_min"] <= 1.0):
+        raise ValueError("y_plug_verdict.bypass_core_r_min must lie in (0, 1] (the centreline cells of the FAIL 6 section hold plug at or above this theta/phi0)")
+    if not (0.0 < p["fail_bypass_max"] < 1.0):
+        raise ValueError("y_plug_verdict.fail_bypass_max must lie in (0, 1) (a fraction of Q0)")
     if not (0.0 < p["tail_q_body_max"] < p["tail_q_outside_min"] < 1.0):
         raise ValueError("y_plug_verdict: 0 < tail_q_body_max < tail_q_outside_min < 1 (the clot body, the middle band and the cells outside the body are disjoint populations of q)")
     if not (0.0 < p["spacing_min_fraction"] < 1.0 < p["spacing_max_fraction"]):
         raise ValueError("y_plug_verdict: 0 < spacing_min_fraction < 1 < spacing_max_fraction (a write interval is 1)")
-    if not p["fail_weld_vb_ubar"] < p["fail_bypass_vb_below_ubar"] < p["fail_overspeed_vb_ubar"]:
-        raise ValueError("y_plug_verdict: fail_weld_vb_ubar < fail_bypass_vb_below_ubar < fail_overspeed_vb_ubar")
+    if not p["fail_weld_vb_ubar"] < p["fail_overspeed_vb_ubar"]:
+        raise ValueError("y_plug_verdict: fail_weld_vb_ubar < fail_overspeed_vb_ubar")
     s = p["series"]
     if not (isinstance(s, dict) and sorted(s) == sorted(PLUG_SERIES)):
         raise ValueError(f"y_plug_verdict.series must hold exactly {list(PLUG_SERIES)}")
@@ -169,6 +186,50 @@ def centred_slopes(ts, xs, width):
     return [(ts[i], ls_slope(ts[i - h:i + h + 1], xs[i - h:i + h + 1])) for i in range(h, len(ts) - h)]
 
 
+def post_contact_slopes(ts, xs, width, t_c):
+    """centred_slopes restricted to the fits whose WHOLE window lies at or after contact (rev. 2.2.2 item 4): the centre i enters only if ts[i - width//2] >= t_c. A window that
+    straddles t_c differences across the contact kink of V_b (+0.06 / -0.068 ubar on a correct STUCK, case-engineer 39): a validity condition of the finite difference, not a
+    threshold. The last centre stays ts[-1 - width//2] (98 ms of a 100 ms record at width 5)."""
+    h = width // 2
+    return [(ts[i], ls_slope(ts[i - h:i + h + 1], xs[i - h:i + h + 1])) for i in range(h, len(ts) - h) if ts[i - h] >= t_c]
+
+
+def record_complete(ts, facts, interval) -> bool:
+    """The merged record reaches the child's controlDict endTime within one write interval (rev. 2.2.1 item 4): its last write >= endTime - 1 interval. facts['end_time'] is the
+    LAST session's system/controlDict endTime (Geo.end_time); without it the record is never complete (the horizon rules are then not applied)."""
+    end = facts.get("end_time")
+    return end is not None and bool(ts) and ts[-1] >= end - interval
+
+
+def horizon_read(v5t, v5v, ts, recs, t_c, tau_a, params) -> dict:
+    """The read at the last centred fit t_r when t_c + 2 tau_A lies past it (rev. 2.2 A3.2, rev. 2.2.1 item 3): R_h = V_b(t_r)/V_b(t_r - tau_A), the same classify() on the slopes of
+    [t_r - tau_A, t_r]. Admissible only if t_r - tau_A >= t_c + horizon_lag_min_tau_a * tau_A (STUCK: R_h = exp(-tau_A/tau) whatever the lag; SQUEEZE: the plateau); otherwise
+    INDETERMINATE (final, 'horizon'). There is no re-read after a horizon read."""
+    t_r = v5t[-1]
+    t_lo = t_r - tau_a
+    lag = (t_lo - t_c) / tau_a
+    entry = {"label": "horizon", "t_prev": t_lo, "t_read": t_r, "lag_tau_a": lag, "lag_min_tau_a": params["horizon_lag_min_tau_a"]}
+    if not lag >= params["horizon_lag_min_tau_a"]:
+        entry.update(V_prev_ubar=None, V_ubar=None, verdict="INDETERMINATE",
+                     why=f"the horizon read at t = {t_r!r} would difference over the lag {lag:.3f} tau_A after contact, below the {params['horizon_lag_min_tau_a']} tau_A the read needs: no verdict inside the run")
+        return entry
+    va, vb = interp(v5t, v5v, t_lo), v5v[-1]
+    entry.update(V_prev_ubar=va, V_ubar=vb)
+    if va is None:
+        entry.update(verdict="INDETERMINATE", why=f"no centred fit at t = {t_lo!r} for the horizon read")
+        return entry
+    r = (vb / va) if va > 0.0 else None
+    win = [(t, r_) for t, r_ in zip(ts, recs) if t_lo <= t <= t_r]
+    nwin = len(win)
+    sp = ls_slope([t for t, _ in win], [x["Mp"] for _, x in win]) if nwin >= 3 else None
+    sm = ls_slope([t for t, _ in win], [x["Mm"] for _, x in win]) if nwin >= 3 else None
+    sp = sp / 1000.0 if sp is not None else None
+    sm = sm / 1000.0 if sm is not None else None
+    v, why = classify(r, vb, sp, sm, nwin, params)
+    entry.update(R=r, n_window=nwin, dMp_dt=sp, dMm_dt=sm, verdict=v, why=why)
+    return entry
+
+
 # ------------------------------------------------------------------------------------------------------------- the geometry of one case
 class Geo:
     """Everything about the mesh and the child that the reduction needs, read ONCE from the case (0/C, 0/Vc, system/blockMeshDict, constant/phaseClotProperties, 0/p)
@@ -217,15 +278,18 @@ class Geo:
         self.lam = self.p_in / self.G                            # Lambda (physics 24): has no plug term
         clot = spec["clot"]
         self.gap_m = float(clot["gap_D0"]) * self.D0
-        self.seal_straight_m = float(clot["resolved_D0"]["seal_straight_arithmetic_D0"]) * self.D0
-        self.slab_x0 = self.xt - 0.5 * self.seal_straight_m      # the centre of the straight seal at t = 0
         self.write_interval = float(spec["write_interval_s"])
+        cd = (case / "system" / "controlDict").read_text()
+        m_end = re.search(r"(?m)^\s*endTime\s+([-+0-9.eE]+)\s*;", re.sub(r"//[^\n]*", "", cd))
+        if not m_end:
+            raise ValueError(f"{case / 'system' / 'controlDict'}: no endTime entry (the completeness test of the record reads it)")
+        self.end_time = float(m_end.group(1))                    # the child's own endTime: the horizon and completeness rules of design rev. 2.2.1 item 4
         self.series = spec["series"]
         self.child_id = spec["child_id"]
         series_facts = params["series"][self.series]
         self.q0 = self.ubar * (1.0 + series_facts["gate5_fv_bias"]) * self.D0 * self.depth      # the clot-free flux at this drive (m3/s)
         self.q0_tol = series_facts["gate5_tol"]
-        self.slab_w = params["bypass_slab_width_d0"] * self.D0
+        self.section = read_poly_section(case, self.D0, self.depth, self.xt, self.x, self.y)        # FAIL 6's section S, read once
 
 
 def _dict_number(text: str, key: str) -> float:
@@ -346,9 +410,116 @@ def tail_record(law, be, gfield, q, x, y, params: dict) -> dict:
             "n_outside": counts["out"], "n_body": counts["body"], "n_mid": counts["mid"], "gmax": gmax}
 
 
+# ------------------------------------------------------------------------------------------------------------- FAIL 6: the face-flux section (physics 40)
+def _poly_list(path: Path, what: str) -> tuple:
+    """(count, text after the opening parenthesis) of a polyMesh list file (ascii; comments and the FoamFile header skipped). A binary file is refused."""
+    text = Path(path).read_text()
+    hdr = re.search(r"FoamFile\s*\{([^}]*)\}", text)
+    if not hdr or not re.search(r"\bformat\s+ascii\s*;", hdr.group(1)):
+        raise ValueError(f"{path}: not an ascii OpenFOAM {what} file (the assessor reads ascii polyMesh only)")
+    body = re.sub(r"//[^\n]*", "", text[hdr.end():])
+    m = re.search(r"(?m)^\s*(\d+)\s*\(", body)
+    if not m:
+        raise ValueError(f"{path}: no list of {what}")
+    return int(m.group(1)), body[m.end():]
+
+
+def read_poly_section(case: Path, D0: float, depth: float, xt: float, cx, cy) -> dict:
+    """The section S of FAIL 6 from constant/polyMesh {points, faces, owner, neighbour} and the cell centres (0/C): the x-normal INTERNAL-face column of the straight parent with the
+    largest x <= x_t (the fixed fillet tangent) whose faces span wall to wall (the sum of |Sf_x| is the parent cross-section D0 * depth, to 1e-6). -> {'x', 'faces' (face indices,
+    ascending y), 'area' (|Sf_x|, m2), 'sigma' (sign Sf_x), 'own', 'nei', 'w' (the solver's linear weight of the owner, OF-13 surfaceInterpolation::makeWeights), 'core' (the cells on either side of
+    the centreline face(s)), 'n_internal'}. Face centres and areas follow OF-13 face::areaAndCentre (a planar quad: the exact area vector and centroid).
+    Refused (ValueError): no ascii polyMesh, a face list that does not match the owner/neighbour lists, no spanning column at or upstream of x_t, a face whose Sf does not point
+    owner -> neighbour (a mesh file that is not this mesh)."""
+    pm = Path(case) / "constant" / "polyMesh"
+    n_nei, body = _poly_list(pm / "neighbour", "neighbour list")
+    nei = [int(t) for t in body[:body.index(")")].split()]
+    if len(nei) != n_nei:
+        raise ValueError(f"{pm / 'neighbour'}: {len(nei)} labels, header {n_nei}")
+    n_own, body = _poly_list(pm / "owner", "owner list")
+    own = [int(t) for t in body[:body.index(")")].split()][:n_nei]
+    n_pts, body = _poly_list(pm / "points", "point list")
+    pts = [(float(a), float(b), float(c)) for a, b, c in (m_.group(1).split() for m_ in re.finditer(r"\(([^()]*)\)", body))][:n_pts]
+    if len(pts) != n_pts:
+        raise ValueError(f"{pm / 'points'}: {len(pts)} points, header {n_pts}")
+    n_f, body = _poly_list(pm / "faces", "face list")
+    faces = []
+    for m_ in re.finditer(r"\d+\(([^()]*)\)", body):
+        faces.append([int(t) for t in m_.group(1).split()])
+        if len(faces) == n_nei:
+            break
+    if len(faces) != n_nei or n_f < n_nei or n_own < n_nei:
+        raise ValueError(f"{pm}: {len(faces)} internal faces read, the neighbour list has {n_nei} (faces header {n_f}, owner header {n_own})")
+    tol = 1e-9 * D0
+    cols: dict = {}
+    for i, f in enumerate(faces):
+        if len(f) != 4:
+            continue
+        p0, p1, p2, p3 = (pts[k] for k in f)
+        if max(abs(p1[0] - p0[0]), abs(p2[0] - p0[0]), abs(p3[0] - p0[0])) > tol:
+            continue                                                         # not parallel to the y-z plane
+        d1 = (p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2])                    # the diagonals: Sf = (1/2) d1 x d2 (planar quad)
+        d2 = (p3[0] - p1[0], p3[1] - p1[1], p3[2] - p1[2])
+        sf = (0.5 * (d1[1] * d2[2] - d1[2] * d2[1]), 0.5 * (d1[2] * d2[0] - d1[0] * d2[2]), 0.5 * (d1[0] * d2[1] - d1[1] * d2[0]))
+        cols.setdefault(round(p0[0] / tol), []).append((i, sf, (sum(pts[k][0] for k in f) / 4, sum(pts[k][1] for k in f) / 4, sum(pts[k][2] for k in f) / 4)))
+    want = D0 * depth
+    best = None
+    for key, col in cols.items():
+        if key * tol > xt + tol:
+            continue
+        if abs(math.fsum(abs(sf[0]) for _, sf, _ in col) - want) > 1e-6 * want:
+            continue
+        if best is None or key > best[0]:
+            best = (key, col)
+    if best is None:
+        raise ValueError(f"{pm}: no x-normal column of internal faces at or upstream of x_t = {xt!r} spans the parent cross-section D0 * depth = {want!r} m2 (FAIL 6 has no section)")
+    col = sorted(best[1], key=lambda e: e[2][1])
+    sigma, own_c, nei_c, w, fidx = [], [], [], [], []
+    for i, sf, cf in col:
+        o, n_ = own[i], nei[i]
+        co, cn = (cx[o], cy[o], 0.0), (cx[n_], cy[n_], 0.0)
+        sfd_o = abs(sf[0] * (cf[0] - co[0]) + sf[1] * (cf[1] - co[1]) + sf[2] * (cf[2] - co[2]))
+        sfd_n = abs(sf[0] * (cn[0] - cf[0]) + sf[1] * (cn[1] - cf[1]) + sf[2] * (cn[2] - cf[2]))
+        if not sf[0] * (cn[0] - co[0]) + sf[1] * (cn[1] - co[1]) > 0.0:
+            raise ValueError(f"{pm}: internal face {i} of the section has Sf.(C_N - C_O) <= 0 (Sf must point owner -> neighbour): the face list does not belong to this case's 0/C")
+        sigma.append(1.0 if sf[0] > 0.0 else -1.0)
+        own_c.append(o)
+        nei_c.append(n_)
+        w.append(sfd_n / (sfd_o + sfd_n))
+        fidx.append(i)
+    ymin = min(abs(cf[1]) for _, _, cf in col)
+    core = sorted({c for (i, _, cf), o, n_ in zip(col, own_c, nei_c) if abs(cf[1]) <= ymin + tol for c in (o, n_)})
+    return {"x": best[0] * tol, "faces": fidx, "sigma": sigma, "own": own_c, "nei": nei_c, "w": w, "core": core, "n_internal": n_nei, "area": [abs(sf[0]) for _, sf, _ in col]}
+
+
+def section_flux(sec: dict, r, phi, sown, core_r_min: float) -> dict:
+    """The FAIL 6 reading of ONE write (physics 40): with c_f = w_f min(r_O, 1) + (1 - w_f) min(r_N, 1) (r = max(thetaC + thetaH, 0)/phi0 in the cells),
+        Q_np = sum sigma (1 - c) phi    the flux through the NON-plug fraction (reads no skeleton flux)
+        D_c  = sum sigma c (phi - phiSkelOwn)    the plug-weighted Darcy flux
+        Q_S  = sum sigma (phi - c phiSkelOwn) = Q_np + D_c
+    phi and sown are the internal-face lists (m3/s). `valid` = both centreline cells hold r >= core_r_min (an invalid write is NOT EVALUATED, never fired)."""
+    qnp, dc = [], []
+    for f, sg, o, n_, w in zip(sec["faces"], sec["sigma"], sec["own"], sec["nei"], sec["w"]):
+        c = w * min(r[o], 1.0) + (1.0 - w) * min(r[n_], 1.0)
+        qnp.append(sg * (1.0 - c) * phi[f])
+        dc.append(sg * c * (phi[f] - sown[f]))
+    core_r = min(r[c] for c in sec["core"])
+    return {"Qnp": math.fsum(qnp), "Dc": math.fsum(dc), "QS": math.fsum(qnp) + math.fsum(dc), "core_r_min": core_r, "sec_valid": core_r >= core_r_min}
+
+
+def _face_values(path: Path, n: int) -> list:
+    kind, v = G.read_internal_faces(path, 1)
+    if kind == "uniform":
+        return [v] * n
+    if len(v) != n:
+        raise ValueError(f"{path}: {len(v)} internal-face values, the mesh has {n} internal faces")
+    return v
+
+
 # ------------------------------------------------------------------------------------------------------------- one write -> one record
-def reduce_write(geo: Geo, d: Path, params: dict, x0=None, inlet=None, t=None) -> dict:
-    """The record of one time directory (a full write, or 0/). x0 = X_b at t = 0 (for the tracked bypass slab); inlet = {time: inletFlux row} (or None)."""
+def reduce_write(geo: Geo, d: Path, params: dict, inlet=None, t=None) -> dict:
+    """The record of one time directory (a full write, or 0/). inlet = {time: inletFlux row} (or None). A directory that holds phi and phiSkelOwn (a solver write, not 0/)
+    also carries FAIL 6's section reading (Qnp, Dc, QS, core_r_min, sec_valid; section_flux)."""
     n = geo.n
     th_c = G.read_internal(d / "thetaC", 1, n)
     th_h = G.read_internal(d / "thetaH", 1, n)
@@ -363,6 +534,7 @@ def reduce_write(geo: Geo, d: Path, params: dict, x0=None, inlet=None, t=None) -
     n_over = 0
     bulk = []
     r = [v / phi0 for v in theta]
+    r_ind = [max(v, 0.0) / phi0 for v in theta]                                  # the solver's phaseIndicator argument (physics 40): max(thetaC + thetaH, 0)/phi0
     for i in range(n):
         ri = r[i]
         content += theta[i] * area[i]
@@ -403,24 +575,21 @@ def reduce_write(geo: Geo, d: Path, params: dict, x0=None, inlet=None, t=None) -
         "Mp": mp, "Mm": mm,
         "content": content * geo.depth,
         "r_max": r_max, "n_over": n_over,
-        "Dg_max": max(dg), "lam1_bulk_max": None, "Q": None, "Qs": None, "slab_ok": None,
+        "Dg_max": max(dg), "lam1_bulk_max": None, "Q": None,
+        "Qnp": None, "Dc": None, "QS": None, "core_r_min": None, "sec_valid": None,
     }
     be_path = d / "be"
     be = None
     if be_path.is_file():
         be = G.read_internal(be_path, 6, n)
         rec["lam1_bulk_max"] = G.lambda1_max([be[i] for i in bulk]) if bulk else 1.0
+    if (d / "phi").is_file() and (d / "phiSkelOwn").is_file():
+        n_int = geo.section["n_internal"]
+        rec.update(section_flux(geo.section, r_ind, _face_values(d / "phi", n_int), _face_values(d / "phiSkelOwn", n_int), params["bypass_core_r_min"]))
     rec["tail"] = _tail_of_write(geo, d, be, params, initial=(t == 0.0 and d.name == "0"))
     if inlet is not None:
         q = G._flux_at(inlet, rec["t"])
         rec["Q"] = (-q) if q is not None else None
-    if x0 is not None and rec["X"] is not None and (d / "Us").is_file():
-        xs = geo.slab_x0 + (rec["X"] - x0)
-        rec["slab_ok"] = (xs + 0.5 * geo.slab_w) <= geo.xt                          # the tracked section lies inside the straight parent (the seal moves with the bulk)
-        if rec["slab_ok"]:
-            us = G.read_internal(d / "Us", 3, n)
-            tot = math.fsum(us[i][0] * area[i] for i in range(n) if abs(geo.x[i] - xs) <= 0.5 * geo.slab_w)
-            rec["Qs"] = tot / geo.slab_w * geo.depth
     return rec
 
 
@@ -442,7 +611,7 @@ def read_restart_json(case: Path):
     return json.loads(p.read_text()) if p.is_file() else None
 
 
-def reduce_case(case: Path, spec: dict, params: dict, x0_hint=None) -> dict:
+def reduce_case(case: Path, spec: dict, params: dict) -> dict:
     """-> {'records': [...ascending in t, t = 0 first when 0/ holds the fields], 'skipped': [{name, why}], 'restart': restart.json or None, 'geo': Geo-facts}.
     A time directory enters when restart_driver.classify says FULL and INTACT and it holds REQUIRED_FIELDS; any other numeric directory is listed under 'skipped'."""
     import restart_driver as RD
@@ -465,21 +634,19 @@ def reduce_case(case: Path, spec: dict, params: dict, x0_hint=None) -> dict:
     geo = Geo(case, spec, params)
     out["geo"] = {"D0": geo.D0, "ubar": geo.ubar, "lam": geo.lam, "tau_v": geo.tau_v, "gap_m": geo.gap_m, "q0": geo.q0, "q0_tol": geo.q0_tol,
                   "write_interval": geo.write_interval, "series": geo.series, "child_id": geo.child_id, "phi0": geo.phi0, "phi_s_max": geo.phi_s_max,
-                  "xt": geo.xt, "tip": geo.tip, "slab_x0": geo.slab_x0, "slab_w": geo.slab_w, "p_in": geo.p_in, "G": geo.G, "depth": geo.depth}
+                  "xt": geo.xt, "tip": geo.tip, "p_in": geo.p_in, "G": geo.G, "depth": geo.depth, "end_time": geo.end_time,
+                  "section_x": geo.section["x"], "section_faces": len(geo.section["faces"]), "section_core_cells": len(geo.section["core"])}
     try:
         inlet = G.read_flux_series(case, "inletFlux")
     except (OSError, ValueError):
         inlet = None
-    x0 = x0_hint
     zero = case / "0"
     if (zero / "thetaC").is_file() and (zero / "thetaH").is_file() and (zero / "Dg").is_file():
-        rec0 = reduce_write(geo, zero, params, None, None, t=0.0)
+        rec0 = reduce_write(geo, zero, params, t=0.0)
         rec0["initial"] = True
-        x0 = rec0["X"]
         out["records"].append(rec0)
     for d in full:
-        out["records"].append(reduce_write(geo, d, params, x0, inlet))
-    out["x0"] = x0
+        out["records"].append(reduce_write(geo, d, params, inlet))
     return out
 
 
@@ -641,22 +808,42 @@ def analyse(records: list, facts: dict, params: dict) -> dict:
     out["film_branch"] = ("mesh film" if out["V0_ubar"] >= params["film_mesh_v0_min_ubar"] else
                           "sqrt(k) film" if out["V0_ubar"] <= params["film_sqrt_k_v0_max_ubar"] else "between the two branches")
     reads = [(2, "2tau_A"), (3, "3tau_A")]                       # structural (design 6 B): the verdict at t_c + 2 tau_A, the follow-up at t_c + 3 tau_A
-    v5 = centred_slopes(ts, xs, int(params["fit_writes"]))
+    # the contact-window rule (rev. 2.2.2 item 4): a centred fit enters V_b only if its WHOLE window lies at or after t_c
+    v5 = post_contact_slopes(ts, xs, int(params["fit_writes"]), t_c)
     v5t = [t for t, _ in v5]
     v5v = [v / ubar for _, v in v5]
+    complete = record_complete(ts, facts, interval)                # the horizon rules apply to a COMPLETE record only (rev. 2.2.1 item 4)
+    out["record_complete"] = complete
+    out["end_time"] = facts.get("end_time")
     out["reads"] = []
     verdict = None
     pending = None
+    horizon = None                                                # the reason when INDETERMINATE is final at the horizon
     for idx, (mult, label) in enumerate(reads):
         t_hi = t_c + mult * tau_a
         t_lo = t_c + (mult - 1) * tau_a
+        if v5t and t_lo < v5t[0]:
+            out.update(status="NOT_ASSESSABLE", why=f"the {label} read needs V_b at t = {t_lo!r}, before the first fit centre {v5t[0] if v5t else None!r} whose whole window lies at or after t_c = {t_c!r} (the contact window)")
+            return out
+        if idx == 0 and complete and v5t and t_hi > v5t[-1]:
+            entry = horizon_read(v5t, v5v, ts, recs, t_c, tau_a, params)
+            out["reads"].append(entry)
+            out["read"] = "horizon"
+            verdict = entry["verdict"] if entry["verdict"] != "INDETERMINATE" else None
+            if verdict is None:
+                horizon = entry["why"]
+            break
         va = interp(v5t, v5v, t_lo)
         vb = interp(v5t, v5v, t_hi)
         entry = {"label": label, "t_prev": t_lo, "t_read": t_hi, "V_prev_ubar": va, "V_ubar": vb}
         if vb is None or va is None:
             entry["why"] = f"the record ends at t = {ts[-1]!r}; the {label} read needs a centred fit at {t_hi!r}"
             out["reads"].append(entry)
-            pending = label
+            if idx > 0 and complete:
+                horizon = f"the {label} re-read lies at t = {t_hi!r}, past the last centred fit {v5t[-1]!r} of the complete record"
+                out["read"] = "horizon"
+            else:
+                pending = label
             break
         r = (vb / va) if va > 0.0 else None
         win = [(t, r_) for t, r_ in zip(ts, recs) if t_lo <= t <= t_hi]
@@ -676,6 +863,8 @@ def analyse(records: list, facts: dict, params: dict) -> dict:
             out["read"] = label
     if verdict is not None:
         out.update(status="VERDICT", verdict=verdict, final=True)
+    elif horizon is not None:
+        out.update(status="VERDICT", verdict="INDETERMINATE", final=True, read="horizon", why=f"INDETERMINATE and FINAL at the horizon: {horizon}")
     elif pending is not None:
         first = out["reads"][0]
         if pending == reads[0][1]:
@@ -685,6 +874,9 @@ def analyse(records: list, facts: dict, params: dict) -> dict:
                        why=f"INDETERMINATE at 2 tau_A ({first['why']}); the {pending} follow-up is not yet readable")
     else:
         out.update(status="VERDICT", verdict="INDETERMINATE", final=True, read=reads[-1][1])
+    # ---- FAIL 6 on the window of the verdict actually read (rev. 2.2.3): t_c <= t <= t_read; later Q_np is reported as post_verdict_bypass
+    out["fail"]["F6_bypass"] = f6_item(recs, facts, params, t_c, verdict_t_read(out))
+    out["fired"] = [k for k, v in out["fail"].items() if v["fired"]]
     # ---- the readings the table asks for
     rd = out["reads"][-1] if out["reads"] else {}
     if verdict is not None or out["status"] == "VERDICT":
@@ -715,30 +907,43 @@ def split_values(recs, t_c, t_v):
 
 def reading(out: dict, params: dict) -> str:
     """How to read the record (C10): SQUEEZE is ENTRY ONSET; a YS850 STUCK or a YS794 SQUEEZE falsifies physics 19's STATIC energy criterion only if the verdict is
-    decisive, the bypass is <= 0.01 and |A| > 1e-3."""
+    decisive, the bypass is <= fail_bypass_max Q0 (FAIL 6: Q_np, evaluated) and |A| > 1e-3. FAIL 6 is consulted BEFORE 'as predicted' (rev. 2.2.1 item 1): a verdict that
+    FAIL 6 fired on is never reported as 'as predicted'."""
     v = out.get("verdict")
     if v is None or out.get("status") != "VERDICT":
         return "no verdict"
     if v == "INDETERMINATE":
-        return "INDETERMINATE: no statement about physics 19's static criterion"
+        return "INDETERMINATE: no statement about physics 19's static criterion" + (" (final at the horizon)" if out.get("read") == "horizon" else "")
     pred = out.get("predicted")
-    if v == pred:
-        return f"{v} as predicted" + (" (SQUEEZE = ENTRY ONSET within the horizon; passage is out of scope)" if v == "SQUEEZE" else "")
     f6 = out["fail"]["F6_bypass"]
+    lim = params["fail_bypass_max"]
+    pvb = f6.get("post_verdict_bypass")
+    post = ""                                                  # rev. 2.2.3: a bypass AFTER the verdict read is reported, never a FAIL
+    if pvb and pvb.get("over_limit"):
+        post = (f"; post_verdict_bypass (reported, not a FAIL): Q_np/Q0 reached {pvb['max_bypass']:.3e} at t = {pvb['max_bypass_at_t']!r} (> {lim} from t = {pvb['first_over_limit_at_t']!r}), "
+                f"after the verdict was read at t = {f6['window_to_t']!r}")
+    win = f"; window t_c <= t <= t_read = {f6['window_to_t']!r}" if f6.get("window_to_t") is not None else ""
+    if f6["fired"]:
+        return (f"{v} (predicted {pred}) BUT FAIL 6 FIRED at t = {f6['at_t']!r}: flux through the non-plug fraction of the section Q_np/Q0 reached {f6['max_bypass']:.3e} (limit {lim}); "
+                f"the plug is not sealing, so the run is not a clean test of the verdict (Q_S/Q0 max {f6['max_QS_over_Q0']:.3e}, D_c/Q0 max {f6['max_Dc_over_Q0']:.3e})" + post)
     bypass_ok = (f6["fired"] is False) and f6.get("evaluated", 0) > 0
+    if v == pred:
+        f6_txt = (f"FAIL 6 silent at {f6['evaluated']} valid post-contact writes (max Q_np/Q0 {f6['max_bypass']:.3e} <= {lim}{win})" if bypass_ok else
+                  f"FAIL 6 NOT EVALUATED ({f6.get('invalid_writes', 0)} of {f6.get('writes_after_contact', 0)} post-contact writes had no valid section): the bypass is not shown absent")
+        return f"{v} as predicted" + (" (SQUEEZE = ENTRY ONSET within the horizon; passage is out of scope)" if v == "SQUEEZE" else "") + "; " + f6_txt + post
     sym_ok = out.get("A_symmetry_hold") is False
     if bypass_ok and sym_ok:
-        return f"{v} against the prediction {pred}: FALSIFIES physics 19's STATIC energy criterion (decisive, bypass <= {params['fail_bypass_max']}, |A| > {params['a_symmetry_flag']}); it says nothing about the timings"
+        return f"{v} against the prediction {pred}: FALSIFIES physics 19's STATIC energy criterion (decisive, Q_np <= {lim} Q0, |A| > {params['a_symmetry_flag']}); it says nothing about the timings" + post
     why = []
     if not bypass_ok:
-        why.append("the bypass is not shown to be <= %g (%s)" % (params["fail_bypass_max"], "fired" if f6["fired"] else "not evaluable"))
+        why.append("the bypass is not shown to be <= %g Q0 (FAIL 6 not evaluable: %s of %s post-contact writes had a valid section)" % (lim, f6.get("evaluated", 0), f6.get("writes_after_contact", 0)))
     if not sym_ok:
         why.append(f"|A| {out.get('A_at_verdict')!r} <= {params['a_symmetry_flag']}: a symmetry hold, or not measured")
-    return f"{v} against the prediction {pred}, but NOT a falsification of 19: " + "; ".join(why)
+    return f"{v} against the prediction {pred}, but NOT a falsification of 19: " + "; ".join(why) + post
 
 
 # ------------------------------------------------------------------------------------------------------------- the 6 FAIL items
-def fail_items(recs, ts, xs, facts, params, appr, t_c, rates) -> dict:
+def fail_items(recs, ts, xs, facts, params, appr, t_c, rates, t_read=None) -> dict:
     ubar = facts["ubar"]
     f: dict = {}
     # 1  a weld: V_b < weld during the approach
@@ -776,29 +981,70 @@ def fail_items(recs, ts, xs, facts, params, appr, t_c, rates) -> dict:
     t5 = next((r["t"] for r in recs if r["Mp"] >= lim and r["Mm"] >= lim), None)
     f["F5_split"] = {"fired": t5 is not None, "at_t": t5, "max_min_Mpm": max(min(r["Mp"], r["Mm"]) for r in recs), "limit": lim,
                      "rule": "M+ and M- both >= %g D0^2 at the same write" % lim}
-    # 6  D2: a bypass: (Q - Q_s)/Q0 > 0.01 once V_b < 0.05 ubar, Q_s the skeleton flux across a section tracked inside the straight seal
-    v5 = centred_slopes(ts, xs, int(params["fit_writes"]))
-    v5d = {t: v / ubar for t, v in v5}
-    n_eval, fired_at, worst = 0, None, None
+    f["F6_bypass"] = f6_item(recs, facts, params, t_c, t_read)
+    return f
+
+
+def verdict_t_read(out: dict):
+    """The time the verdict was read at (rev. 2.2.3), from the path actually taken: a decisive verdict -> the read that decided (reads[-1]: t_c + 2 tau_A, the horizon read t_r, or the
+    3 tau_A re-read); an INDETERMINATE-FINAL run -> the last VALID read (an entry that produced a ratio R); None when there is no verdict yet (status not VERDICT, or INDETERMINATE not final)
+    or no valid read: the F6 window is then open."""
+    if out.get("status") != "VERDICT":
+        return None
+    reads = out.get("reads") or []
+    if out.get("verdict") != "INDETERMINATE":
+        return reads[-1]["t_read"] if reads else None
+    if not out.get("final"):
+        return None
+    valid = [e["t_read"] for e in reads if e.get("R") is not None]
+    return valid[-1] if valid else None
+
+
+def f6_item(recs, facts, params, t_c, t_read=None) -> dict:
+    """FAIL 6 (rev. 2.2.2 physics 40, window rev. 2.2.3): FAIL if Q_np > fail_bypass_max Q0 at a VALID write with t_c <= t <= t_read. Q_np is the flux through the non-plug fraction of ONE
+    section; D_c (the plug-weighted Darcy flux, which a real compaction drains) and Q_S = Q_np + D_c are REPORTED. An invalid write (a centreline cell below bypass_core_r_min) is not
+    evaluated. t_read None: no upper end. Writes after t_read (t > t_read) are summarised in post_verdict_bypass (reported, never failed); None when there is no t_read."""
+    q0 = facts["q0"]
+    lim = params["fail_bypass_max"]
+    n_eval, n_invalid, n_after, fired_at, worst, worst_t = 0, 0, 0, None, None, None
+    qs_max = dc_max = None
+    post = {"writes": 0, "evaluated": 0, "invalid_writes": 0, "max_bypass": None, "max_bypass_at_t": None, "first_over_limit_at_t": None, "over_limit": None} if t_read is not None else None
     for r in recs:
-        if r.get("Q") is None or r.get("Qs") is None or not r.get("slab_ok"):
+        if t_c is None or r["t"] < t_c or r.get("Qnp") is None:
             continue
-        vb = v5d.get(r["t"])
-        if vb is None:
-            i = ts.index(r["t"])
-            vb = (xs[i] - xs[i - 1]) / (ts[i] - ts[i - 1]) / ubar if i > 0 else None
-        if vb is None or not vb < params["fail_bypass_vb_below_ubar"]:
+        if t_read is not None and r["t"] > t_read:
+            post["writes"] += 1
+            if not r.get("sec_valid"):
+                post["invalid_writes"] += 1
+                continue
+            post["evaluated"] += 1
+            pby = r["Qnp"] / q0
+            if post["max_bypass"] is None or pby > post["max_bypass"]:
+                post["max_bypass"], post["max_bypass_at_t"] = pby, r["t"]
+            if pby > lim and post["first_over_limit_at_t"] is None:
+                post["first_over_limit_at_t"] = r["t"]
+            continue
+        n_after += 1
+        if not r.get("sec_valid"):
+            n_invalid += 1
             continue
         n_eval += 1
-        by = (r["Q"] - r["Qs"]) / facts["q0"]
+        by, qs, dc = r["Qnp"] / q0, r["QS"] / q0, r["Dc"] / q0
         if worst is None or by > worst:
-            worst = by
-        if by > params["fail_bypass_max"] and fired_at is None:
+            worst, worst_t = by, r["t"]
+        qs_max = qs if qs_max is None or qs > qs_max else qs_max
+        dc_max = dc if dc_max is None or dc > dc_max else dc_max
+        if by > lim and fired_at is None:
             fired_at = r["t"]
-    f["F6_bypass"] = {"fired": (fired_at is not None) if n_eval else None, "evaluated": n_eval, "max_bypass": worst, "at_t": fired_at, "limit": params["fail_bypass_max"],
-                      "rule": "(Q - Q_s)/Q0 > %g at a write with V_b < %g ubar (Q the inlet flux, Q_s the skeleton flux across a section tracked inside the straight seal; "
-                              "the section must lie in the straight parent)" % (params["fail_bypass_max"], params["fail_bypass_vb_below_ubar"])}
-    return f
+    if post is not None and post["evaluated"]:
+        post["over_limit"] = post["first_over_limit_at_t"] is not None
+    return {"fired": (fired_at is not None) if n_eval else None, "evaluated": n_eval, "invalid_writes": n_invalid, "writes_after_contact": n_after,
+            "max_bypass": worst, "max_bypass_at_t": worst_t, "at_t": fired_at, "max_QS_over_Q0": qs_max, "max_Dc_over_Q0": dc_max, "limit": lim,
+            "window_from_t": t_c, "window_to_t": t_read, "post_verdict_bypass": post,
+            "rule": "Q_np/Q0 > %g at a valid write with t_c <= t <= t_read, t_read = the time the verdict was read at (none: every write from t_c on) (Q_np = sum sigma (1 - c) phi over the "
+                    "x-normal parent column S at or upstream of the fillet tangent, c = min(theta/phi0, 1) at the face; valid = both centreline cells of S at theta/phi0 >= %g; "
+                    "Q_S and D_c are reported, not failed; Q_np at later writes is reported as post_verdict_bypass, never failed)"
+                    % (lim, params["bypass_core_r_min"])}
 
 
 def reported_values(recs, facts, params, t_c) -> dict:
@@ -910,16 +1156,16 @@ def f3_of_logs(texts: list, s25_report) -> dict:
 def facts_of(info: dict) -> dict:
     g = info["geo"]
     return {"ubar": g["ubar"], "D0": g["D0"], "lam": g["lam"], "tau_v": g["tau_v"], "gap_m": g["gap_m"], "write_interval": g["write_interval"],
-            "series": g["series"], "q0": g["q0"], "q0_tol": g["q0_tol"]}
+            "series": g["series"], "q0": g["q0"], "q0_tol": g["q0_tol"], "end_time": g["end_time"]}
 
 
 def assess_case_dirs(cases: list, spec: dict, params: dict, texts=None, labels=None, s25_report=None) -> dict:
     """The chain of restarted sessions `cases` (case directories in order; the first holds the initial state) -> the analyse() result plus the chain's record.
     `spec` = child.json of the first session. A chain error is returned as status 'CHAIN_REFUSED' with the reason (never raised)."""
-    sessions, x0 = [], None
+    sessions = []
     for k, c in enumerate(cases):
         try:
-            red = reduce_case(c, spec, params, x0_hint=x0)
+            red = reduce_case(c, spec, params)
         except (OSError, ValueError, KeyError) as error:
             return {"status": "NOT_ASSESSABLE", "verdict": None, "final": False, "why": f"session {k + 1}: {type(error).__name__}: {error}", "sessions": k}
         if red["geo"] is None:
@@ -927,10 +1173,10 @@ def assess_case_dirs(cases: list, spec: dict, params: dict, texts=None, labels=N
                 return {"status": "NO_WRITES", "verdict": None, "final": False, "sessions": 1, "skipped": red["skipped"],
                         "why": "no full intact write in the session"}
             return {"status": "CHAIN_REFUSED", "verdict": None, "final": False, "why": f"session {k + 1} holds no full intact write", "sessions": k + 1}
-        x0 = red.get("x0", x0)
         sessions.append({"records": red["records"], "restart": red["restart"], "label": (labels[k] if labels else f"session {k + 1}"), "info": red})
     info = sessions[0]["info"]
     facts = facts_of(info)
+    facts["end_time"] = sessions[-1]["info"]["geo"]["end_time"]                  # the LAST session's controlDict endTime (rev. 2.2.1 item 4)
     if len(sessions) > 1:
         from restart_driver import compare_dictionaries
         for k in range(1, len(cases)):
@@ -953,7 +1199,7 @@ def assess_case_dirs(cases: list, spec: dict, params: dict, texts=None, labels=N
 
 def columns(recs: list) -> dict:
     """The per-write series as columns (compact, for result.json and offline re-analysis)."""
-    keys = ("t", "X", "A", "A_bulk", "Mp", "Mm", "content", "r_max", "n_over", "Dg_max", "lam1_bulk_max", "Q", "Qs")
+    keys = ("t", "X", "A", "A_bulk", "Mp", "Mm", "content", "r_max", "n_over", "Dg_max", "lam1_bulk_max", "Q", "Qnp", "Dc", "QS", "core_r_min")
     cols = {k: [r.get(k) for r in recs] for k in keys}
     for k in ("R_all", "R_outside", "R_body", "q_argmax"):
         cols["tail_" + k] = [(r.get("tail") or {}).get(k) for r in recs]

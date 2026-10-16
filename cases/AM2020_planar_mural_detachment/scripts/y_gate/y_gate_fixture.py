@@ -73,8 +73,20 @@ def build(dict_path=None, with_info=False):
     return centres, faces, len(Pu), len(Cu)
 
 
+def topology(dict_path):
+    """(Pu, Cu): the replica's 2-D points and the cells' four point indices, counter-clockwise (the orientation build() uses). The cells' connectivity is what the
+    plug assessor's FAIL 6 test needs to lay a polyMesh out offline (y_plug_synth.write_polymesh): the faces of the parent section, their owners and neighbours."""
+    V, B, E, P = R.parse(str(dict_path))
+    Pu, Cu, tag, tol = R.build2d(V, B, E, 2)
+    A = 0.5 * np.sum(Pu[Cu][:, :, 0] * np.roll(Pu[Cu][:, :, 1], -1, 1) - np.roll(Pu[Cu][:, :, 0], -1, 1) * Pu[Cu][:, :, 1], 1)
+    if (A < 0).all():
+        Cu = Cu[:, ::-1]
+    return Pu, Cu
+
+
 def main_tag(tag):
-    """The f = 2 symmetric meshes: fixtures/<tag>_cells_2d.npy, <tag>_outlet_faces_2d.npy, <tag>_cellinfo_2d.npy (area m2, wall-row flag)."""
+    """The f = 2 symmetric meshes: fixtures/<tag>_cells_2d.npy, <tag>_outlet_faces_2d.npy, <tag>_cellinfo_2d.npy (area m2, wall-row flag), <tag>_cellpts_2d.npy (the four
+    point indices of each cell as float64, into constant/yGate/na22_points_ref_2d_<tag>_h2.npy; exact below 2^53)."""
     want = {"YS794": (19728, 72), "YS850": (19416, 72)}[tag]
     centres, faces, npts, ncell, info = build(MAIN_CASE / "constant" / "yGate" / f"na22_blockMeshDict_{tag}_h2", with_info=True)
     out = HERE / "fixtures"
@@ -82,6 +94,11 @@ def main_tag(tag):
     np.save(out / f"{tag}_cells_2d.npy", centres)
     np.save(out / f"{tag}_outlet_faces_2d.npy", faces)
     np.save(out / f"{tag}_cellinfo_2d.npy", info)
+    Pu, Cu = topology(MAIN_CASE / "constant" / "yGate" / f"na22_blockMeshDict_{tag}_h2")
+    ref = np.load(MAIN_CASE / "constant" / "yGate" / f"na22_points_ref_2d_{tag}_h2.npy")
+    assert Pu.shape == ref.shape and float(np.abs(Pu - ref).max()) == 0.0, "the replica's points are not the shipped points_ref"
+    assert (Pu[Cu].mean(axis=1) == centres).all(), "the connectivity does not reproduce the fixture's cell centres"
+    np.save(out / f"{tag}_cellpts_2d.npy", Cu.astype(np.float64))
     print(f"{tag}: points {npts} cells {ncell}; {len(faces)} outlet faces (y>0: {(faces[:, 1] > 0).sum()}, y<0: {(faces[:, 1] < 0).sum()}); "
           f"wall-row cells {int(info[:, 1].sum())}; area sum {info[:, 0].sum():.6e} m2")
     assert ncell == want[0] and len(faces) == want[1] and (faces[:, 1] > 0).sum() == want[1] // 2 and (faces[:, 1] < 0).sum() == want[1] // 2
